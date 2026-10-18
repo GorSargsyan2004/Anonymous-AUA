@@ -1,0 +1,42 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: aua_postgres
+    restart: always
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-aua_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-aua_secure_password_here}
+      POSTGRES_DB: ${POSTGRES_DB:-aua_chat_db}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-aua_user} -d ${POSTGRES_DB:-aua_chat_db}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+
+  bot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: aua_bot
+    restart: always
+    env_file:
+      - path: .env
+        required: false
+
+    environment:
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./:/app
+
+volumes:
+  postgres_data:
+    name: aua_postgres_data
