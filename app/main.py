@@ -40,19 +40,24 @@ async def setup_bot_commands(bot: Bot) -> None:
 
 
 async def setup_bot_profile(bot: Bot) -> None:
-    """Enforce official bot name, description, and short description on startup to prevent hijacking."""
-    try:
-        await bot.set_my_name("AUA Anonymous Chat")
-        await bot.set_my_description(
+    """Enforce official bot name, description, and short description on startup if supported by Telegram."""
+    profile_items = [
+        (bot.set_my_name, "AUA Anonymous Chat"),
+        (
+            bot.set_my_description,
             "Official Anonymous Chat Bot for students of the American University of Armenia (AUA). "
-            "Connect anonymously, make campus friends, and chat safely. 🦅🇦🇲"
-        )
-        await bot.set_my_short_description(
-            "Anonymous Chat Bot exclusively for AUA students. 🦅🇦🇲"
-        )
-        logger.info("Bot profile (name and description) verified and enforced.")
-    except Exception as e:
-        logger.warning("Could not enforce bot profile: %s", e)
+            "Connect anonymously, make campus friends, and chat safely. 🦅🇦🇲",
+        ),
+        (
+            bot.set_my_short_description,
+            "Anonymous Chat Bot exclusively for AUA students. 🦅🇦🇲",
+        ),
+    ]
+    for func, text_value in profile_items:
+        try:
+            await func(text_value)
+        except Exception as e:
+            logger.debug("Could not enforce bot profile property (%s): %s", func.__name__, e)
 
 
 
@@ -91,9 +96,14 @@ async def main() -> None:
     # 5. Set Telegram UI commands and enforce legitimate bot profile
     try:
         await setup_bot_commands(bot)
+        logger.info("Bot commands registered successfully.")
+    except Exception as e:
+        logger.warning("Could not set bot commands: %s", e)
+
+    try:
         await setup_bot_profile(bot)
     except Exception as e:
-        logger.warning("Could not set bot commands or profile: %s", e)
+        logger.debug("Could not enforce bot profile: %s", e)
 
     # 6. Start Polling (preserve pending updates so messages sent during restart are not lost)
     logger.info("Starting polling with admin IDs: %s", settings.ADMIN_IDS)
