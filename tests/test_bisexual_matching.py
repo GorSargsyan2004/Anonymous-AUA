@@ -108,11 +108,11 @@ async def test_bisexual_matching():
     # Scenario A: Bi Male matches with Gay Male
     async with get_db_session() as session:
         # Bi Male queues first (does not match straight male in queue)
-        c1, s1 = await match_user_in_queue(session, U_BI_MALE)
+        c1, s1 = await match_user_in_queue(session, U_BI_MALE, allowed_candidate_ids=ALL_TEST_USERS)
         assert c1 is None and s1 is None
 
         # Gay Male queues -> matches Bi Male!
-        c2, s2 = await match_user_in_queue(session, U_GAY_MALE)
+        c2, s2 = await match_user_in_queue(session, U_GAY_MALE, allowed_candidate_ids=ALL_TEST_USERS)
         assert c2 is not None and c2.id == U_BI_MALE
         assert s2 is not None and s2.is_active is True
         logger.info("Scenario A Passed: Bi Male matched with Gay Male (Session %d)", s2.id)
@@ -128,11 +128,11 @@ async def test_bisexual_matching():
         await update_user_profile(session, U_BI_FEMALE, sex="female", orientation="bisexual")
 
         # Bi Male queues first
-        c1, s1 = await match_user_in_queue(session, U_BI_MALE)
+        c1, s1 = await match_user_in_queue(session, U_BI_MALE, allowed_candidate_ids=ALL_TEST_USERS)
         assert c1 is None and s1 is None
 
         # Bi Female queues -> should match Bi Male!
-        c2, s2 = await match_user_in_queue(session, U_BI_FEMALE)
+        c2, s2 = await match_user_in_queue(session, U_BI_FEMALE, allowed_candidate_ids=ALL_TEST_USERS)
         assert c2 is not None and c2.id == U_BI_MALE
         assert s2 is not None and s2.is_active is True
         logger.info("Scenario B Passed: Bi Male matched with Bi Female (Session %d)", s2.id)
@@ -147,11 +147,11 @@ async def test_bisexual_matching():
         await update_user_profile(session, U_LES_FEMALE, sex="female", orientation="lesbian")
 
         # Lesbian Female queues
-        c1, s1 = await match_user_in_queue(session, U_LES_FEMALE)
+        c1, s1 = await match_user_in_queue(session, U_LES_FEMALE, allowed_candidate_ids=ALL_TEST_USERS)
         assert c1 is None and s1 is None
 
         # Bi Female queues -> should match Lesbian Female!
-        c2, s2 = await match_user_in_queue(session, U_BI_FEMALE)
+        c2, s2 = await match_user_in_queue(session, U_BI_FEMALE, allowed_candidate_ids=ALL_TEST_USERS)
         assert c2 is not None and c2.id == U_LES_FEMALE
         assert s2 is not None and s2.is_active is True
         logger.info("Scenario C Passed: Bi Female matched with Lesbian Female (Session %d)", s2.id)
@@ -161,7 +161,7 @@ async def test_bisexual_matching():
     # Scenario D: Incompatibility Test: Gay Male does NOT match with Straight Male
     async with get_db_session() as session:
         # Gay Male queues
-        c1, s1 = await match_user_in_queue(session, U_GAY_MALE)
+        c1, s1 = await match_user_in_queue(session, U_GAY_MALE, allowed_candidate_ids=ALL_TEST_USERS)
         assert c1 is None and s1 is None
 
         # Clean queue flags

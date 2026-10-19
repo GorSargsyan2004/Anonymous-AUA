@@ -50,11 +50,16 @@ async def test_session_lifecycle_and_restart():
     await cleanup_test_data()
 
     async with get_db_session() as session:
-        # 1. Setup two test users
+        # 1. Setup two test users with isolated test-only orientation to avoid matching live users in queue
         u1 = await get_or_create_user(session, user_id=TEST_USER_1, username="test_user_1")
         u2 = await get_or_create_user(session, user_id=TEST_USER_2, username="test_user_2")
-        await update_user_profile(session, user_id=TEST_USER_1, sex="female", orientation="lesbian")
-        await update_user_profile(session, user_id=TEST_USER_2, sex="female", orientation="lesbian")
+        await update_user_profile(session, user_id=TEST_USER_1, sex="female", orientation="isolated")
+        await update_user_profile(session, user_id=TEST_USER_2, sex="female", orientation="isolated")
+        u1.target_sexes = "female"
+        u1.target_orientations = "isolated"
+        u2.target_sexes = "female"
+        u2.target_orientations = "isolated"
+        await session.commit()
 
         # 2. Put user 2 in queue
         candidate, chat_session = await match_user_in_queue(session, user_id=TEST_USER_2)

@@ -105,6 +105,7 @@ def get_default_preferences(
 async def match_user_in_queue(
     session: AsyncSession,
     user_id: int,
+    allowed_candidate_ids: Optional[List[int]] = None,
 ) -> Tuple[Optional[User], Optional[ChatSession]]:
     """Attempt to pair the given user with a compatible searching candidate based on preferences.
 
@@ -152,23 +153,28 @@ async def match_user_in_queue(
         await session.commit()
 
     # Search for the best candidate whose preferences match mutually
+    conditions = [
+        User.id != current_user.id,
+        User.is_searching == True,  # noqa: E712
+        User.current_partner_id.is_(None),
+        # User A accepts Candidate
+        User.sex.in_(user_target_sexes),
+        User.orientation.in_(user_target_orientations),
+        # Candidate accepts User A
+        func.concat(",", func.coalesce(User.target_sexes, ""), ",").like(
+            f"%,{current_user.sex},%"
+        ),
+        func.concat(",", func.coalesce(User.target_orientations, ""), ",").like(
+            f"%,{current_user.orientation},%"
+        ),
+    ]
+
+    if allowed_candidate_ids is not None:
+        conditions.append(User.id.in_(allowed_candidate_ids))
+
     candidate_stmt = (
         select(User)
-        .where(
-            User.id != current_user.id,
-            User.is_searching == True,  # noqa: E712
-            User.current_partner_id.is_(None),
-            # User A accepts Candidate
-            User.sex.in_(user_target_sexes),
-            User.orientation.in_(user_target_orientations),
-            # Candidate accepts User A
-            func.concat(",", func.coalesce(User.target_sexes, ""), ",").like(
-                f"%,{current_user.sex},%"
-            ),
-            func.concat(",", func.coalesce(User.target_orientations, ""), ",").like(
-                f"%,{current_user.orientation},%"
-            ),
-        )
+        .where(*conditions)
         .order_by(
             func.abs(User.priority - current_user.priority).asc(),
             User.priority.desc(),

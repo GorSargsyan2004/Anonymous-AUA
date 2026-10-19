@@ -140,10 +140,10 @@ async def test_preferences_matching():
 
     # 5. Scenario A: Straight Male & Straight Female match by default
     async with get_db_session() as session:
-        c1, s1 = await match_user_in_queue(session, U1)
+        c1, s1 = await match_user_in_queue(session, U1, allowed_candidate_ids=ALL_TEST_USERS)
         assert c1 is None and s1 is None, "First queued user should not immediately match"
 
-        c2, s2 = await match_user_in_queue(session, U2)
+        c2, s2 = await match_user_in_queue(session, U2, allowed_candidate_ids=ALL_TEST_USERS)
         assert c2 is not None and c2.id == U1
         assert s2 is not None and s2.is_active is True
         logger.info("Scenario A Passed: Straight Male and Straight Female connected (Session %d)", s2.id)
@@ -154,10 +154,10 @@ async def test_preferences_matching():
     # Straight Male 1 (U1) queues. Straight Male 2 (U6) queues.
     # By default, both only want females. They must NOT match!
     async with get_db_session() as session:
-        c1, s1 = await match_user_in_queue(session, U1)
+        c1, s1 = await match_user_in_queue(session, U1, allowed_candidate_ids=ALL_TEST_USERS)
         assert c1 is None and s1 is None
 
-        c2, s2 = await match_user_in_queue(session, U6)
+        c2, s2 = await match_user_in_queue(session, U6, allowed_candidate_ids=ALL_TEST_USERS)
         assert c2 is None and s2 is None, "Straight males should not match each other by default!"
         logger.info("Scenario B Passed: Two straight males in queue did not match each other.")
 
@@ -187,11 +187,11 @@ async def test_preferences_matching():
         )
 
         # U1 queues
-        c1, s1 = await match_user_in_queue(session, U1)
+        c1, s1 = await match_user_in_queue(session, U1, allowed_candidate_ids=ALL_TEST_USERS)
         assert c1 is None and s1 is None
 
         # U3 queues -> Should now match U1!
-        c2, s2 = await match_user_in_queue(session, U3)
+        c2, s2 = await match_user_in_queue(session, U3, allowed_candidate_ids=ALL_TEST_USERS)
         assert c2 is not None and c2.id == U1
         assert s2 is not None and s2.is_active is True
         logger.info("Scenario C Passed: Custom preferences matched U1 and U3 (Session %d)", s2.id)
@@ -216,11 +216,11 @@ async def test_preferences_matching():
         )
 
         # U4 queues
-        c1, s1 = await match_user_in_queue(session, U4)
+        c1, s1 = await match_user_in_queue(session, U4, allowed_candidate_ids=ALL_TEST_USERS)
         assert c1 is None and s1 is None
 
         # U1 queues -> Even though U1 accepts females (including lesbians), U4 does NOT accept males!
-        c2, s2 = await match_user_in_queue(session, U1)
+        c2, s2 = await match_user_in_queue(session, U1, allowed_candidate_ids=ALL_TEST_USERS)
         assert c2 is None and s2 is None, "Asymmetric preference should NOT produce a match!"
         logger.info("Scenario D Passed: Asymmetric preferences correctly prevented one-way match.")
 
@@ -247,10 +247,10 @@ async def test_preferences_matching():
             target_orientations=["lesbian"],
         )
 
-        c1, s1 = await match_user_in_queue(session, U4)
+        c1, s1 = await match_user_in_queue(session, U4, allowed_candidate_ids=ALL_TEST_USERS)
         assert c1 is None and s1 is None
 
-        c2, s2 = await match_user_in_queue(session, U3)
+        c2, s2 = await match_user_in_queue(session, U3, allowed_candidate_ids=ALL_TEST_USERS)
         assert c2 is not None and c2.id == U4
         assert s2 is not None and s2.is_active is True
         logger.info("Scenario E Passed: Mutual custom preferences connected Lesbian Female and Gay Male (Session %d)", s2.id)

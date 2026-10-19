@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+from typing import Optional
 from aiogram import Bot, F, Router
 from aiogram.exceptions import (
     TelegramAPIError,
@@ -10,7 +11,7 @@ from aiogram.exceptions import (
 )
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
-from aiogram.types import Message
+from aiogram.types import Message, ReplyParameters
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database.crud import (
@@ -23,6 +24,7 @@ from app.database.crud import (
 from app.database.session import get_db_session
 from app.keyboards.inline import get_bot_feedback_keyboard, get_feedback_keyboard
 from app.services.matcher import match_user_in_queue
+from app.services.reply_manager import reply_manager
 
 logger = logging.getLogger(__name__)
 router = Router(name="matchmaking_router")
@@ -154,6 +156,7 @@ async def handle_stop(message: Message, bot: Bot, state: FSMContext) -> None:
             result = await end_active_session(session, user_id=user_id)
             if result:
                 chat_session, partner_id = result
+                reply_manager.clear_chat(user_id, partner_id)
 
                 # Notify initiating user
                 await message.answer(
@@ -215,6 +218,7 @@ async def handle_next(message: Message, bot: Bot, state: FSMContext) -> None:
             result = await end_active_session(session, user_id=user_id)
             if result:
                 chat_session, partner_id = result
+                reply_manager.clear_chat(user_id, partner_id)
 
                 await message.answer(
                     "⏭️ <b>Skipping to next partner...</b>\n\n"
@@ -275,14 +279,49 @@ async def relay_anonymous_message(message: Message, bot: Bot, state: FSMContext)
                 )
             return
 
+        # Check if incoming message is a reply to a previous message in the conversation
+        reply_params: Optional[ReplyParameters] = None
+        if message.reply_to_message:
+            target_msg_id = reply_manager.get_target_message_id(
+                sender_id=user_id,
+                partner_id=partner_id,
+                replied_msg_id=message.reply_to_message.message_id,
+            )
+            if target_msg_id:
+                reply_params = ReplyParameters(
+                    message_id=target_msg_id,
+                    allow_sending_without_reply=True,
+                )
+
         # Attempt to relay message to partner
         try:
-            await message.copy_to(chat_id=partner_id)
+            if reply_params:
+                try:
+                    sent_msg = await message.copy_to(chat_id=partner_id, reply_parameters=reply_params)
+                except TelegramBadRequest as e:
+                    # Fallback without reply parameters if Telegram rejects the target reply message
+                    if "reply" in str(e).lower():
+                        sent_msg = await message.copy_to(chat_id=partner_id)
+                    else:
+                        raise
+            else:
+                sent_msg = await message.copy_to(chat_id=partner_id)
+
+            # Record message ID mapping for bidirectional reply support
+            sent_msg_id = getattr(sent_msg, "message_id", None)
+            if sent_msg_id:
+                reply_manager.register_message(
+                    sender_id=user_id,
+                    sender_msg_id=message.message_id,
+                    receiver_id=partner_id,
+                    receiver_msg_id=sent_msg_id,
+                )
         except TelegramForbiddenError as e:
             logger.warning("Partner %s blocked the bot or is deactivated: %s", partner_id, e)
             result = await end_active_session(session, user_id=user_id)
             if result:
                 chat_session, _ = result
+                reply_manager.clear_chat(user_id, partner_id)
                 await message.answer(
                     "⚠️ <b>Your partner has disconnected or left the chat.</b>\n\n"
                     "How was your conversation?",
@@ -297,6 +336,7 @@ async def relay_anonymous_message(message: Message, bot: Bot, state: FSMContext)
                 result = await end_active_session(session, user_id=user_id)
                 if result:
                     chat_session, _ = result
+                    reply_manager.clear_chat(user_id, partner_id)
                     await message.answer(
                         "⚠️ <b>Your partner has disconnected or left the chat.</b>\n\n"
                         "How was your conversation?",
