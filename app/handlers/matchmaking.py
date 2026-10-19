@@ -42,7 +42,7 @@ async def schedule_search_notice(bot: Bot, user_id: int) -> None:
                         "<b>Anonymous AUA</b> was recently released, so there might be fewer students active at this exact minute!\n\n"
                         "📢 <b>Help grow our campus community!</b>\n"
                         "Share the bot with your AUA classmates and group chats so more people join:\n"
-                        "👉 <b>https://t.me/aua_anonym_bot</b>\n\n"
+                        "👉 <b>https://t.me/aua_anonymous_bot</b>\n\n"
                         "The more students join, the faster matches happen! You remain in the search queue and will be connected as soon as someone joins.\n\n"
                         "<i>(Send /stop at any time to cancel)</i>"
                     ),
