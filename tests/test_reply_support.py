@@ -365,6 +365,210 @@ class TestAsyncRelayReplyHandler(unittest.IsolatedAsyncioTestCase):
         mock_bot.set_message_reaction.assert_awaited_once()
         reply_manager.clear_chat(user_a, user_b)
 
+    @patch("app.handlers.matchmaking.get_user")
+    @patch("app.handlers.matchmaking.get_db_session")
+    async def test_14_relay_edited_message_text(self, mock_get_db, mock_get_user):
+        """User A edits text message; partner B's corresponding message is edited in real-time."""
+        user_a = 7001
+        user_b = 8002
+
+        reply_manager.clear_chat(user_a, user_b)
+        # User A sent msg 10, which User B received as msg 20
+        reply_manager.register_message(
+            sender_id=user_a,
+            sender_msg_id=10,
+            receiver_id=user_b,
+            receiver_msg_id=20,
+        )
+
+        mock_db_user = MagicMock()
+        mock_db_user.current_partner_id = user_b
+        mock_get_user.return_value = mock_db_user
+
+        mock_bot = MagicMock(spec=Bot)
+        mock_bot.edit_message_text = AsyncMock(return_value=True)
+
+        mock_state = MagicMock()
+        mock_state.get_state = AsyncMock(return_value=None)
+
+        msg = MagicMock(spec=Message)
+        msg.from_user = MagicMock(spec=TgUser)
+        msg.from_user.id = user_a
+        msg.message_id = 10
+        msg.text = "Hey, let's meet at PAB!"
+        msg.entities = []
+        msg.caption = None
+        msg.photo = None
+        msg.video = None
+        msg.document = None
+        msg.audio = None
+        msg.animation = None
+        msg.voice = None
+
+        from app.handlers.matchmaking import relay_edited_message
+        await relay_edited_message(message=msg, bot=mock_bot, state=mock_state)
+
+        mock_bot.edit_message_text.assert_awaited_once_with(
+            text="Hey, let's meet at PAB!",
+            chat_id=user_b,
+            message_id=20,
+            entities=[],
+            parse_mode=None,
+        )
+
+        reply_manager.clear_chat(user_a, user_b)
+
+    @patch("app.handlers.matchmaking.get_user")
+    @patch("app.handlers.matchmaking.get_db_session")
+    async def test_15_relay_edited_message_caption(self, mock_get_db, mock_get_user):
+        """User A edits media caption; partner B's corresponding media caption is edited."""
+        user_a = 7001
+        user_b = 8002
+
+        reply_manager.clear_chat(user_a, user_b)
+        reply_manager.register_message(
+            sender_id=user_a,
+            sender_msg_id=11,
+            receiver_id=user_b,
+            receiver_msg_id=21,
+        )
+
+        mock_db_user = MagicMock()
+        mock_db_user.current_partner_id = user_b
+        mock_get_user.return_value = mock_db_user
+
+        mock_bot = MagicMock(spec=Bot)
+        mock_bot.edit_message_caption = AsyncMock(return_value=True)
+
+        mock_state = MagicMock()
+        mock_state.get_state = AsyncMock(return_value=None)
+
+        msg = MagicMock(spec=Message)
+        msg.from_user = MagicMock(spec=TgUser)
+        msg.from_user.id = user_a
+        msg.message_id = 11
+        msg.text = None
+        msg.caption = "Updated photo caption!"
+        msg.caption_entities = []
+        msg.photo = [MagicMock()]
+        msg.video = None
+        msg.document = None
+        msg.audio = None
+        msg.animation = None
+        msg.voice = None
+
+        from app.handlers.matchmaking import relay_edited_message
+        await relay_edited_message(message=msg, bot=mock_bot, state=mock_state)
+
+        mock_bot.edit_message_caption.assert_awaited_once_with(
+            caption="Updated photo caption!",
+            chat_id=user_b,
+            message_id=21,
+            caption_entities=[],
+            parse_mode=None,
+        )
+
+        reply_manager.clear_chat(user_a, user_b)
+
+    @patch("app.handlers.matchmaking.get_user")
+    @patch("app.handlers.matchmaking.get_db_session")
+    async def test_16_relay_edited_message_unmapped_ignored(self, mock_get_db, mock_get_user):
+        """Editing an unmapped message (e.g. system bot message) is safely ignored."""
+        user_a = 7001
+        user_b = 8002
+
+        reply_manager.clear_chat(user_a, user_b)
+        mock_db_user = MagicMock()
+        mock_db_user.current_partner_id = user_b
+        mock_get_user.return_value = mock_db_user
+
+        mock_bot = MagicMock(spec=Bot)
+        mock_bot.edit_message_text = AsyncMock()
+        mock_bot.edit_message_caption = AsyncMock()
+
+        mock_state = MagicMock()
+        mock_state.get_state = AsyncMock(return_value=None)
+
+        msg = MagicMock(spec=Message)
+        msg.from_user = MagicMock(spec=TgUser)
+        msg.from_user.id = user_a
+        msg.message_id = 999999
+        msg.text = "Some edit"
+        msg.entities = []
+
+        from app.handlers.matchmaking import relay_edited_message
+        await relay_edited_message(message=msg, bot=mock_bot, state=mock_state)
+
+        mock_bot.edit_message_text.assert_not_called()
+        mock_bot.edit_message_caption.assert_not_called()
+
+    @patch("app.handlers.matchmaking.get_user")
+    @patch("app.handlers.matchmaking.get_db_session")
+    async def test_17_relay_edited_message_no_partner_ignored(self, mock_get_db, mock_get_user):
+        """Editing message when user is not in an active chat is ignored."""
+        user_a = 7001
+        mock_db_user = MagicMock()
+        mock_db_user.current_partner_id = None
+        mock_get_user.return_value = mock_db_user
+
+        mock_bot = MagicMock(spec=Bot)
+        mock_bot.edit_message_text = AsyncMock()
+
+        mock_state = MagicMock()
+        mock_state.get_state = AsyncMock(return_value=None)
+
+        msg = MagicMock(spec=Message)
+        msg.from_user = MagicMock(spec=TgUser)
+        msg.from_user.id = user_a
+        msg.message_id = 10
+        msg.text = "Hello"
+
+        from app.handlers.matchmaking import relay_edited_message
+        await relay_edited_message(message=msg, bot=mock_bot, state=mock_state)
+
+        mock_bot.edit_message_text.assert_not_called()
+
+    @patch("app.handlers.matchmaking.get_user")
+    @patch("app.handlers.matchmaking.get_db_session")
+    async def test_18_relay_edited_message_not_modified_error_handled(self, mock_get_db, mock_get_user):
+        """TelegramBadRequest with 'message is not modified' is caught and handled cleanly."""
+        user_a = 7001
+        user_b = 8002
+
+        reply_manager.clear_chat(user_a, user_b)
+        reply_manager.register_message(
+            sender_id=user_a,
+            sender_msg_id=12,
+            receiver_id=user_b,
+            receiver_msg_id=22,
+        )
+
+        mock_db_user = MagicMock()
+        mock_db_user.current_partner_id = user_b
+        mock_get_user.return_value = mock_db_user
+
+        mock_bot = MagicMock(spec=Bot)
+        mock_bot.edit_message_text = AsyncMock(
+            side_effect=TelegramBadRequest(method="EditMessageText", message="Bad Request: message is not modified")
+        )
+
+        mock_state = MagicMock()
+        mock_state.get_state = AsyncMock(return_value=None)
+
+        msg = MagicMock(spec=Message)
+        msg.from_user = MagicMock(spec=TgUser)
+        msg.from_user.id = user_a
+        msg.message_id = 12
+        msg.text = "Same text"
+        msg.entities = []
+
+        from app.handlers.matchmaking import relay_edited_message
+        # Should not raise exception
+        await relay_edited_message(message=msg, bot=mock_bot, state=mock_state)
+
+        mock_bot.edit_message_text.assert_awaited_once()
+        reply_manager.clear_chat(user_a, user_b)
+
 
 if __name__ == "__main__":
     unittest.main()

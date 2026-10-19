@@ -421,3 +421,102 @@ async def relay_message_reaction(event: MessageReactionUpdated, bot: Bot) -> Non
     except Exception as e:
         logger.exception("Unexpected error relaying reaction: %s", e)
 
+
+@router.edited_message()
+async def relay_edited_message(message: Message, bot: Bot, state: FSMContext) -> None:
+    """Relay message edits (text or media captions) anonymously to partner."""
+    # If user is in an active FSM state (like reporting reason or admin penalty), do not relay
+    current_state = await state.get_state()
+    if current_state is not None:
+        return
+
+    # Ignore command edits
+    if message.text and message.text.startswith("/"):
+        return
+
+    if not message.from_user:
+        return
+
+    user_id = message.from_user.id
+
+    async with get_db_session() as session:
+        db_user = await get_user(session, user_id=user_id)
+        if not db_user or not db_user.current_partner_id:
+            return
+        partner_id = db_user.current_partner_id
+
+    # Resolve corresponding message ID in partner's chat
+    target_msg_id = reply_manager.get_target_message_id(
+        sender_id=user_id,
+        partner_id=partner_id,
+        replied_msg_id=message.message_id,
+    )
+    if not target_msg_id:
+        logger.debug(
+            "Edited message ignored: no mapped partner message for user %s, msg %s",
+            user_id,
+            message.message_id,
+        )
+        return
+
+    try:
+        if message.text is not None:
+            await bot.edit_message_text(
+                text=message.text,
+                chat_id=partner_id,
+                message_id=target_msg_id,
+                entities=message.entities,
+                parse_mode=None,
+            )
+            logger.info(
+                "Relayed edited text from user %s to partner %s (msg %s -> target %s)",
+                user_id,
+                partner_id,
+                message.message_id,
+                target_msg_id,
+            )
+        elif message.caption is not None or any([
+            message.photo,
+            message.video,
+            message.document,
+            message.audio,
+            message.animation,
+            message.voice,
+        ]):
+            await bot.edit_message_caption(
+                caption=message.caption or "",
+                chat_id=partner_id,
+                message_id=target_msg_id,
+                caption_entities=message.caption_entities,
+                parse_mode=None,
+            )
+            logger.info(
+                "Relayed edited caption from user %s to partner %s (msg %s -> target %s)",
+                user_id,
+                partner_id,
+                message.message_id,
+                target_msg_id,
+            )
+    except TelegramBadRequest as e:
+        err_msg = str(e).lower()
+        if "message is not modified" in err_msg:
+            logger.debug("Edit ignored: message content unchanged for partner %s msg %s", partner_id, target_msg_id)
+        elif any(term in err_msg for term in ["chat not found", "user is deactivated", "bot was blocked"]):
+            logger.warning("Partner %s unavailable during edit (%s): %s", partner_id, err_msg, e)
+        else:
+            logger.warning(
+                "Could not edit message for partner %s on msg %s: %s",
+                partner_id,
+                target_msg_id,
+                e,
+            )
+    except TelegramAPIError as e:
+        logger.error(
+            "Telegram API error editing message for partner %s: %s",
+            partner_id,
+            e,
+        )
+    except Exception as e:
+        logger.exception("Unexpected error relaying edited message: %s", e)
+
+
