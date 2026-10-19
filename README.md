@@ -50,8 +50,9 @@ University life is filled with incredible people, yet meeting compatible peers o
 - **Custom Matching Preferences (`/preferences`)**: Interactive inline checkboxes allow users to talk to any sex and orientation without LGBT flags in the menu. Matches only occur when **both** students' preferences mutually match.
 - **Bisexual Compatibility Engine**: Seamlessly matches bisexual students with compatible opposite-sex partners (straight or bisexual) or same-sex partners (gay/lesbian or bisexual).
 - **Hidden Priority Matchmaking**: Uses row-level database locking (`with_for_update(skip_locked=True)`) to pair users with the closest reputation score (`ABS(candidate.priority - user.priority) ASC`), ensuring high-quality users match with each other. The priority score is kept invisible to students to prevent gamification.
-- **Full Media Relay & Native Reply Support**: Intercepts and anonymously forwards text, photos, voice messages, stickers, video notes, and documents using Telegram's native `copy_to` API.
+- **Full Media Relay, Native Replies & Emoji Reactions**: Intercepts and anonymously forwards text, photos, voice messages, stickers, video notes, and documents using Telegram's native `copy_to` API.
 - **Native Telegram Reply Support**: Students can swipe right or tap **Reply** on any message. The bot dynamically translates message IDs between the two private chats and delivers replies with native Telegram quote bubbles pointing to the partner's exact message (supports partner replies and self-quotes).
+- **Emoji Reactions Mirroring**: When a student reacts with an emoji (e.g. 👍, ❤️, 🔥, 😂) to a message or removes a reaction, the bot listens to `MessageReactionUpdated` and instantly mirrors the exact reaction onto the partner's corresponding message via `set_message_reaction`.
 - **Smart Engagement Engine**:
   - Automatically notifies users after 30 seconds of searching, explaining that the bot is new and inviting them to share the bot link with classmates.
   - Prompts students for bot improvement ideas after every 2 completed sessions (throttled to at most once per day).
@@ -103,14 +104,19 @@ flowchart TD
     G -- No --> I["Set user.is_searching=True\nStart 30s Share Timer"]
 ```
 
-### 3. Anonymous Media & Message Relay with Native Replies
+### 3. Anonymous Media, Message Relay, Native Replies & Reactions
 Once connected, any message sent by either student (text, photo, voice note, round video, sticker) is stripped of sender identity and cleanly copied to the partner's chat.
 
 - **Native Telegram Replies**:
   - When a student swipes right or taps **Reply** on any message, the bot matches the corresponding message ID in the partner's chat and delivers the response with a native Telegram quote bubble.
   - Supports replying to the partner's messages as well as self-quoting previous messages.
   - Features graceful fallbacks (`allow_sending_without_reply=True`) so messages are always reliably delivered even if a quoted message was deleted.
-  - Mappings are held in memory per active chat session and automatically cleared upon session teardown to protect privacy.
+- **Emoji Reactions Mirroring**:
+  - Supports live Telegram emoji reactions (👍, ❤️, 🔥, 😂, etc.).
+  - When a user adds, modifies, or removes a reaction on any message in their chat with the bot, the bot automatically finds the partner's corresponding message and updates the reaction in real-time.
+- **Privacy & Memory Safety**:
+  - Mappings are held in a bounded in-memory FIFO cache (`ReplyManager`, up to 400 messages per conversation). No message text or contents are ever stored in the database.
+  - Mappings are automatically purged when the chat session ends (`/stop`, `/next`, or disconnect).
 
 If either user blocks the bot or leaves, the session automatically terminates, and both participants receive a prompt to rate the conversation.
 

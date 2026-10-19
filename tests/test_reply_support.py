@@ -1,11 +1,12 @@
 """Test suite for anonymous chat replied message support."""
 
 import asyncio
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 import unittest
 
+from aiogram import Bot
 from aiogram.exceptions import TelegramBadRequest
-from aiogram.types import Message, ReplyParameters, User as TgUser
+from aiogram.types import Message, MessageReactionUpdated, ReactionTypeEmoji, ReplyParameters, User as TgUser
 
 from app.services.reply_manager import ChatReplyMap, ReplyManager, reply_manager
 
@@ -144,7 +145,7 @@ class TestReplySupport(unittest.TestCase):
 
 
 class TestAsyncRelayReplyHandler(unittest.IsolatedAsyncioTestCase):
-    """Integration test for aiogram message copy with ReplyParameters."""
+    """Integration test for aiogram message copy with ReplyParameters and emoji reactions."""
 
     async def test_08_copy_to_with_reply_parameters(self):
         """Verify copy_to call passes ReplyParameters with allow_sending_without_reply=True."""
@@ -196,6 +197,173 @@ class TestAsyncRelayReplyHandler(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(next_target, 89)
 
         reply_manager.clear_chat(111, 222)
+
+    @patch("app.handlers.matchmaking.get_user")
+    @patch("app.handlers.matchmaking.get_db_session")
+    async def test_09_relay_message_reaction_add(self, mock_get_db, mock_get_user):
+        """User A adds emoji reaction to B's message; bot relays reaction onto B's message."""
+        user_a = 5001
+        user_b = 6002
+
+        reply_manager.clear_chat(user_a, user_b)
+        # B sent msg 200, which A received as msg 100
+        reply_manager.register_message(
+            sender_id=user_b,
+            sender_msg_id=200,
+            receiver_id=user_a,
+            receiver_msg_id=100,
+        )
+
+        mock_db_user = MagicMock()
+        mock_db_user.current_partner_id = user_b
+        mock_get_user.return_value = mock_db_user
+
+        mock_bot = MagicMock(spec=Bot)
+        mock_bot.set_message_reaction = AsyncMock(return_value=True)
+
+        reaction = ReactionTypeEmoji(emoji="🔥")
+        event = MagicMock(spec=MessageReactionUpdated)
+        event.user = MagicMock(spec=TgUser)
+        event.user.id = user_a
+        event.message_id = 100
+        event.new_reaction = [reaction]
+
+        from app.handlers.matchmaking import relay_message_reaction
+        await relay_message_reaction(event=event, bot=mock_bot)
+
+        # Target in B's chat for msg 100 in A's chat is 200
+        mock_bot.set_message_reaction.assert_awaited_once_with(
+            chat_id=user_b,
+            message_id=200,
+            reaction=[reaction],
+        )
+
+        reply_manager.clear_chat(user_a, user_b)
+
+    @patch("app.handlers.matchmaking.get_user")
+    @patch("app.handlers.matchmaking.get_db_session")
+    async def test_10_relay_message_reaction_remove(self, mock_get_db, mock_get_user):
+        """User A removes reaction (new_reaction=[]); bot clears reaction on B's message."""
+        user_a = 5001
+        user_b = 6002
+
+        reply_manager.clear_chat(user_a, user_b)
+        reply_manager.register_message(
+            sender_id=user_b,
+            sender_msg_id=300,
+            receiver_id=user_a,
+            receiver_msg_id=150,
+        )
+
+        mock_db_user = MagicMock()
+        mock_db_user.current_partner_id = user_b
+        mock_get_user.return_value = mock_db_user
+
+        mock_bot = MagicMock(spec=Bot)
+        mock_bot.set_message_reaction = AsyncMock(return_value=True)
+
+        event = MagicMock(spec=MessageReactionUpdated)
+        event.user = MagicMock(spec=TgUser)
+        event.user.id = user_a
+        event.message_id = 150
+        event.new_reaction = []
+
+        from app.handlers.matchmaking import relay_message_reaction
+        await relay_message_reaction(event=event, bot=mock_bot)
+
+        mock_bot.set_message_reaction.assert_awaited_once_with(
+            chat_id=user_b,
+            message_id=300,
+            reaction=[],
+        )
+
+        reply_manager.clear_chat(user_a, user_b)
+
+    @patch("app.handlers.matchmaking.get_user")
+    @patch("app.handlers.matchmaking.get_db_session")
+    async def test_11_relay_message_reaction_unmapped_message(self, mock_get_db, mock_get_user):
+        """Reaction on unmapped/system message is ignored without calling Telegram API."""
+        user_a = 5001
+        user_b = 6002
+
+        reply_manager.clear_chat(user_a, user_b)
+        mock_db_user = MagicMock()
+        mock_db_user.current_partner_id = user_b
+        mock_get_user.return_value = mock_db_user
+
+        mock_bot = MagicMock(spec=Bot)
+        mock_bot.set_message_reaction = AsyncMock()
+
+        event = MagicMock(spec=MessageReactionUpdated)
+        event.user = MagicMock(spec=TgUser)
+        event.user.id = user_a
+        event.message_id = 999999  # Unmapped message
+        event.new_reaction = [ReactionTypeEmoji(emoji="👍")]
+
+        from app.handlers.matchmaking import relay_message_reaction
+        await relay_message_reaction(event=event, bot=mock_bot)
+
+        mock_bot.set_message_reaction.assert_not_called()
+
+    @patch("app.handlers.matchmaking.get_user")
+    @patch("app.handlers.matchmaking.get_db_session")
+    async def test_12_relay_message_reaction_no_active_chat(self, mock_get_db, mock_get_user):
+        """Reaction when user is not connected to a partner is cleanly ignored."""
+        user_a = 5001
+        mock_db_user = MagicMock()
+        mock_db_user.current_partner_id = None
+        mock_get_user.return_value = mock_db_user
+
+        mock_bot = MagicMock(spec=Bot)
+        mock_bot.set_message_reaction = AsyncMock()
+
+        event = MagicMock(spec=MessageReactionUpdated)
+        event.user = MagicMock(spec=TgUser)
+        event.user.id = user_a
+        event.message_id = 100
+        event.new_reaction = [ReactionTypeEmoji(emoji="❤️")]
+
+        from app.handlers.matchmaking import relay_message_reaction
+        await relay_message_reaction(event=event, bot=mock_bot)
+
+        mock_bot.set_message_reaction.assert_not_called()
+
+    @patch("app.handlers.matchmaking.get_user")
+    @patch("app.handlers.matchmaking.get_db_session")
+    async def test_13_relay_message_reaction_api_error_handled(self, mock_get_db, mock_get_user):
+        """Telegram API errors (e.g. invalid reaction or old msg) are caught and logged without raising."""
+        user_a = 5001
+        user_b = 6002
+
+        reply_manager.clear_chat(user_a, user_b)
+        reply_manager.register_message(
+            sender_id=user_b,
+            sender_msg_id=400,
+            receiver_id=user_a,
+            receiver_msg_id=200,
+        )
+
+        mock_db_user = MagicMock()
+        mock_db_user.current_partner_id = user_b
+        mock_get_user.return_value = mock_db_user
+
+        mock_bot = MagicMock(spec=Bot)
+        mock_bot.set_message_reaction = AsyncMock(
+            side_effect=TelegramBadRequest(method="SetMessageReaction", message="REACTION_INVALID")
+        )
+
+        event = MagicMock(spec=MessageReactionUpdated)
+        event.user = MagicMock(spec=TgUser)
+        event.user.id = user_a
+        event.message_id = 200
+        event.new_reaction = [ReactionTypeEmoji(emoji="custom")]
+
+        from app.handlers.matchmaking import relay_message_reaction
+        # Should not raise exception
+        await relay_message_reaction(event=event, bot=mock_bot)
+
+        mock_bot.set_message_reaction.assert_awaited_once()
+        reply_manager.clear_chat(user_a, user_b)
 
 
 if __name__ == "__main__":

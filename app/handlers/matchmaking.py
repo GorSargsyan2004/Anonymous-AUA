@@ -11,7 +11,7 @@ from aiogram.exceptions import (
 )
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
-from aiogram.types import Message, ReplyParameters
+from aiogram.types import Message, MessageReactionUpdated, ReplyParameters
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database.crud import (
@@ -359,3 +359,65 @@ async def relay_anonymous_message(message: Message, bot: Bot, state: FSMContext)
             )
         except Exception as e:
             logger.error("Unexpected error while relaying from %s to %s: %s", user_id, partner_id, e)
+
+
+@router.message_reaction()
+async def relay_message_reaction(event: MessageReactionUpdated, bot: Bot) -> None:
+    """Relay emoji reactions on messages between connected anonymous partners."""
+    user = event.user
+    if not user:
+        return
+
+    user_id = user.id
+
+    async with get_db_session() as session:
+        db_user = await get_user(session, user_id=user_id)
+        if not db_user or not db_user.current_partner_id:
+            return
+        partner_id = db_user.current_partner_id
+
+    # Find corresponding message ID in partner's chat
+    target_msg_id = reply_manager.get_target_message_id(
+        sender_id=user_id,
+        partner_id=partner_id,
+        replied_msg_id=event.message_id,
+    )
+    if not target_msg_id:
+        logger.debug(
+            "Reaction ignored: no mapped partner message for user %s, msg %s",
+            user_id,
+            event.message_id,
+        )
+        return
+
+    try:
+        # Pass new_reaction (empty list removes/clears reaction on Telegram)
+        reaction_to_set = event.new_reaction if event.new_reaction is not None else []
+        await bot.set_message_reaction(
+            chat_id=partner_id,
+            message_id=target_msg_id,
+            reaction=reaction_to_set,
+        )
+        logger.info(
+            "Relayed reaction from user %s to partner %s on msg %s (target %s)",
+            user_id,
+            partner_id,
+            event.message_id,
+            target_msg_id,
+        )
+    except TelegramBadRequest as e:
+        logger.warning(
+            "Could not set reaction for partner %s on msg %s: %s",
+            partner_id,
+            target_msg_id,
+            e,
+        )
+    except TelegramAPIError as e:
+        logger.error(
+            "Telegram API error setting reaction for partner %s: %s",
+            partner_id,
+            e,
+        )
+    except Exception as e:
+        logger.exception("Unexpected error relaying reaction: %s", e)
+
