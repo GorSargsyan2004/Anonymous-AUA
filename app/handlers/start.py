@@ -1,5 +1,4 @@
-"""Start command, onboarding flow, and suggestion command handlers."""
-
+import html
 from aiogram import F, Router
 from aiogram.filters import Command, CommandStart
 from aiogram.fsm.context import FSMContext
@@ -49,8 +48,9 @@ async def handle_start(message: Message, state: FSMContext) -> None:
         # 3. Profile already complete
         if user.sex and user.orientation:
             await state.clear()
+            safe_name = html.escape(message.from_user.first_name or "Student")
             await message.answer(
-                f"👋 <b>Welcome back to Anonymous AUA Chat, {message.from_user.first_name}!</b> 🇦🇲🦅\n\n"
+                f"👋 <b>Welcome back to Anonymous AUA Chat, {safe_name}!</b> 🇦🇲🦅\n\n"
                 f"👤 <b>Your Profile:</b>\n"
                 f"• Sex: <b>{user.sex.capitalize()}</b>\n"
                 f"• Orientation: <b>{user.orientation.capitalize()}</b>\n\n"

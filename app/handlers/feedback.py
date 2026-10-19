@@ -1,5 +1,4 @@
-"""Feedback rating handlers and report/suggestion submission workflow."""
-
+import html
 import logging
 from aiogram import Bot, F, Router
 from aiogram.exceptions import TelegramAPIError
@@ -140,14 +139,18 @@ async def handle_suggestion_input(message: Message, bot: Bot, state: FSMContext)
         parse_mode="HTML",
     )
 
-    # Forward suggestion to all administrators
+    # Forward suggestion to all administrators (escape user-controlled content)
+    safe_full_name = html.escape(full_name or "AUA Student")
+    safe_username = html.escape(username or "N/A")
+    safe_suggestion = html.escape(suggestion_text)
+
     admin_text = (
         f"💡 <b>NEW STUDENT SUGGESTION #{suggestion.id}</b>\n"
         "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
         f"• <b>Student ID:</b> <code>{user_id}</code>\n"
-        f"• <b>Telegram:</b> @{username or 'N/A'} ({full_name})\n\n"
+        f"• <b>Telegram:</b> @{safe_username} ({safe_full_name})\n\n"
         f"📝 <b>Suggestion / Feedback:</b>\n"
-        f"<i>\"{suggestion_text}\"</i>\n"
+        f"<i>\"{safe_suggestion}\"</i>\n"
         "━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     )
 
@@ -223,15 +226,18 @@ async def handle_report_reason(message: Message, bot: Bot, state: FSMContext) ->
         parse_mode="HTML",
     )
 
-    # Notify all administrators (priority is visible only to admins)
+    # Notify all administrators (priority is visible only to admins, escape user text)
+    safe_reporter_username = html.escape(message.from_user.username or "N/A")
+    safe_reason = html.escape(reason_text)
+
     admin_text = (
         f"🚨 <b>NEW USER REPORT #{report.id}</b>\n"
         "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
         f"• <b>Session ID:</b> #{session_id}\n"
-        f"• <b>Reporter:</b> <code>{reporter_id}</code> (@{message.from_user.username or 'N/A'})\n"
+        f"• <b>Reporter:</b> <code>{reporter_id}</code> (@{safe_reporter_username})\n"
         f"• <b>Reported User:</b> <code>{reported_id}</code>\n"
         f"• <b>Current Priority:</b> {current_priority}/100\n\n"
-        f"📝 <b>Reason:</b>\n{reason_text}\n"
+        f"📝 <b>Reason:</b>\n{safe_reason}\n"
         "━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     )
 

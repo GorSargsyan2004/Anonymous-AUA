@@ -1,5 +1,6 @@
 """Admin-only handlers for statistics dashboard, report reviews, and suggestion replies."""
 
+import html
 import logging
 from aiogram import Bot, F, Router
 from aiogram.exceptions import TelegramAPIError
@@ -187,11 +188,12 @@ async def handle_admin_reply_text(message: Message, bot: Bot, state: FSMContext)
     async with get_db_session() as session:
         await reply_to_suggestion(session, suggestion_id=suggestion_id, reply_text=reply_text)
 
-    # Deliver to student
+    # Deliver to student (escape html formatting)
+    safe_reply = html.escape(reply_text)
     student_msg = (
         "📬 <b>Message from AUA Bot Administration:</b>\n"
         "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"<i>\"{reply_text}\"</i>\n"
+        f"<i>\"{safe_reply}\"</i>\n"
         "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
         "Thank you for helping us improve Anonymous AUA! 🦅🇦🇲"
     )
@@ -201,7 +203,7 @@ async def handle_admin_reply_text(message: Message, bot: Bot, state: FSMContext)
         await message.reply(
             f"✅ <b>Reply successfully sent to student <code>{target_user_id}</code>!</b>\n\n"
             f"• <b>Suggestion ID:</b> #{suggestion_id}\n"
-            f"• <b>Content:</b>\n<i>\"{reply_text}\"</i>",
+            f"• <b>Content:</b>\n<i>\"{safe_reply}\"</i>",
             parse_mode="HTML",
         )
     except TelegramAPIError as e:

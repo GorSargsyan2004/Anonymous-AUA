@@ -38,6 +38,22 @@ async def setup_bot_commands(bot: Bot) -> None:
     await bot.set_my_commands(commands, scope=BotCommandScopeDefault())
 
 
+async def setup_bot_profile(bot: Bot) -> None:
+    """Enforce official bot name, description, and short description on startup to prevent hijacking."""
+    try:
+        await bot.set_my_name("AUA Anonymous Chat")
+        await bot.set_my_description(
+            "Official Anonymous Chat Bot for students of the American University of Armenia (AUA). "
+            "Connect anonymously, make campus friends, and chat safely. 🦅🇦🇲"
+        )
+        await bot.set_my_short_description(
+            "Anonymous Chat Bot exclusively for AUA students. 🦅🇦🇲"
+        )
+        logger.info("Bot profile (name and description) verified and enforced.")
+    except Exception as e:
+        logger.warning("Could not enforce bot profile: %s", e)
+
+
 
 async def main() -> None:
     """Main application lifecycle runner."""
@@ -71,11 +87,12 @@ async def main() -> None:
     # 4. Register all route handlers
     register_handlers(dp)
 
-    # 5. Set Telegram UI commands
+    # 5. Set Telegram UI commands and enforce legitimate bot profile
     try:
         await setup_bot_commands(bot)
+        await setup_bot_profile(bot)
     except Exception as e:
-        logger.warning("Could not set bot commands: %s", e)
+        logger.warning("Could not set bot commands or profile: %s", e)
 
     # 6. Start Polling (preserve pending updates so messages sent during restart are not lost)
     logger.info("Starting polling with admin IDs: %s", settings.ADMIN_IDS)
