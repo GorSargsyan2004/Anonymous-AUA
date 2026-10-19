@@ -113,6 +113,79 @@ async def get_active_session_by_user_id(
     return result.scalar_one_or_none()
 
 
+async def sync_active_sessions_on_startup(session: AsyncSession) -> int:
+    """Verify, synchronize, and preserve active chat sessions on bot startup.
+
+    1. Loads all ChatSessions where is_active=True.
+    2. Ensures user1 and user2 both have current_partner_id correctly pointing to
+       each other, and that neither is stuck in is_searching=True.
+    3. If an active session is orphaned (e.g., one user deleted), safely closes it.
+    4. Cleans up any dangling User.current_partner_id that lacks an active session.
+
+    Returns:
+        int: Number of verified active chat sessions preserved across restart.
+    """
+    stmt = select(ChatSession).where(ChatSession.is_active == True)  # noqa: E712
+    result = await session.execute(stmt)
+    active_sessions = result.scalars().all()
+
+    verified_count = 0
+    active_user_ids = set()
+
+    now_utc = datetime.now(timezone.utc)
+
+    for cs in active_sessions:
+        u1_stmt = select(User).where(User.id == cs.user1_id).with_for_update()
+        u2_stmt = select(User).where(User.id == cs.user2_id).with_for_update()
+        u1 = (await session.execute(u1_stmt)).scalar_one_or_none()
+        u2 = (await session.execute(u2_stmt)).scalar_one_or_none()
+
+        if u1 is None or u2 is None:
+            # Orphaned session - close it cleanly
+            cs.is_active = False
+            cs.ended_at = now_utc
+            if u1:
+                u1.current_partner_id = None
+                u1.is_searching = False
+            if u2:
+                u2.current_partner_id = None
+                u2.is_searching = False
+        else:
+            # Re-affirm bidirectional partnership and search flags
+            u1.current_partner_id = u2.id
+            u1.is_searching = False
+            u2.current_partner_id = u1.id
+            u2.is_searching = False
+            active_user_ids.add(u1.id)
+            active_user_ids.add(u2.id)
+            verified_count += 1
+
+    # Clean up any users that have current_partner_id set but are not in active sessions
+    if active_user_ids:
+        dangling_stmt = (
+            select(User)
+            .where(
+                User.current_partner_id.is_not(None),
+                User.id.not_in(list(active_user_ids)),
+            )
+            .with_for_update()
+        )
+    else:
+        dangling_stmt = (
+            select(User)
+            .where(User.current_partner_id.is_not(None))
+            .with_for_update()
+        )
+
+    dangling_users = (await session.execute(dangling_stmt)).scalars().all()
+    for du in dangling_users:
+        du.current_partner_id = None
+        du.is_searching = False
+
+    await session.commit()
+    return verified_count
+
+
 async def end_active_session(
     session: AsyncSession,
     user_id: int,
@@ -397,6 +470,9 @@ async def get_admin_stats(session: AsyncSession) -> Dict[str, Any]:
     straight_count = (
         await session.execute(select(func.count(User.id)).where(User.orientation == "straight"))
     ).scalar_one() or 0
+    bisexual_count = (
+        await session.execute(select(func.count(User.id)).where(User.orientation == "bisexual"))
+    ).scalar_one() or 0
     lesbian_count = (
         await session.execute(select(func.count(User.id)).where(User.orientation == "lesbian"))
     ).scalar_one() or 0
@@ -446,6 +522,7 @@ async def get_admin_stats(session: AsyncSession) -> Dict[str, Any]:
         "female_count": female_count,
         "unset_sex_count": unset_sex_count,
         "straight_count": straight_count,
+        "bisexual_count": bisexual_count,
         "lesbian_count": lesbian_count,
         "gay_count": gay_count,
         "likes_count": likes_count,

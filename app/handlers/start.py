@@ -22,7 +22,31 @@ async def handle_start(message: Message, state: FSMContext) -> None:
     async with get_db_session() as session:
         user = await get_or_create_user(session, user_id=user_id, username=username)
 
-        # Profile already complete
+        # 1. User is currently connected in an active anonymous chat
+        if user.current_partner_id is not None:
+            await state.clear()
+            await message.answer(
+                "💬 <b>You are currently in an active anonymous chat!</b> 🦅🇦🇲\n\n"
+                "Your connection is active. Any message you send here will be delivered to your partner.\n\n"
+                "⚡ <b>Commands:</b>\n"
+                "• /next — Skip to the next partner\n"
+                "• /stop — End this chat\n"
+                "• /suggestion — Send feedback or ideas to admins",
+                parse_mode="HTML",
+            )
+            return
+
+        # 2. User is currently waiting in the search queue
+        if user.is_searching:
+            await state.clear()
+            await message.answer(
+                "🔍 <b>You are currently in the search queue...</b> 🦅🇦🇲\n\n"
+                "Please wait while we connect you with a compatible partner, or send /stop to cancel.",
+                parse_mode="HTML",
+            )
+            return
+
+        # 3. Profile already complete
         if user.sex and user.orientation:
             await state.clear()
             await message.answer(
@@ -41,7 +65,7 @@ async def handle_start(message: Message, state: FSMContext) -> None:
             )
             return
 
-    # User needs onboarding
+    # 4. User needs onboarding
     await state.set_state(OnboardingState.waiting_for_sex)
     await message.answer(
         "🇦🇲 <b>Welcome to Anonymous AUA Chat!</b> 🦅\n\n"
@@ -56,6 +80,17 @@ async def handle_start(message: Message, state: FSMContext) -> None:
 @router.message(Command("profile"))
 async def handle_profile_reset(message: Message, state: FSMContext) -> None:
     """Allow user to update their sex and orientation."""
+    user_id = message.from_user.id
+    async with get_db_session() as session:
+        user = await get_or_create_user(session, user_id=user_id)
+        if user.current_partner_id is not None:
+            await message.answer(
+                "⚠️ <b>Cannot update profile during an active chat!</b>\n\n"
+                "Please end your current chat with /stop before updating your profile.",
+                parse_mode="HTML",
+            )
+            return
+
     await state.set_state(OnboardingState.waiting_for_sex)
     await message.answer(
         "⚙️ <b>Profile Settings</b>\n\n"
@@ -63,6 +98,29 @@ async def handle_profile_reset(message: Message, state: FSMContext) -> None:
         reply_markup=get_sex_keyboard(),
         parse_mode="HTML",
     )
+
+
+@router.message(Command("cancel"))
+async def handle_cancel(message: Message, state: FSMContext) -> None:
+    """Cancel any active input/FSM state without interrupting an active chat."""
+    current_state = await state.get_state()
+    await state.clear()
+    user_id = message.from_user.id
+
+    async with get_db_session() as session:
+        user = await get_or_create_user(session, user_id=user_id)
+        if user.current_partner_id is not None:
+            await message.answer(
+                "✅ <b>Action cancelled.</b>\n\n"
+                "You are still connected to your partner. Continue chatting! 🦅🇦🇲",
+                parse_mode="HTML",
+            )
+            return
+
+    if current_state:
+        await message.answer("✅ <b>Action cancelled.</b>", parse_mode="HTML")
+    else:
+        await message.answer("💬 No active action to cancel.", parse_mode="HTML")
 
 
 @router.message(Command("suggestion"))
@@ -73,7 +131,7 @@ async def handle_suggestion_command(message: Message, state: FSMContext) -> None
         "💡 <b>Send Us Your Suggestions & Feedback</b>\n\n"
         "Have an idea to improve the bot, found a bug, or want a new feature for AUA students?\n\n"
         "✍️ <i>Please write your message below and send it. Our administrative team will review it and reply back to you!</i>\n\n"
-        "<i>(Send /stop at any time to cancel)</i>",
+        "<i>(Send /cancel at any time to abort)</i>",
         parse_mode="HTML",
     )
 

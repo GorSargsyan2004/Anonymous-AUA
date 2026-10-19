@@ -11,7 +11,8 @@ from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import BotCommand, BotCommandScopeDefault
 
 from app.config import settings
-from app.database.session import init_db
+from app.database.crud import sync_active_sessions_on_startup
+from app.database.session import engine, get_db_session, init_db
 from app.handlers import register_handlers
 
 # Configure logging
@@ -32,6 +33,7 @@ async def setup_bot_commands(bot: Bot) -> None:
         BotCommand(command="stop", description="End current chat or search"),
         BotCommand(command="profile", description="Update sex or orientation"),
         BotCommand(command="suggestion", description="Send suggestions to improve the bot"),
+        BotCommand(command="cancel", description="Cancel current input / action"),
     ]
     await bot.set_my_commands(commands, scope=BotCommandScopeDefault())
 
@@ -41,11 +43,18 @@ async def main() -> None:
     """Main application lifecycle runner."""
     logger.info("Starting Anonymous AUA Bot...")
 
-    # 1. Initialize PostgreSQL tables
+    # 1. Initialize PostgreSQL tables and verify active chat sessions
     try:
         logger.info("Initializing database tables...")
         await init_db()
         logger.info("Database tables initialized successfully.")
+
+        async with get_db_session() as session:
+            active_count = await sync_active_sessions_on_startup(session)
+            logger.info(
+                "Active chat sessions verified: %d active session(s) preserved across restart.",
+                active_count,
+            )
     except Exception as e:
         logger.critical("Failed to initialize database: %s", e)
         sys.exit(1)
@@ -68,18 +77,20 @@ async def main() -> None:
     except Exception as e:
         logger.warning("Could not set bot commands: %s", e)
 
-    # 6. Start Polling
+    # 6. Start Polling (preserve pending updates so messages sent during restart are not lost)
     logger.info("Starting polling with admin IDs: %s", settings.ADMIN_IDS)
     try:
-        # Drop pending updates to avoid processing backlog on startup
-        await bot.delete_webhook(drop_pending_updates=True)
+        await bot.delete_webhook(drop_pending_updates=False)
         await dp.start_polling(
             bot,
             allowed_updates=dp.resolve_used_update_types(),
+            drop_pending_updates=False,
         )
     finally:
         logger.info("Closing bot session...")
         await bot.session.close()
+        logger.info("Disposing database engine...")
+        await engine.dispose()
         logger.info("Anonymous AUA Bot shut down cleanly.")
 
 

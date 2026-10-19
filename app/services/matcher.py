@@ -1,7 +1,7 @@
 """Compatibility matrix and matchmaking logic for Anonymous AUA Bot."""
 
 from typing import List, Optional, Tuple
-from sqlalchemy import func, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database.models import ChatSession, User
@@ -19,28 +19,46 @@ def normalize_orientation(sex: str, orientation: str) -> str:
     return orientation
 
 
-def get_compatible_criteria(sex: str, orientation: str) -> Tuple[str, List[str]]:
+def get_compatible_criteria(sex: str, orientation: str) -> List[Tuple[str, List[str]]]:
     """Determine the compatible partner sex and orientation(s) based on user profile.
 
     Compatibility rules:
-      - male + straight <-> female + straight
-      - female + straight <-> male + straight
-      - male + gay <-> male + gay
-      - female + lesbian <-> female + lesbian
+      - Straight male <-> Straight or Bisexual female
+      - Straight female <-> Straight or Bisexual male
+      - Gay male <-> Gay or Bisexual male
+      - Lesbian female <-> Lesbian or Bisexual female
+      - Bisexual male <-> (Straight or Bisexual female) OR (Gay or Bisexual male)
+      - Bisexual female <-> (Straight or Bisexual male) OR (Lesbian or Bisexual female)
     """
     sex = sex.lower().strip()
     normalized_orient = normalize_orientation(sex, orientation)
 
-    if sex == "male":
-        if normalized_orient == "straight":
-            return "female", ["straight"]
-        # Gay / male seeking male
-        return "male", ["gay", "lesbian"]
-    else:  # female
-        if normalized_orient == "straight":
-            return "male", ["straight"]
-        # Lesbian / female seeking female
-        return "female", ["lesbian", "gay"]
+    if normalized_orient == "straight":
+        if sex == "male":
+            return [("female", ["straight", "bisexual"])]
+        else:
+            return [("male", ["straight", "bisexual"])]
+
+    elif normalized_orient in ("gay", "lesbian"):
+        if sex == "male":
+            return [("male", ["gay", "lesbian", "bisexual"])]
+        else:
+            return [("female", ["lesbian", "gay", "bisexual"])]
+
+    elif normalized_orient == "bisexual":
+        if sex == "male":
+            return [
+                ("female", ["straight", "bisexual"]),
+                ("male", ["gay", "lesbian", "bisexual"]),
+            ]
+        else:
+            return [
+                ("male", ["straight", "bisexual"]),
+                ("female", ["lesbian", "gay", "bisexual"]),
+            ]
+
+    target_sex = "female" if sex == "male" else "male"
+    return [(target_sex, ["straight", "bisexual"])]
 
 
 async def match_user_in_queue(
@@ -66,9 +84,14 @@ async def match_user_in_queue(
     if not current_user or not current_user.sex or not current_user.orientation:
         return None, None
 
-    target_sex, target_orientations = get_compatible_criteria(
+    criteria_list = get_compatible_criteria(
         current_user.sex, current_user.orientation
     )
+    compatibility_conditions = [
+        and_(User.sex == target_sex, User.orientation.in_(target_orientations))
+        for target_sex, target_orientations in criteria_list
+    ]
+    compatibility_filter = or_(*compatibility_conditions)
 
     # Search for the best candidate
     candidate_stmt = (
@@ -77,8 +100,7 @@ async def match_user_in_queue(
             User.id != current_user.id,
             User.is_searching == True,  # noqa: E712
             User.current_partner_id.is_(None),
-            User.sex == target_sex,
-            User.orientation.in_(target_orientations),
+            compatibility_filter,
         )
         .order_by(
             func.abs(User.priority - current_user.priority).asc(),

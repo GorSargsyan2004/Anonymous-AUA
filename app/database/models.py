@@ -32,6 +32,7 @@ class SexEnum(str, enum.Enum):
 class OrientationEnum(str, enum.Enum):
     """User sexual orientation enumeration."""
     STRAIGHT = "straight"
+    BISEXUAL = "bisexual"
     GAY = "gay"
     LESBIAN = "lesbian"
 

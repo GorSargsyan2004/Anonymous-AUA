@@ -45,7 +45,8 @@ University life is filled with incredible people, yet meeting compatible peers o
 
 ## ⚡ Key Features
 
-- **Compatibility Matrix Matching**: Pairs students based on their sex (`Male` / `Female`) and orientation (`Straight` / `Gay` / `Lesbian`) with automatic cross-gender normalization.
+- **Compatibility Matrix Matching**: Pairs students based on their sex (`Male` / `Female`) and orientation (`Straight` / `Bisexual` / `Gay` / `Lesbian`) with automatic cross-gender normalization.
+- **Bisexual Compatibility Engine**: Seamlessly matches bisexual students with compatible opposite-sex partners (straight or bisexual) or same-sex partners (gay/lesbian or bisexual).
 - **Hidden Priority Matchmaking**: Uses row-level database locking (`with_for_update(skip_locked=True)`) to pair users with the closest reputation score (`ABS(candidate.priority - user.priority) ASC`), ensuring high-quality users match with each other. The priority score is kept invisible to students to prevent gamification.
 - **Full Media Relay**: Intercepts and anonymously forwards text, photos, voice messages, stickers, video notes, and documents using Telegram's native `copy_to` API.
 - **Smart Engagement Engine**:
@@ -64,9 +65,17 @@ University life is filled with incredible people, yet meeting compatible peers o
 ### 1. Onboarding & Preferences
 1. A new student sends `/start`.
 2. The bot presents inline buttons to select **Sex** (`👨 Male` / `👩 Female`).
-3. Next, the student selects **Sexual Orientation** (`👫 Straight` / `👭 Lesbian` / `👬 Gay`).
-4. Cross-gender selections (e.g., Male + Lesbian or Female + Gay) are automatically normalized to their appropriate counterparts.
+3. Next, the student selects **Sexual Orientation** (`👫 Straight` / `🌈 Bisexual` / `👭 Lesbian` / `👬 Gay`).
+4. Cross-gender selections (e.g., Male + Lesbian or Female + Gay) are automatically normalized to their appropriate counterparts, while `Bisexual` is universally supported for both sexes.
 5. The student is registered with a default priority of `50/100` (kept internal).
+
+**Compatibility Rules:**
+- `Straight Male`: Pairs with Female (`Straight` or `Bisexual`)
+- `Straight Female`: Pairs with Male (`Straight` or `Bisexual`)
+- `Gay Male`: Pairs with Male (`Gay` or `Bisexual`)
+- `Lesbian Female`: Pairs with Female (`Lesbian` or `Bisexual`)
+- `Bisexual Male`: Pairs with Female (`Straight` / `Bisexual`) OR Male (`Gay` / `Bisexual`)
+- `Bisexual Female`: Pairs with Male (`Straight` / `Bisexual`) OR Female (`Lesbian` / `Bisexual`)
 
 ### 2. Matchmaking Algorithm
 When a student sends `/search` (or `/next`):
@@ -115,6 +124,7 @@ When a session ends (via `/stop` or `/next`), both participants receive a post-s
 | `/stop` | Public | Ends an active chat session or cancels a pending search. |
 | `/profile` | Public | Resets and reconfigures sex and sexual orientation. |
 | `/suggestion` | Public | Sends feedback, feature requests, or bug reports to admins. |
+| `/cancel` | Public | Aborts any active prompt or input without ending active chat. |
 | `/stata` | **Admins Only** | Displays real-time campus metrics, user breakdowns, and report statuses. |
 
 ---
@@ -180,7 +190,7 @@ erDiagram
         bigint id PK "Telegram User ID"
         varchar username "Telegram handle"
         varchar sex "male / female"
-        varchar orientation "straight / gay / lesbian"
+        varchar orientation "straight / bisexual / gay / lesbian"
         int priority "Clamped [0, 100], default 50"
         boolean is_searching "Queue status"
         bigint current_partner_id "Active partner ID"
@@ -342,6 +352,7 @@ Admins can send `/stata` to view an aggregated dashboard:
 
 🧭 Orientation Breakdown:
 • Straight: 118
+• Bisexual: 22
 • Lesbian: 14
 • Gay: 10
 

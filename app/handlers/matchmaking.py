@@ -3,7 +3,11 @@
 import asyncio
 import logging
 from aiogram import Bot, F, Router
-from aiogram.exceptions import TelegramAPIError
+from aiogram.exceptions import (
+    TelegramAPIError,
+    TelegramBadRequest,
+    TelegramForbiddenError,
+)
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.types import Message
@@ -274,9 +278,8 @@ async def relay_anonymous_message(message: Message, bot: Bot, state: FSMContext)
         # Attempt to relay message to partner
         try:
             await message.copy_to(chat_id=partner_id)
-        except TelegramAPIError as e:
-            logger.error("Failed to relay message from %s to %s: %s", user_id, partner_id, e)
-            # If partner blocked bot or disconnected, cleanly end the session
+        except TelegramForbiddenError as e:
+            logger.warning("Partner %s blocked the bot or is deactivated: %s", partner_id, e)
             result = await end_active_session(session, user_id=user_id)
             if result:
                 chat_session, _ = result
@@ -287,3 +290,32 @@ async def relay_anonymous_message(message: Message, bot: Bot, state: FSMContext)
                     parse_mode="HTML",
                 )
                 await maybe_send_bot_feedback_prompt(bot, session, user_id)
+        except TelegramBadRequest as e:
+            err_msg = str(e).lower()
+            if any(term in err_msg for term in ["chat not found", "user is deactivated", "bot was blocked"]):
+                logger.warning("Partner %s unavailable (%s): %s", partner_id, err_msg, e)
+                result = await end_active_session(session, user_id=user_id)
+                if result:
+                    chat_session, _ = result
+                    await message.answer(
+                        "⚠️ <b>Your partner has disconnected or left the chat.</b>\n\n"
+                        "How was your conversation?",
+                        reply_markup=get_feedback_keyboard(chat_session.id, partner_id),
+                        parse_mode="HTML",
+                    )
+                    await maybe_send_bot_feedback_prompt(bot, session, user_id)
+            else:
+                logger.error("Failed to relay message from %s to %s (bad request): %s", user_id, partner_id, e)
+                await message.answer(
+                    "⚠️ <i>Message could not be delivered to your partner. Please try again.</i>",
+                    parse_mode="HTML",
+                )
+        except TelegramAPIError as e:
+            # Temporary network or Telegram server error: do NOT terminate the active session!
+            logger.error("Temporary Telegram API error while relaying from %s to %s: %s", user_id, partner_id, e)
+            await message.answer(
+                "⚠️ <i>Temporary connection issue delivering message. Your chat is still active. Please resend.</i>",
+                parse_mode="HTML",
+            )
+        except Exception as e:
+            logger.error("Unexpected error while relaying from %s to %s: %s", user_id, partner_id, e)

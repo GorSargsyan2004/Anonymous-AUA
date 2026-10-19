@@ -45,6 +45,7 @@ async def handle_stata(message: Message) -> None:
         f"• Unfinished Setup: <b>{stats['unset_sex_count']}</b>\n\n"
         f"🧭 <b>Orientation Breakdown:</b>\n"
         f"• Straight: <b>{stats['straight_count']}</b>\n"
+        f"• Bisexual: <b>{stats.get('bisexual_count', 0)}</b>\n"
         f"• Lesbian: <b>{stats['lesbian_count']}</b>\n"
         f"• Gay: <b>{stats['gay_count']}</b>\n\n"
         f"⭐ <b>All-Time Feedbacks:</b>\n"

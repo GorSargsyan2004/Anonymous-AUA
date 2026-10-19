@@ -17,9 +17,10 @@ def get_orientation_keyboard() -> InlineKeyboardMarkup:
     """Return inline keyboard for selecting user sexual orientation during onboarding."""
     builder = InlineKeyboardBuilder()
     builder.button(text="👫 Straight", callback_data="onboarding_orientation:straight")
+    builder.button(text="🌈 Bisexual", callback_data="onboarding_orientation:bisexual")
     builder.button(text="👭 Lesbian", callback_data="onboarding_orientation:lesbian")
     builder.button(text="👬 Gay", callback_data="onboarding_orientation:gay")
-    builder.adjust(1, 2)
+    builder.adjust(2, 2)
     return builder.as_markup()
 
 
