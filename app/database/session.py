@@ -80,6 +80,23 @@ async def init_db() -> None:
                 """
             )
         )
+        await conn.execute(
+            text(
+                "ALTER TABLE users ADD COLUMN IF NOT EXISTS spam_flags_count INTEGER NOT NULL DEFAULT 0;"
+            )
+        )
+        await conn.execute(
+            text(
+                """
+                UPDATE users u SET spam_flags_count = COALESCE((
+                    SELECT COUNT(DISTINCT f.from_user_id)
+                    FROM feedbacks f
+                    WHERE f.to_user_id = u.id AND f.feedback_type IN ('spam', 'not_aua')
+                ), 0)
+                WHERE spam_flags_count = 0;
+                """
+            )
+        )
 
 
 

@@ -59,6 +59,7 @@ class User(Base):
     target_sexes: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     target_orientations: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
     completed_sessions_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    spam_flags_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     last_suggestion_date: Mapped[Optional[datetime]] = mapped_column(
         DateTime(timezone=True),
         nullable=True,

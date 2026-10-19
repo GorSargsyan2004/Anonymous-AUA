@@ -65,14 +65,23 @@ def get_preferences_keyboard(
 
 
 def get_feedback_keyboard(session_id: int, partner_id: int) -> InlineKeyboardMarkup:
-    """Return inline keyboard for rating the session partner or reporting them (priorities hidden)."""
+    """Return streamlined inline keyboard for post-chat feedback (2-tier anti-spite design)."""
     builder = InlineKeyboardBuilder()
-    builder.button(text="👍 Like", callback_data=f"fb:{session_id}:{partner_id}:like")
-    builder.button(text="👎 Dislike", callback_data=f"fb:{session_id}:{partner_id}:dislike")
-    builder.button(text="🚫 Spam", callback_data=f"fb:{session_id}:{partner_id}:spam")
+    builder.button(text="👍 Great Chat", callback_data=f"fb:{session_id}:{partner_id}:like")
+    builder.button(text="👎 Not for me", callback_data=f"fb:{session_id}:{partner_id}:dislike")
+    builder.button(text="⚠️ Report Issue...", callback_data=f"report_menu:{session_id}:{partner_id}")
+    builder.adjust(2, 1)
+    return builder.as_markup()
+
+
+def get_report_options_keyboard(session_id: int, partner_id: int) -> InlineKeyboardMarkup:
+    """Return inline keyboard with specific issue categories and back button."""
+    builder = InlineKeyboardBuilder()
+    builder.button(text="🚫 Spam / Promo", callback_data=f"fb:{session_id}:{partner_id}:spam")
     builder.button(text="🏫 Not from AUA", callback_data=f"fb:{session_id}:{partner_id}:not_aua")
-    builder.button(text="⚠️ Report User", callback_data=f"report_start:{session_id}:{partner_id}")
-    builder.adjust(2, 2, 1)
+    builder.button(text="🚨 Harassment / Other", callback_data=f"report_start:{session_id}:{partner_id}")
+    builder.button(text="🔙 Back", callback_data=f"fb_back:{session_id}:{partner_id}")
+    builder.adjust(2, 1, 1)
     return builder.as_markup()
 
 

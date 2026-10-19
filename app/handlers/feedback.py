@@ -10,6 +10,7 @@ from app.database.crud import (
     create_report,
     create_suggestion,
     get_user,
+    process_feedback_with_consensus,
     record_feedback,
     update_user_priority,
 )
@@ -17,30 +18,57 @@ from app.database.session import get_db_session
 from app.keyboards.inline import (
     get_admin_report_keyboard,
     get_admin_suggestion_keyboard,
+    get_feedback_keyboard,
+    get_report_options_keyboard,
 )
 from app.states.states import ReportState, SuggestionState
 
 logger = logging.getLogger(__name__)
 router = Router(name="feedback_router")
 
-FEEDBACK_DELTAS = {
-    "like": 1,
-    "dislike": -1,
-    "spam": -5,
-    "not_aua": -5,
-}
 
-FEEDBACK_LABELS = {
-    "like": "👍 Liked",
-    "dislike": "👎 Disliked",
-    "spam": "🚫 Reported as Spam",
-    "not_aua": "🏫 Reported as Not from AUA",
-}
+@router.callback_query(F.data.startswith("report_menu:"))
+async def handle_report_menu(callback: CallbackQuery) -> None:
+    """Show specific issue options when user clicks 'Report Issue...'."""
+    parts = callback.data.split(":")
+    if len(parts) != 3:
+        await callback.answer()
+        return
+    session_id = int(parts[1])
+    partner_id = int(parts[2])
+
+    await callback.message.edit_text(
+        "⚠️ <b>Report an Issue</b>\n\n"
+        "What problem did you encounter with this partner?\n\n"
+        "<i>Select a category below:</i>",
+        reply_markup=get_report_options_keyboard(session_id, partner_id),
+        parse_mode="HTML",
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("fb_back:"))
+async def handle_feedback_back(callback: CallbackQuery) -> None:
+    """Return to Tier 1 post-chat rating keyboard."""
+    parts = callback.data.split(":")
+    if len(parts) != 3:
+        await callback.answer()
+        return
+    session_id = int(parts[1])
+    partner_id = int(parts[2])
+
+    await callback.message.edit_text(
+        "🛑 <b>Chat ended.</b>\n\n"
+        "How was your conversation with this partner?",
+        reply_markup=get_feedback_keyboard(session_id, partner_id),
+        parse_mode="HTML",
+    )
+    await callback.answer()
 
 
 @router.callback_query(F.data.startswith("fb:"))
-async def handle_feedback_callback(callback: CallbackQuery) -> None:
-    """Process thumbs up/down, spam, or not-AUA feedback."""
+async def handle_feedback_callback(callback: CallbackQuery, bot: Bot) -> None:
+    """Process feedback with anti-spite chat duration checks and consensus penalty logic."""
     parts = callback.data.split(":")
     if len(parts) != 4:
         await callback.answer("Invalid feedback data.", show_alert=True)
@@ -51,41 +79,86 @@ async def handle_feedback_callback(callback: CallbackQuery) -> None:
     partner_id = int(partner_id_str)
     from_user_id = callback.from_user.id
 
-    if feedback_type not in FEEDBACK_DELTAS:
+    valid_types = {"like", "dislike", "spam", "not_aua"}
+    if feedback_type not in valid_types:
         await callback.answer("Unknown feedback type.", show_alert=True)
         return
 
-    delta = FEEDBACK_DELTAS[feedback_type]
-    label = FEEDBACK_LABELS[feedback_type]
-
     async with get_db_session() as session:
-        # Check uniqueness and record
-        _, created = await record_feedback(
+        result = await process_feedback_with_consensus(
             session=session,
             session_id=session_id,
             from_user_id=from_user_id,
-            to_user_id=partner_id,
+            partner_id=partner_id,
             feedback_type=feedback_type,
         )
 
-        if not created:
-            await callback.answer(
-                "You have already submitted feedback for this session.",
-                show_alert=True,
+    if not result["created"]:
+        await callback.answer(
+            "You have already submitted feedback for this session.",
+            show_alert=True,
+        )
+        return
+
+    # User-facing confirmation message
+    if feedback_type == "like":
+        msg_text = (
+            "✅ <b>Feedback submitted: 👍 Great Chat!</b>\n\n"
+            "Thank you for helping keep the AUA community positive, friendly, and authentic! 🦅🇦🇲\n\n"
+            "<i>Send /search whenever you want to start a new chat!</i>"
+        )
+    elif feedback_type == "dislike":
+        if result["is_short_chat"]:
+            msg_text = (
+                "✅ <b>Feedback submitted: 👎 Not for me.</b>\n\n"
+                "<i>(Since the conversation was very brief, this was recorded as a neutral skip).</i>\n\n"
+                "Thank you for your feedback! Send /search whenever you want to start a new chat! 🦅"
             )
-            return
+        else:
+            msg_text = (
+                "✅ <b>Feedback submitted: 👎 Not for me.</b>\n\n"
+                "Thank you for your feedback. We'll use this to match you with better partners!\n\n"
+                "<i>Send /search whenever you want to start a new chat!</i> 🦅🇦🇲"
+            )
+    elif feedback_type == "spam":
+        msg_text = (
+            "✅ <b>Report recorded: 🚫 Spam / Promotion.</b>\n\n"
+            "Thank you for keeping AUA safe and clean. Our automated system tracks repeated reports "
+            "across independent students and penalizes offenders. 🦅🇦🇲\n\n"
+            "<i>Send /search to find a new partner!</i>"
+        )
+    elif feedback_type == "not_aua":
+        msg_text = (
+            "✅ <b>Report recorded: 🏫 Not from AUA.</b>\n\n"
+            "Thank you! Our automated system tracks reports from multiple students to identify "
+            "and filter out non-AUA intruders. 🦅🇦🇲\n\n"
+            "<i>Send /search to find a new partner!</i>"
+        )
+    else:
+        msg_text = "✅ <b>Feedback recorded!</b> Thank you! 🦅🇦🇲"
 
-        # Apply priority change invisibly behind the scenes
-        await update_user_priority(session, user_id=partner_id, delta=delta)
-
-    # Edit message to confirm rating without exposing priority values
-    await callback.message.edit_text(
-        f"✅ <b>Feedback submitted: {label}!</b>\n\n"
-        "Thank you for helping keep the AUA community safe, positive, and authentic. 🦅🇦🇲\n\n"
-        "<i>Send /search whenever you want to start a new chat!</i>",
-        parse_mode="HTML",
-    )
+    await callback.message.edit_text(msg_text, parse_mode="HTML")
     await callback.answer("Feedback recorded!")
+
+    # If consensus was reached (e.g. 2+ independent flags), notify admins
+    if result.get("consensus_reached"):
+        partner = result.get("partner")
+        safe_p_username = html.escape(partner.username or "N/A") if partner else "N/A"
+        admin_alert_text = (
+            "🚨 <b>AUTOMATED CONSENSUS WARNING: Repeated Flags!</b>\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"• <b>Flagged User ID:</b> <code>{partner_id}</code> (@{safe_p_username})\n"
+            f"• <b>Violation Type:</b> {feedback_type.upper()}\n"
+            f"• <b>Independent Flags:</b> {result['spam_flags_count']} students\n"
+            f"• <b>Penalty Applied:</b> -5 priority points (Current: {result['new_priority']}/100)\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            "<i>Multiple independent students have reported this account. Review via /stata.</i>"
+        )
+        for admin_id in settings.ADMIN_IDS:
+            try:
+                await bot.send_message(chat_id=admin_id, text=admin_alert_text, parse_mode="HTML")
+            except TelegramAPIError as e:
+                logger.debug("Failed to send consensus alert to admin %s: %s", admin_id, e)
 
 
 @router.callback_query(F.data == "suggest_dismiss")

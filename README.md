@@ -106,15 +106,20 @@ Once connected, any message sent by either student (text, photo, voice note, rou
 
 If either user blocks the bot or leaves, the session automatically terminates, and both participants receive a prompt to rate the conversation.
 
-### 4. Reputation & Feedback (Under the Hood)
-When a session ends (via `/stop` or `/next`), both participants receive a post-session rating keyboard:
-- `👍 Like`: +1 priority point
-- `👎 Dislike`: -1 priority point
-- `🚫 Spam`: -5 priority points
-- `🏫 Not from AUA`: -5 priority points
-- `⚠️ Report User`: Prompts for a reason and notifies human administrators.
+### 4. Anti-Spite Reputation & Feedback System (Under the Hood)
+To eliminate malicious retaliation ("spite voting" where an angry user clicks "Spam" just because they disliked the chat), the platform enforces a 3-layer protection system:
 
-> **Note:** Priority scores and point modifiers are completely invisible to students. The system operates autonomously in the database, ensuring well-behaved students enjoy faster and better matches.
+1. **Streamlined 2-Tier UI**:
+   - **Tier 1 (Primary Prompt)**: Clean binary feedback `[👍 Great Chat]` and `[👎 Not for me]`, plus a discreet `[⚠️ Report Issue...]` button. 95% of casual users who simply didn't vibe with a partner click `👎 Not for me`.
+   - **Tier 2 (Issue Categories)**: Tapping `[⚠️ Report Issue...]` opens specific moderation categories: `[🚫 Spam / Promo]`, `[🏫 Not from AUA]`, `[🚨 Harassment / Other]`, and `[🔙 Back]`.
+2. **Chat Duration Filter (< 15 seconds)**:
+   - If a conversation ends in **under 15 seconds**, any negative rating (`Dislike`, `Spam`, `Not AUA`) is treated as a neutral quick skip (**0 penalty delta applied**), preventing users who rage-quit after 3 seconds from docking peer reputation points.
+3. **Consensus-Based Penalties (Corroboration Required)**:
+   - **1st Report**: Only applies a base `-1` penalty (or 0 if < 15s). A single hater **cannot** heavily harm an innocent user.
+   - **2nd Report (Consensus Reached)**: When $\ge 2$ independent students report the same user, the system confirms a pattern, applies an additional `-4` penalty (**-5 total penalty**), and broadcasts an automated high-priority alert to all administrators.
+   - **Repeat Offenders (3+ Reports)**: Subsequent independent flags apply immediate `-5` penalties and alert admins.
+
+> **Note:** Priority scores and point modifiers remain completely invisible to students. The system operates autonomously in the database, ensuring well-behaved students enjoy faster and better matches.
 
 ### 5. Continuous Feedback & Admin Replies
 1. **Periodic Prompts:** Every 2 completed sessions, students receive an optional prompt with `[💡 Give suggestions]` and `[✖️ Dismiss]`.
@@ -208,6 +213,7 @@ erDiagram
         varchar target_sexes "Comma-separated target sexes (male,female)"
         varchar target_orientations "Comma-separated target orientations"
         int completed_sessions_count "Session counter"
+        int spam_flags_count "Spam/not-AUA flags count"
         timestamp last_suggestion_date "Date of last suggestion"
         timestamp created_at "Registration timestamp"
     }

@@ -340,6 +340,130 @@ async def record_feedback(
     return feedback, True
 
 
+async def get_chat_session(
+    session: AsyncSession,
+    session_id: int,
+) -> Optional[ChatSession]:
+    """Retrieve chat session by ID."""
+    stmt = select(ChatSession).where(ChatSession.id == session_id)
+    result = await session.execute(stmt)
+    return result.scalar_one_or_none()
+
+
+def get_session_duration_seconds(chat_session: Optional[ChatSession]) -> float:
+    """Calculate the duration of a chat session in seconds."""
+    if not chat_session or not chat_session.started_at:
+        return 0.0
+    end_time = chat_session.ended_at or datetime.now(timezone.utc)
+    start_time = chat_session.started_at
+    if start_time.tzinfo is None:
+        start_time = start_time.replace(tzinfo=timezone.utc)
+    if end_time.tzinfo is None:
+        end_time = end_time.replace(tzinfo=timezone.utc)
+    return max(0.0, (end_time - start_time).total_seconds())
+
+
+async def process_feedback_with_consensus(
+    session: AsyncSession,
+    session_id: int,
+    from_user_id: int,
+    partner_id: int,
+    feedback_type: str,
+) -> Dict[str, Any]:
+    """Process feedback with anti-spite chat duration checks and consensus penalty logic.
+
+    Rules:
+      1. Like: +1 priority (always positive reinforcement).
+      2. Dislike:
+         - If chat duration < 15 seconds: delta = 0 (instant skip / rage-quit protected).
+         - If chat duration >= 15 seconds: delta = -1.
+      3. Spam / Not AUA:
+         - Base penalty: 0 if chat duration < 15s, else -1.
+         - Tracks distinct spam flags in user.spam_flags_count.
+         - 1st flag: only base penalty (-1 or 0). Single spiteful hater cannot harm the user!
+         - 2nd flag (Consensus reached!): additional -4 penalty (total -5) + alert admins.
+         - 3+ flags: additional -4 penalty (total -5) + alert admins.
+
+    Returns dict with:
+      - 'created': bool
+      - 'delta': int
+      - 'is_short_chat': bool
+      - 'consensus_reached': bool
+      - 'spam_flags_count': int
+      - 'new_priority': int
+      - 'partner': User
+    """
+    feedback, created = await record_feedback(
+        session=session,
+        session_id=session_id,
+        from_user_id=from_user_id,
+        to_user_id=partner_id,
+        feedback_type=feedback_type,
+    )
+    if not created:
+        return {
+            "created": False,
+            "delta": 0,
+            "is_short_chat": False,
+            "consensus_reached": False,
+            "spam_flags_count": 0,
+            "new_priority": 50,
+            "partner": None,
+        }
+
+    chat_sess = await get_chat_session(session, session_id)
+    duration_sec = get_session_duration_seconds(chat_sess)
+    is_short_chat = duration_sec < 15.0
+
+    partner_stmt = select(User).where(User.id == partner_id).with_for_update()
+    partner = (await session.execute(partner_stmt)).scalar_one_or_none()
+    if not partner:
+        return {
+            "created": True,
+            "delta": 0,
+            "is_short_chat": is_short_chat,
+            "consensus_reached": False,
+            "spam_flags_count": 0,
+            "new_priority": 50,
+            "partner": None,
+        }
+
+    delta = 0
+    consensus_reached = False
+
+    if feedback_type == "like":
+        delta = 1
+    elif feedback_type == "dislike":
+        delta = 0 if is_short_chat else -1
+    elif feedback_type in ("spam", "not_aua"):
+        base_delta = 0 if is_short_chat else -1
+        partner.spam_flags_count = (partner.spam_flags_count or 0) + 1
+
+        # Consensus check:
+        # Flag 1: only base penalty (-1 or 0), single user cannot cause heavy harm
+        # Flag 2+: consensus confirmed by multiple independent students!
+        if partner.spam_flags_count >= 2:
+            consensus_reached = True
+            delta = base_delta - 4  # Total -5 penalty (or -4 if short chat)
+        else:
+            delta = base_delta
+
+    new_priority = clamp_priority(partner.priority + delta)
+    partner.priority = new_priority
+    await session.commit()
+    await session.refresh(partner)
+
+    return {
+        "created": True,
+        "delta": delta,
+        "is_short_chat": is_short_chat,
+        "consensus_reached": consensus_reached,
+        "spam_flags_count": partner.spam_flags_count,
+        "new_priority": new_priority,
+        "partner": partner,
+    }
+
+
 async def create_report(
     session: AsyncSession,
     session_id: int,
