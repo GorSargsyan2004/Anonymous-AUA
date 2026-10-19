@@ -261,8 +261,8 @@ cp .env.example .env
 ```
 Open `.env` and fill in your values:
 ```env
-BOT_TOKEN=8789049332:AAGZGiWo7I-8T_-jVMN7zQc16KfpgvtQAVU
-ADMIN_IDS=5321254678
+BOT_TOKEN=64894085692:AAGwehjfvbwjehbfc-HGdvwEJHVFw16KfpgvtQAVU
+ADMIN_IDS=458432154653
 
 POSTGRES_USER=aua_user
 POSTGRES_PASSWORD=aua_secure_password_here
