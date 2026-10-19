@@ -9,6 +9,11 @@ class OnboardingState(StatesGroup):
     waiting_for_orientation = State()
 
 
+class PreferencesState(StatesGroup):
+    """User matching preferences configuration state machine."""
+    configuring = State()
+
+
 class ReportState(StatesGroup):
     """Report submission state machine."""
     waiting_for_reason = State()

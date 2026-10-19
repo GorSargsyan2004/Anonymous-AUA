@@ -60,12 +60,59 @@ def get_compatible_criteria(sex: str, orientation: str) -> List[Tuple[str, List[
     target_sex = "female" if sex == "male" else "male"
     return [(target_sex, ["straight", "bisexual"])]
 
+def get_default_preferences(
+    sex: Optional[str],
+    orientation: Optional[str],
+) -> Tuple[List[str], List[str]]:
+    """Determine default romantic partner preferences (target_sexes, target_orientations).
+
+    Romantic defaults:
+      - Straight male -> [female], [straight, bisexual]
+      - Straight female -> [male], [straight, bisexual]
+      - Gay male -> [male], [gay, bisexual]
+      - Lesbian female -> [female], [lesbian, bisexual]
+      - Bisexual male -> [female, male], [straight, bisexual, gay]
+      - Bisexual female -> [male, female], [straight, bisexual, lesbian]
+    """
+    if not sex or not orientation:
+        return ["male", "female"], ["straight", "bisexual", "lesbian", "gay"]
+
+    sex = sex.lower().strip()
+    orientation = normalize_orientation(sex, orientation)
+
+    if sex == "male":
+        if orientation == "straight":
+            return ["female"], ["straight", "bisexual"]
+        elif orientation == "gay":
+            return ["male"], ["gay", "bisexual"]
+        elif orientation == "bisexual":
+            return ["female", "male"], ["straight", "bisexual", "gay"]
+        else:
+            return ["female"], ["straight", "bisexual"]
+    elif sex == "female":
+        if orientation == "straight":
+            return ["male"], ["straight", "bisexual"]
+        elif orientation == "lesbian":
+            return ["female"], ["lesbian", "bisexual"]
+        elif orientation == "bisexual":
+            return ["male", "female"], ["straight", "bisexual", "lesbian"]
+        else:
+            return ["male"], ["straight", "bisexual"]
+
+    return ["male", "female"], ["straight", "bisexual", "lesbian", "gay"]
+
 
 async def match_user_in_queue(
     session: AsyncSession,
     user_id: int,
 ) -> Tuple[Optional[User], Optional[ChatSession]]:
-    """Attempt to pair the given user with a compatible searching candidate.
+    """Attempt to pair the given user with a compatible searching candidate based on preferences.
+
+    Criteria for matching User A and Candidate:
+      1. Candidate's sex is in User A's configured target_sexes
+      2. Candidate's orientation is in User A's configured target_orientations
+      3. User A's sex is in Candidate's configured target_sexes
+      4. User A's orientation is in Candidate's configured target_orientations
 
     Uses row-level locking (with_for_update(skip_locked=True)) and sorts by:
       1. Smallest absolute difference in priority (ABS(candidate.priority - user.priority) ASC)
@@ -84,23 +131,43 @@ async def match_user_in_queue(
     if not current_user or not current_user.sex or not current_user.orientation:
         return None, None
 
-    criteria_list = get_compatible_criteria(
-        current_user.sex, current_user.orientation
-    )
-    compatibility_conditions = [
-        and_(User.sex == target_sex, User.orientation.in_(target_orientations))
-        for target_sex, target_orientations in criteria_list
-    ]
-    compatibility_filter = or_(*compatibility_conditions)
+    # Load or initialize current user preferences
+    if current_user.target_sexes and current_user.target_orientations:
+        user_target_sexes = [
+            s.strip().lower()
+            for s in current_user.target_sexes.split(",")
+            if s.strip()
+        ]
+        user_target_orientations = [
+            o.strip().lower()
+            for o in current_user.target_orientations.split(",")
+            if o.strip()
+        ]
+    else:
+        user_target_sexes, user_target_orientations = get_default_preferences(
+            current_user.sex, current_user.orientation
+        )
+        current_user.target_sexes = ",".join(user_target_sexes)
+        current_user.target_orientations = ",".join(user_target_orientations)
+        await session.commit()
 
-    # Search for the best candidate
+    # Search for the best candidate whose preferences match mutually
     candidate_stmt = (
         select(User)
         .where(
             User.id != current_user.id,
             User.is_searching == True,  # noqa: E712
             User.current_partner_id.is_(None),
-            compatibility_filter,
+            # User A accepts Candidate
+            User.sex.in_(user_target_sexes),
+            User.orientation.in_(user_target_orientations),
+            # Candidate accepts User A
+            func.concat(",", func.coalesce(User.target_sexes, ""), ",").like(
+                f"%,{current_user.sex},%"
+            ),
+            func.concat(",", func.coalesce(User.target_orientations, ""), ",").like(
+                f"%,{current_user.orientation},%"
+            ),
         )
         .order_by(
             func.abs(User.priority - current_user.priority).asc(),

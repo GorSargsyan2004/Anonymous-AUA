@@ -1,12 +1,12 @@
 """Reusable database CRUD queries and operations."""
 
 from datetime import datetime, timezone
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database.models import ChatSession, Feedback, Report, Suggestion, User
-from app.services.matcher import normalize_orientation
+from app.services.matcher import get_default_preferences, normalize_orientation
 
 
 
@@ -72,8 +72,34 @@ async def update_user_profile(
     user.orientation = normalized_orient
     user.priority = clamp_priority(user.priority or 50)
 
+    # Set default romantic target preferences
+    def_sexes, def_orients = get_default_preferences(user.sex, user.orientation)
+    user.target_sexes = ",".join(def_sexes)
+    user.target_orientations = ",".join(def_orients)
+
     await session.commit()
     await session.refresh(user)
+    return user
+
+
+async def update_user_preferences(
+    session: AsyncSession,
+    user_id: int,
+    target_sexes: List[str],
+    target_orientations: List[str],
+) -> Optional[User]:
+    """Update user's configured matching preferences for target sexes and target orientations."""
+    stmt = select(User).where(User.id == user_id).with_for_update()
+    result = await session.execute(stmt)
+    user = result.scalar_one_or_none()
+
+    if user:
+        clean_sexes = list(dict.fromkeys(s.lower().strip() for s in target_sexes if s.strip()))
+        clean_orients = list(dict.fromkeys(o.lower().strip() for o in target_orientations if o.strip()))
+        user.target_sexes = ",".join(clean_sexes)
+        user.target_orientations = ",".join(clean_orients)
+        await session.commit()
+        await session.refresh(user)
     return user
 
 

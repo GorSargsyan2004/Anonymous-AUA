@@ -94,11 +94,15 @@ async def test_bisexual_matching():
 
     # 4. Test Live Database Matchmaking Scenarios
     async with get_db_session() as session:
-        # Setup test users
-        await get_or_create_user(session, U_BI_MALE, username="bi_male")
+        # Setup test users with priority=100 to isolate them from live queue
+        u_bm = await get_or_create_user(session, U_BI_MALE, username="bi_male")
+        u_bm.priority = 100
+        await session.commit()
         await update_user_profile(session, U_BI_MALE, sex="male", orientation="bisexual")
 
-        await get_or_create_user(session, U_GAY_MALE, username="gay_male")
+        u_gm = await get_or_create_user(session, U_GAY_MALE, username="gay_male")
+        u_gm.priority = 100
+        await session.commit()
         await update_user_profile(session, U_GAY_MALE, sex="male", orientation="gay")
 
     # Scenario A: Bi Male matches with Gay Male
@@ -118,7 +122,9 @@ async def test_bisexual_matching():
 
     # Scenario B: Bi Male matches with Bi Female
     async with get_db_session() as session:
-        await get_or_create_user(session, U_BI_FEMALE, username="bi_female")
+        u_bf = await get_or_create_user(session, U_BI_FEMALE, username="bi_female")
+        u_bf.priority = 100
+        await session.commit()
         await update_user_profile(session, U_BI_FEMALE, sex="female", orientation="bisexual")
 
         # Bi Male queues first
@@ -135,7 +141,9 @@ async def test_bisexual_matching():
 
     # Scenario C: Bi Female matches with Lesbian Female
     async with get_db_session() as session:
-        await get_or_create_user(session, U_LES_FEMALE, username="les_female")
+        u_lf = await get_or_create_user(session, U_LES_FEMALE, username="les_female")
+        u_lf.priority = 100
+        await session.commit()
         await update_user_profile(session, U_LES_FEMALE, sex="female", orientation="lesbian")
 
         # Lesbian Female queues

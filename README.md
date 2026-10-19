@@ -45,7 +45,8 @@ University life is filled with incredible people, yet meeting compatible peers o
 
 ## ⚡ Key Features
 
-- **Compatibility Matrix Matching**: Pairs students based on their sex (`Male` / `Female`) and orientation (`Straight` / `Bisexual` / `Gay` / `Lesbian`) with automatic cross-gender normalization.
+- **Compatibility Matrix & Mutual Matching Preferences**: Pairs students based on mutual criteria. By default, preferences target romantic partners, but students can customize who they want to connect with (Male, Female, Straight, Bisexual, Lesbian, Gay) via interactive checkbox menus.
+- **Custom Matching Preferences (`/preferences`)**: Interactive inline checkboxes allow users to talk to any sex and orientation without LGBT flags in the menu. Matches only occur when **both** students' preferences mutually match.
 - **Bisexual Compatibility Engine**: Seamlessly matches bisexual students with compatible opposite-sex partners (straight or bisexual) or same-sex partners (gay/lesbian or bisexual).
 - **Hidden Priority Matchmaking**: Uses row-level database locking (`with_for_update(skip_locked=True)`) to pair users with the closest reputation score (`ABS(candidate.priority - user.priority) ASC`), ensuring high-quality users match with each other. The priority score is kept invisible to students to prevent gamification.
 - **Full Media Relay**: Intercepts and anonymously forwards text, photos, voice messages, stickers, video notes, and documents using Telegram's native `copy_to` API.
@@ -66,16 +67,25 @@ University life is filled with incredible people, yet meeting compatible peers o
 1. A new student sends `/start`.
 2. The bot presents inline buttons to select **Sex** (`👨 Male` / `👩 Female`).
 3. Next, the student selects **Sexual Orientation** (`👫 Straight` / `🌈 Bisexual` / `👭 Lesbian` / `👬 Gay`).
-4. Cross-gender selections (e.g., Male + Lesbian or Female + Gay) are automatically normalized to their appropriate counterparts, while `Bisexual` is universally supported for both sexes.
-5. The student is registered with a default priority of `50/100` (kept internal).
+4. **Interactive Preferences Stage**: The bot sets romantic defaults, then displays clean inline checkboxes (no LGBT flags) for:
+   - Sexes: `Male`, `Female`
+   - Orientations: `Straight`, `Bisexual`, `Lesbian`, `Gay`
+   Students can customize whom they want to connect with and press `💾 Save Preferences`.
+5. Students can re-adjust their preferences at any time using the `/preferences` command.
+6. The student is registered with a default priority of `50/100` (kept internal).
 
-**Compatibility Rules:**
-- `Straight Male`: Pairs with Female (`Straight` or `Bisexual`)
-- `Straight Female`: Pairs with Male (`Straight` or `Bisexual`)
-- `Gay Male`: Pairs with Male (`Gay` or `Bisexual`)
-- `Lesbian Female`: Pairs with Female (`Lesbian` or `Bisexual`)
-- `Bisexual Male`: Pairs with Female (`Straight` / `Bisexual`) OR Male (`Gay` / `Bisexual`)
-- `Bisexual Female`: Pairs with Male (`Straight` / `Bisexual`) OR Female (`Lesbian` / `Bisexual`)
+**Default Romantic Preferences:**
+- `Straight Male`: Female (`Straight`, `Bisexual`)
+- `Straight Female`: Male (`Straight`, `Bisexual`)
+- `Gay Male`: Male (`Gay`, `Bisexual`)
+- `Lesbian Female`: Female (`Lesbian`, `Bisexual`)
+- `Bisexual Male`: Female (`Straight`, `Bisexual`) AND Male (`Gay`, `Bisexual`, `Straight`)
+- `Bisexual Female`: Male (`Straight`, `Bisexual`) AND Female (`Lesbian`, `Bisexual`, `Straight`)
+
+**Mutual Matching Rule:**
+Matchmaking connects User A and User B **if and only if both users' criteria match each other**:
+- User B's sex is in User A's target sexes AND User B's orientation is in User A's target orientations.
+- User A's sex is in User B's target sexes AND User A's orientation is in User B's target orientations.
 
 ### 2. Matchmaking Algorithm
 When a student sends `/search` (or `/next`):
@@ -122,6 +132,7 @@ When a session ends (via `/stop` or `/next`), both participants receive a post-s
 | `/search` | Public | Enters the matchmaking queue to find an anonymous student partner. |
 | `/next` | Public | Ends the current conversation and immediately queues for a new partner. |
 | `/stop` | Public | Ends an active chat session or cancels a pending search. |
+| `/preferences` | Public | Adjusts target sexes and orientations via interactive checkbox menu. |
 | `/profile` | Public | Resets and reconfigures sex and sexual orientation. |
 | `/suggestion` | Public | Sends feedback, feature requests, or bug reports to admins. |
 | `/cancel` | Public | Aborts any active prompt or input without ending active chat. |
@@ -158,19 +169,19 @@ Anonymous AUA/
     │   └── admin.py             # IsAdminFilter checking Telegram ID against ADMIN_IDS
     ├── handlers/
     │   ├── __init__.py          # Ordered router registration
-    │   ├── start.py             # /start, /profile onboarding & /suggestion entry
+    │   ├── start.py             # /start, /preferences, /profile onboarding & /suggestion entry
     │   ├── matchmaking.py       # /search, /stop, /next & 30-second share prompt
     │   ├── feedback.py          # Session ratings, report intake, and suggestion submission
     │   └── admin.py             # /stata dashboard, report penalties, and suggestion replies
     ├── keyboards/
     │   ├── __init__.py
-    │   └── inline.py            # Inline buttons for onboarding, ratings, suggestions, admin actions
+    │   └── inline.py            # Inline buttons for onboarding, preferences, ratings, suggestions, admin actions
     ├── services/
     │   ├── __init__.py
-    │   └── matcher.py           # Compatibility matrix & row-level locked queue matcher
+    │   └── matcher.py           # Mutual compatibility & row-level locked queue matcher
     └── states/
         ├── __init__.py
-        └── states.py            # FSM States: Onboarding, Reporting, AdminPenalize, Suggestion, AdminReply
+        └── states.py            # FSM States: Onboarding, Preferences, Reporting, AdminPenalize, Suggestion, AdminReply
 ```
 
 ---
@@ -194,6 +205,8 @@ erDiagram
         int priority "Clamped [0, 100], default 50"
         boolean is_searching "Queue status"
         bigint current_partner_id "Active partner ID"
+        varchar target_sexes "Comma-separated target sexes (male,female)"
+        varchar target_orientations "Comma-separated target orientations"
         int completed_sessions_count "Session counter"
         timestamp last_suggestion_date "Date of last suggestion"
         timestamp created_at "Registration timestamp"

@@ -31,6 +31,7 @@ async def setup_bot_commands(bot: Bot) -> None:
         BotCommand(command="search", description="Search for an anonymous partner"),
         BotCommand(command="next", description="Skip to next chat partner"),
         BotCommand(command="stop", description="End current chat or search"),
+        BotCommand(command="preferences", description="Adjust who you connect with"),
         BotCommand(command="profile", description="Update sex or orientation"),
         BotCommand(command="suggestion", description="Send suggestions to improve the bot"),
         BotCommand(command="cancel", description="Cancel current input / action"),

@@ -43,7 +43,41 @@ async def init_db() -> None:
         )
         await conn.execute(
             text(
-                "ALTER TABLE users ADD COLUMN IF NOT EXISTS last_suggestion_date TIMESTAMP WITH TIME ZONE;"
+                "ALTER TABLE users ADD COLUMN IF NOT EXISTS target_sexes VARCHAR(64);"
+            )
+        )
+        await conn.execute(
+            text(
+                "ALTER TABLE users ADD COLUMN IF NOT EXISTS target_orientations VARCHAR(128);"
+            )
+        )
+        # Backfill default preferences for existing users who do not have them set
+        await conn.execute(
+            text(
+                """
+                UPDATE users SET 
+                    target_sexes = CASE 
+                        WHEN sex = 'male' AND orientation = 'straight' THEN 'female'
+                        WHEN sex = 'female' AND orientation = 'straight' THEN 'male'
+                        WHEN sex = 'male' AND orientation = 'gay' THEN 'male'
+                        WHEN sex = 'female' AND orientation = 'lesbian' THEN 'female'
+                        WHEN sex = 'male' AND orientation = 'bisexual' THEN 'female,male'
+                        WHEN sex = 'female' AND orientation = 'bisexual' THEN 'male,female'
+                        WHEN sex = 'male' THEN 'female'
+                        WHEN sex = 'female' THEN 'male'
+                        ELSE 'male,female'
+                    END,
+                    target_orientations = CASE 
+                        WHEN sex = 'male' AND orientation = 'straight' THEN 'straight,bisexual'
+                        WHEN sex = 'female' AND orientation = 'straight' THEN 'straight,bisexual'
+                        WHEN sex = 'male' AND orientation = 'gay' THEN 'gay,bisexual'
+                        WHEN sex = 'female' AND orientation = 'lesbian' THEN 'lesbian,bisexual'
+                        WHEN sex = 'male' AND orientation = 'bisexual' THEN 'straight,bisexual,gay'
+                        WHEN sex = 'female' AND orientation = 'bisexual' THEN 'straight,bisexual,lesbian'
+                        ELSE 'straight,bisexual'
+                    END
+                WHERE target_sexes IS NULL AND sex IS NOT NULL AND orientation IS NOT NULL;
+                """
             )
         )
 

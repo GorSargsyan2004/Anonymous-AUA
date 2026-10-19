@@ -1,5 +1,6 @@
 """Inline keyboards for user onboarding, post-session feedback, and admin actions."""
 
+from typing import List, Sequence
 from aiogram.types import InlineKeyboardMarkup
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
@@ -21,6 +22,45 @@ def get_orientation_keyboard() -> InlineKeyboardMarkup:
     builder.button(text="👭 Lesbian", callback_data="onboarding_orientation:lesbian")
     builder.button(text="👬 Gay", callback_data="onboarding_orientation:gay")
     builder.adjust(2, 2)
+    return builder.as_markup()
+
+
+def get_preferences_keyboard(
+    selected_sexes: Sequence[str],
+    selected_orientations: Sequence[str],
+) -> InlineKeyboardMarkup:
+    """Return inline keyboard with checkboxes for matching preferences.
+
+    CRITICAL REQUIREMENT: Do NOT use any LGBT flags near the orientations.
+    Clean checkboxes only:
+      - Male, Female
+      - Straight, Bisexual, Lesbian, Gay
+      - Save Preferences
+    """
+    builder = InlineKeyboardBuilder()
+
+    # Sex checkboxes
+    sexes_lower = [s.lower().strip() for s in selected_sexes]
+    male_check = "✅" if "male" in sexes_lower else "⬜"
+    female_check = "✅" if "female" in sexes_lower else "⬜"
+    builder.button(text=f"{male_check} Male", callback_data="pref_toggle:sex:male")
+    builder.button(text=f"{female_check} Female", callback_data="pref_toggle:sex:female")
+
+    # Orientation checkboxes (NO LGBT FLAGS)
+    orients_lower = [o.lower().strip() for o in selected_orientations]
+    str_check = "✅" if "straight" in orients_lower else "⬜"
+    bi_check = "✅" if "bisexual" in orients_lower else "⬜"
+    les_check = "✅" if "lesbian" in orients_lower else "⬜"
+    gay_check = "✅" if "gay" in orients_lower else "⬜"
+
+    builder.button(text=f"{str_check} Straight", callback_data="pref_toggle:orient:straight")
+    builder.button(text=f"{bi_check} Bisexual", callback_data="pref_toggle:orient:bisexual")
+    builder.button(text=f"{les_check} Lesbian", callback_data="pref_toggle:orient:lesbian")
+    builder.button(text=f"{gay_check} Gay", callback_data="pref_toggle:orient:gay")
+
+    # Action / Save button
+    builder.button(text="💾 Save Preferences", callback_data="pref_save")
+    builder.adjust(2, 2, 2, 1)
     return builder.as_markup()
 
 

@@ -56,6 +56,8 @@ class User(Base):
     priority: Mapped[int] = mapped_column(Integer, default=50, nullable=False)
     is_searching: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False, index=True)
     current_partner_id: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
+    target_sexes: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    target_orientations: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
     completed_sessions_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     last_suggestion_date: Mapped[Optional[datetime]] = mapped_column(
         DateTime(timezone=True),
