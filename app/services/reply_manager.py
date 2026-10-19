@@ -4,6 +4,8 @@ from collections import deque
 import logging
 from typing import Dict, Optional, Tuple
 
+from sqlalchemy.ext.asyncio import AsyncSession
+
 logger = logging.getLogger(__name__)
 
 # Maximum message mappings retained per active conversation pair (FIFO eviction)
@@ -66,7 +68,7 @@ class ChatReplyMap:
 
 
 class ReplyManager:
-    """Manages active conversation reply maps keyed by user pair."""
+    """Manages active conversation reply maps keyed by user pair with PostgreSQL persistence."""
 
     def __init__(self) -> None:
         # Key: (min_user_id, max_user_id) -> ChatReplyMap
@@ -76,14 +78,13 @@ class ReplyManager:
     def _get_chat_key(user1_id: int, user2_id: int) -> Tuple[int, int]:
         return (min(user1_id, user2_id), max(user1_id, user2_id))
 
-    def register_message(
+    def register_message_in_memory(
         self,
         sender_id: int,
         sender_msg_id: int,
         receiver_id: int,
         receiver_msg_id: int,
     ) -> None:
-        """Record a relayed message mapping between sender and receiver."""
         key = self._get_chat_key(sender_id, receiver_id)
         if key not in self._chats:
             self._chats[key] = ChatReplyMap()
@@ -94,26 +95,116 @@ class ReplyManager:
             receiver_msg_id=receiver_msg_id,
         )
 
-    def get_target_message_id(
+    # Alias for synchronous testing
+    register_message_sync = register_message_in_memory
+
+    def get_target_message_id_sync(
         self,
         sender_id: int,
         partner_id: int,
         replied_msg_id: int,
     ) -> Optional[int]:
-        """Find the corresponding message ID in partner's chat for a given reply."""
+        """Synchronously lookup target message ID from in-memory cache."""
         key = self._get_chat_key(sender_id, partner_id)
         chat_map = self._chats.get(key)
         if not chat_map:
             return None
         return chat_map.get_target_message_id(user_id=sender_id, replied_msg_id=replied_msg_id)
 
-    def clear_chat(self, user1_id: int, user2_id: int) -> None:
+    async def register_message(
+        self,
+        sender_id: int,
+        sender_msg_id: int,
+        receiver_id: int,
+        receiver_msg_id: int,
+        session: Optional[AsyncSession] = None,
+        session_id: Optional[int] = None,
+    ) -> None:
+        """Record a relayed message mapping between sender and receiver in memory and PostgreSQL."""
+        self.register_message_in_memory(sender_id, sender_msg_id, receiver_id, receiver_msg_id)
+        if session and session_id:
+            try:
+                from app.database.crud import save_chat_message_mapping
+                await save_chat_message_mapping(
+                    session=session,
+                    session_id=session_id,
+                    sender_id=sender_id,
+                    sender_msg_id=sender_msg_id,
+                    receiver_id=receiver_id,
+                    receiver_msg_id=receiver_msg_id,
+                )
+            except Exception as e:
+                logger.warning("Could not persist message mapping to DB: %s", e)
+
+    async def get_target_message_id(
+        self,
+        sender_id: int,
+        partner_id: int,
+        replied_msg_id: int,
+        session: Optional[AsyncSession] = None,
+    ) -> Optional[int]:
+        """Find corresponding message ID in partner's chat for a given reply.
+
+        Checks fast in-memory map first; falls back to PostgreSQL on cache miss (e.g. after restart).
+        """
+        # 1. Fast in-memory lookup
+        target = self.get_target_message_id_sync(sender_id, partner_id, replied_msg_id)
+        if target is not None:
+            return target
+
+        # 2. Database lookup on cache miss (survives container restarts)
+        if session:
+            try:
+                from app.database.crud import get_mapped_target_message_id_from_db
+                db_target = await get_mapped_target_message_id_from_db(
+                    session=session,
+                    sender_id=sender_id,
+                    partner_id=partner_id,
+                    replied_msg_id=replied_msg_id,
+                )
+                if db_target is not None:
+                    # Warm the in-memory cache symmetrically for both users
+                    key = self._get_chat_key(sender_id, partner_id)
+                    if key not in self._chats:
+                        self._chats[key] = ChatReplyMap()
+                    cm = self._chats[key]
+                    cm.receiver_to_sender[(sender_id, replied_msg_id)] = db_target
+                    cm.sender_to_receiver[(sender_id, replied_msg_id)] = db_target
+                    cm.receiver_to_sender[(partner_id, db_target)] = replied_msg_id
+                    cm.sender_to_receiver[(partner_id, db_target)] = replied_msg_id
+                    return db_target
+            except Exception as e:
+                logger.warning("Error querying message mapping from DB: %s", e)
+
+        return None
+
+    async def clear_chat(
+        self,
+        user1_id: int,
+        user2_id: int,
+        session: Optional[AsyncSession] = None,
+        session_id: Optional[int] = None,
+    ) -> None:
         """Remove and clean up the reply mapping when a chat session terminates."""
         key = self._get_chat_key(user1_id, user2_id)
         chat_map = self._chats.pop(key, None)
         if chat_map:
             chat_map.clear()
-            logger.debug("Cleared reply mapping for chat pair %s", key)
+            logger.debug("Cleared in-memory reply mapping for chat pair %s", key)
+
+        if session and session_id:
+            try:
+                from app.database.crud import delete_chat_message_mappings
+                await delete_chat_message_mappings(session=session, session_id=session_id)
+            except Exception as e:
+                logger.warning("Error clearing DB message mappings for session %s: %s", session_id, e)
+
+    def clear_chat_sync(self, user1_id: int, user2_id: int) -> None:
+        """Synchronously clear in-memory mapping."""
+        key = self._get_chat_key(user1_id, user2_id)
+        chat_map = self._chats.pop(key, None)
+        if chat_map:
+            chat_map.clear()
 
     def active_chat_count(self) -> int:
         """Return the number of active tracked chat pairs."""
@@ -122,3 +213,4 @@ class ReplyManager:
 
 # Global singleton instance
 reply_manager = ReplyManager()
+

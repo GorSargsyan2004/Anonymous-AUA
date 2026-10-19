@@ -2,10 +2,10 @@
 
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
-from sqlalchemy import func, or_, select
+from sqlalchemy import delete, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.database.models import ChatSession, Feedback, Report, Suggestion, User
+from app.database.models import ChatMessageMap, ChatSession, Feedback, Report, Suggestion, User
 from app.services.matcher import get_default_preferences, normalize_orientation
 
 
@@ -688,4 +688,80 @@ async def get_admin_stats(session: AsyncSession) -> Dict[str, Any]:
         "active_chats": active_chats,
         "searching_users": searching_users,
     }
+
+
+async def save_chat_message_mapping(
+    session: AsyncSession,
+    session_id: int,
+    sender_id: int,
+    sender_msg_id: int,
+    receiver_id: int,
+    receiver_msg_id: int,
+) -> None:
+    """Persist bidirectional message ID mapping in PostgreSQL for active session."""
+    mapping = ChatMessageMap(
+        session_id=session_id,
+        sender_id=sender_id,
+        sender_msg_id=sender_msg_id,
+        receiver_id=receiver_id,
+        receiver_msg_id=receiver_msg_id,
+    )
+    session.add(mapping)
+    await session.commit()
+
+
+async def get_mapped_target_message_id_from_db(
+    session: AsyncSession,
+    sender_id: int,
+    partner_id: int,
+    replied_msg_id: int,
+) -> Optional[int]:
+    """Resolve target message ID from PostgreSQL when in-memory cache misses (e.g. after restart).
+
+    Case 1: sender_id received this message from partner_id (replying to partner).
+    Case 2: sender_id sent this message earlier (self-quote / replying to own message).
+    """
+    # Case 1: sender_id received replied_msg_id from partner_id
+    stmt1 = (
+        select(ChatMessageMap.sender_msg_id)
+        .where(
+            ChatMessageMap.receiver_id == sender_id,
+            ChatMessageMap.receiver_msg_id == replied_msg_id,
+            ChatMessageMap.sender_id == partner_id,
+        )
+        .order_by(ChatMessageMap.id.desc())
+        .limit(1)
+    )
+    res1 = await session.execute(stmt1)
+    target1 = res1.scalar_one_or_none()
+    if isinstance(target1, int):
+        return target1
+
+    # Case 2: sender_id was the sender of replied_msg_id (self-quote)
+    stmt2 = (
+        select(ChatMessageMap.receiver_msg_id)
+        .where(
+            ChatMessageMap.sender_id == sender_id,
+            ChatMessageMap.sender_msg_id == replied_msg_id,
+            ChatMessageMap.receiver_id == partner_id,
+        )
+        .order_by(ChatMessageMap.id.desc())
+        .limit(1)
+    )
+    res2 = await session.execute(stmt2)
+    target2 = res2.scalar_one_or_none()
+    if isinstance(target2, int):
+        return target2
+
+    return None
+
+
+async def delete_chat_message_mappings(
+    session: AsyncSession,
+    session_id: int,
+) -> None:
+    """Delete all message mappings for terminated chat session."""
+    stmt = delete(ChatMessageMap).where(ChatMessageMap.session_id == session_id)
+    await session.execute(stmt)
+    await session.commit()
 

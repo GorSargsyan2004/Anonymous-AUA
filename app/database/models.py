@@ -9,6 +9,7 @@ from sqlalchemy import (
     Boolean,
     DateTime,
     ForeignKey,
+    Index,
     Integer,
     String,
     Text,
@@ -189,4 +190,32 @@ class Suggestion(Base):
 
     def __repr__(self) -> str:
         return f"<Suggestion id={self.id} user_id={self.user_id} replied={self.is_replied}>"
+
+
+class ChatMessageMap(Base):
+    """Bidirectional message ID mapping between partners in an active chat session."""
+    __tablename__ = "chat_message_maps"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    session_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("chat_sessions.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    sender_id: Mapped[int] = mapped_column(BigInteger, nullable=False, index=True)
+    sender_msg_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    receiver_id: Mapped[int] = mapped_column(BigInteger, nullable=False, index=True)
+    receiver_msg_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+    )
+
+    __table_args__ = (
+        Index("ix_cmm_sender", "sender_id", "sender_msg_id"),
+        Index("ix_cmm_receiver", "receiver_id", "receiver_msg_id"),
+    )
+
+    def __repr__(self) -> str:
+        return f"<ChatMessageMap id={self.id} session_id={self.session_id} sender={self.sender_id}:{self.sender_msg_id} -> receiver={self.receiver_id}:{self.receiver_msg_id}>"
+
 

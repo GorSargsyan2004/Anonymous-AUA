@@ -20,12 +20,12 @@ class TestReplySupport(unittest.TestCase):
         self.user_b = 20002
 
     def tearDown(self):
-        self.rm.clear_chat(self.user_a, self.user_b)
+        self.rm.clear_chat_sync(self.user_a, self.user_b)
 
     def test_01_basic_reply_to_partner_message(self):
         """User A sends a message; User B replies to it; verify User A's message ID is resolved."""
         # User A sends msg 101 -> received by User B as msg 501
-        self.rm.register_message(
+        self.rm.register_message_sync(
             sender_id=self.user_a,
             sender_msg_id=101,
             receiver_id=self.user_b,
@@ -33,7 +33,7 @@ class TestReplySupport(unittest.TestCase):
         )
 
         # User B replies to msg 501 in B's chat
-        target_in_a = self.rm.get_target_message_id(
+        target_in_a = self.rm.get_target_message_id_sync(
             sender_id=self.user_b,
             partner_id=self.user_a,
             replied_msg_id=501,
@@ -43,31 +43,31 @@ class TestReplySupport(unittest.TestCase):
     def test_02_bidirectional_multi_turn_replies(self):
         """Test multi-turn back-and-forth conversational replies between User A and User B."""
         # Turn 1: A sends 101 -> B receives 501
-        self.rm.register_message(self.user_a, 101, self.user_b, 501)
+        self.rm.register_message_sync(self.user_a, 101, self.user_b, 501)
 
         # Turn 2: B replies to 501 with message 502 -> A receives 102
-        target_a = self.rm.get_target_message_id(self.user_b, self.user_a, 501)
+        target_a = self.rm.get_target_message_id_sync(self.user_b, self.user_a, 501)
         self.assertEqual(target_a, 101)
-        self.rm.register_message(self.user_b, 502, self.user_a, 102)
+        self.rm.register_message_sync(self.user_b, 502, self.user_a, 102)
 
         # Turn 3: A replies to 102 (B's reply) with message 103 -> B receives 503
-        target_b = self.rm.get_target_message_id(self.user_a, self.user_b, 102)
+        target_b = self.rm.get_target_message_id_sync(self.user_a, self.user_b, 102)
         self.assertEqual(target_b, 502, "User A's reply to 102 should point to 502 in User B's chat")
-        self.rm.register_message(self.user_a, 103, self.user_b, 503)
+        self.rm.register_message_sync(self.user_a, 103, self.user_b, 503)
 
         # Turn 4: B replies to 503 -> target in A should be 103
-        target_a_next = self.rm.get_target_message_id(self.user_b, self.user_a, 503)
+        target_a_next = self.rm.get_target_message_id_sync(self.user_b, self.user_a, 503)
         self.assertEqual(target_a_next, 103)
 
     def test_03_self_quote_reply(self):
         """A user replies to their OWN previous message (self-quote). Verify partner receives corresponding msg."""
         # A sends 101 -> B receives 501
-        self.rm.register_message(self.user_a, 101, self.user_b, 501)
+        self.rm.register_message_sync(self.user_a, 101, self.user_b, 501)
         # A sends 102 -> B receives 502
-        self.rm.register_message(self.user_a, 102, self.user_b, 502)
+        self.rm.register_message_sync(self.user_a, 102, self.user_b, 502)
 
         # A replies to their own earlier message 101 (in A's chat)
-        target_in_b = self.rm.get_target_message_id(
+        target_in_b = self.rm.get_target_message_id_sync(
             sender_id=self.user_a,
             partner_id=self.user_b,
             replied_msg_id=101,
@@ -75,9 +75,9 @@ class TestReplySupport(unittest.TestCase):
         self.assertEqual(target_in_b, 501, "Self-quote of 101 by A should resolve to 501 in B's chat")
 
         # B replies to their own message 501 (received) or B sends 503 -> A receives 103
-        self.rm.register_message(self.user_b, 503, self.user_a, 103)
+        self.rm.register_message_sync(self.user_b, 503, self.user_a, 103)
         # B quotes their own message 503
-        target_in_a = self.rm.get_target_message_id(
+        target_in_a = self.rm.get_target_message_id_sync(
             sender_id=self.user_b,
             partner_id=self.user_a,
             replied_msg_id=503,
@@ -86,7 +86,7 @@ class TestReplySupport(unittest.TestCase):
 
     def test_04_unknown_or_system_reply(self):
         """Replying to a non-relayed message (e.g. bot greeting) returns None."""
-        target = self.rm.get_target_message_id(
+        target = self.rm.get_target_message_id_sync(
             sender_id=self.user_a,
             partner_id=self.user_b,
             replied_msg_id=999999,
@@ -114,14 +114,14 @@ class TestReplySupport(unittest.TestCase):
 
     def test_06_clear_chat(self):
         """Verify chat termination cleanly drops all mappings and frees memory."""
-        self.rm.register_message(self.user_a, 100, self.user_b, 200)
+        self.rm.register_message_sync(self.user_a, 100, self.user_b, 200)
         self.assertEqual(self.rm.active_chat_count(), 1)
 
-        self.rm.clear_chat(self.user_a, self.user_b)
+        self.rm.clear_chat_sync(self.user_a, self.user_b)
         self.assertEqual(self.rm.active_chat_count(), 0)
 
         # Looking up now returns None
-        target = self.rm.get_target_message_id(self.user_b, self.user_a, 200)
+        target = self.rm.get_target_message_id_sync(self.user_b, self.user_a, 200)
         self.assertIsNone(target)
 
     def test_07_isolation_between_different_pairs(self):
@@ -130,27 +130,40 @@ class TestReplySupport(unittest.TestCase):
         user_d = 40004
 
         # A -> B: msg 1 -> msg 10
-        self.rm.register_message(self.user_a, 1, self.user_b, 10)
+        self.rm.register_message_sync(self.user_a, 1, self.user_b, 10)
         # C -> D: msg 1 -> msg 99 (same sender_msg_id 1, but different pair)
-        self.rm.register_message(user_c, 1, user_d, 99)
+        self.rm.register_message_sync(user_c, 1, user_d, 99)
 
         # Lookup in A-B chat
-        self.assertEqual(self.rm.get_target_message_id(self.user_b, self.user_a, 10), 1)
+        self.assertEqual(self.rm.get_target_message_id_sync(self.user_b, self.user_a, 10), 1)
         # Lookup in C-D chat
-        self.assertEqual(self.rm.get_target_message_id(user_d, user_c, 99), 1)
+        self.assertEqual(self.rm.get_target_message_id_sync(user_d, user_c, 99), 1)
 
-        self.rm.clear_chat(user_c, user_d)
+        self.rm.clear_chat_sync(user_c, user_d)
         self.assertEqual(self.rm.active_chat_count(), 1)
-        self.assertEqual(self.rm.get_target_message_id(self.user_b, self.user_a, 10), 1)
+        self.assertEqual(self.rm.get_target_message_id_sync(self.user_b, self.user_a, 10), 1)
 
 
 class TestAsyncRelayReplyHandler(unittest.IsolatedAsyncioTestCase):
     """Integration test for aiogram message copy with ReplyParameters and emoji reactions."""
 
+    def setUp(self):
+        super().setUp()
+        self.mock_db_session = MagicMock()
+        self.mock_db_session.add = MagicMock()
+        self.mock_db_session.commit = AsyncMock()
+        mock_result = MagicMock()
+        mock_result.scalar_one_or_none.return_value = None
+        self.mock_db_session.execute = AsyncMock(return_value=mock_result)
+
+    def _setup_mock_db(self, mock_get_db):
+        mock_get_db.return_value.__aenter__.return_value = self.mock_db_session
+        return self.mock_db_session
+
     async def test_08_copy_to_with_reply_parameters(self):
         """Verify copy_to call passes ReplyParameters with allow_sending_without_reply=True."""
-        reply_manager.clear_chat(111, 222)
-        reply_manager.register_message(
+        reply_manager.clear_chat_sync(111, 222)
+        reply_manager.register_message_sync(
             sender_id=111,
             sender_msg_id=77,
             receiver_id=222,
@@ -164,7 +177,7 @@ class TestAsyncRelayReplyHandler(unittest.IsolatedAsyncioTestCase):
         mock_msg.reply_to_message.message_id = 88
         mock_msg.copy_to = AsyncMock(return_value=MagicMock(message_id=78))
 
-        target_id = reply_manager.get_target_message_id(
+        target_id = await reply_manager.get_target_message_id(
             sender_id=222,
             partner_id=111,
             replied_msg_id=mock_msg.reply_to_message.message_id,
@@ -181,7 +194,7 @@ class TestAsyncRelayReplyHandler(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(sent.message_id, 78)
 
         # Register outgoing copy
-        reply_manager.register_message(
+        reply_manager.register_message_sync(
             sender_id=222,
             sender_msg_id=mock_msg.message_id,
             receiver_id=111,
@@ -189,25 +202,26 @@ class TestAsyncRelayReplyHandler(unittest.IsolatedAsyncioTestCase):
         )
 
         # Verify next turn: 111 replies to 78 -> points to 89 in 222's chat
-        next_target = reply_manager.get_target_message_id(
+        next_target = await reply_manager.get_target_message_id(
             sender_id=111,
             partner_id=222,
             replied_msg_id=78,
         )
         self.assertEqual(next_target, 89)
 
-        reply_manager.clear_chat(111, 222)
+        reply_manager.clear_chat_sync(111, 222)
 
     @patch("app.handlers.matchmaking.get_user")
     @patch("app.handlers.matchmaking.get_db_session")
     async def test_09_relay_message_reaction_add(self, mock_get_db, mock_get_user):
         """User A adds emoji reaction to B's message; bot relays reaction onto B's message."""
+        self._setup_mock_db(mock_get_db)
         user_a = 5001
         user_b = 6002
 
-        reply_manager.clear_chat(user_a, user_b)
+        reply_manager.clear_chat_sync(user_a, user_b)
         # B sent msg 200, which A received as msg 100
-        reply_manager.register_message(
+        reply_manager.register_message_sync(
             sender_id=user_b,
             sender_msg_id=200,
             receiver_id=user_a,
@@ -238,17 +252,18 @@ class TestAsyncRelayReplyHandler(unittest.IsolatedAsyncioTestCase):
             reaction=[reaction],
         )
 
-        reply_manager.clear_chat(user_a, user_b)
+        reply_manager.clear_chat_sync(user_a, user_b)
 
     @patch("app.handlers.matchmaking.get_user")
     @patch("app.handlers.matchmaking.get_db_session")
     async def test_10_relay_message_reaction_remove(self, mock_get_db, mock_get_user):
         """User A removes reaction (new_reaction=[]); bot clears reaction on B's message."""
+        self._setup_mock_db(mock_get_db)
         user_a = 5001
         user_b = 6002
 
-        reply_manager.clear_chat(user_a, user_b)
-        reply_manager.register_message(
+        reply_manager.clear_chat_sync(user_a, user_b)
+        reply_manager.register_message_sync(
             sender_id=user_b,
             sender_msg_id=300,
             receiver_id=user_a,
@@ -277,16 +292,17 @@ class TestAsyncRelayReplyHandler(unittest.IsolatedAsyncioTestCase):
             reaction=[],
         )
 
-        reply_manager.clear_chat(user_a, user_b)
+        reply_manager.clear_chat_sync(user_a, user_b)
 
     @patch("app.handlers.matchmaking.get_user")
     @patch("app.handlers.matchmaking.get_db_session")
     async def test_11_relay_message_reaction_unmapped_message(self, mock_get_db, mock_get_user):
         """Reaction on unmapped/system message is ignored without calling Telegram API."""
+        self._setup_mock_db(mock_get_db)
         user_a = 5001
         user_b = 6002
 
-        reply_manager.clear_chat(user_a, user_b)
+        reply_manager.clear_chat_sync(user_a, user_b)
         mock_db_user = MagicMock()
         mock_db_user.current_partner_id = user_b
         mock_get_user.return_value = mock_db_user
@@ -309,6 +325,7 @@ class TestAsyncRelayReplyHandler(unittest.IsolatedAsyncioTestCase):
     @patch("app.handlers.matchmaking.get_db_session")
     async def test_12_relay_message_reaction_no_active_chat(self, mock_get_db, mock_get_user):
         """Reaction when user is not connected to a partner is cleanly ignored."""
+        self._setup_mock_db(mock_get_db)
         user_a = 5001
         mock_db_user = MagicMock()
         mock_db_user.current_partner_id = None
@@ -332,11 +349,12 @@ class TestAsyncRelayReplyHandler(unittest.IsolatedAsyncioTestCase):
     @patch("app.handlers.matchmaking.get_db_session")
     async def test_13_relay_message_reaction_api_error_handled(self, mock_get_db, mock_get_user):
         """Telegram API errors (e.g. invalid reaction or old msg) are caught and logged without raising."""
+        self._setup_mock_db(mock_get_db)
         user_a = 5001
         user_b = 6002
 
-        reply_manager.clear_chat(user_a, user_b)
-        reply_manager.register_message(
+        reply_manager.clear_chat_sync(user_a, user_b)
+        reply_manager.register_message_sync(
             sender_id=user_b,
             sender_msg_id=400,
             receiver_id=user_a,
@@ -363,18 +381,19 @@ class TestAsyncRelayReplyHandler(unittest.IsolatedAsyncioTestCase):
         await relay_message_reaction(event=event, bot=mock_bot)
 
         mock_bot.set_message_reaction.assert_awaited_once()
-        reply_manager.clear_chat(user_a, user_b)
+        reply_manager.clear_chat_sync(user_a, user_b)
 
     @patch("app.handlers.matchmaking.get_user")
     @patch("app.handlers.matchmaking.get_db_session")
     async def test_14_relay_edited_message_text(self, mock_get_db, mock_get_user):
         """User A edits text message; partner B's corresponding message is edited in real-time."""
+        self._setup_mock_db(mock_get_db)
         user_a = 7001
         user_b = 8002
 
-        reply_manager.clear_chat(user_a, user_b)
+        reply_manager.clear_chat_sync(user_a, user_b)
         # User A sent msg 10, which User B received as msg 20
-        reply_manager.register_message(
+        reply_manager.register_message_sync(
             sender_id=user_a,
             sender_msg_id=10,
             receiver_id=user_b,
@@ -416,17 +435,18 @@ class TestAsyncRelayReplyHandler(unittest.IsolatedAsyncioTestCase):
             parse_mode=None,
         )
 
-        reply_manager.clear_chat(user_a, user_b)
+        reply_manager.clear_chat_sync(user_a, user_b)
 
     @patch("app.handlers.matchmaking.get_user")
     @patch("app.handlers.matchmaking.get_db_session")
     async def test_15_relay_edited_message_caption(self, mock_get_db, mock_get_user):
         """User A edits media caption; partner B's corresponding media caption is edited."""
+        self._setup_mock_db(mock_get_db)
         user_a = 7001
         user_b = 8002
 
-        reply_manager.clear_chat(user_a, user_b)
-        reply_manager.register_message(
+        reply_manager.clear_chat_sync(user_a, user_b)
+        reply_manager.register_message_sync(
             sender_id=user_a,
             sender_msg_id=11,
             receiver_id=user_b,
@@ -468,16 +488,17 @@ class TestAsyncRelayReplyHandler(unittest.IsolatedAsyncioTestCase):
             parse_mode=None,
         )
 
-        reply_manager.clear_chat(user_a, user_b)
+        reply_manager.clear_chat_sync(user_a, user_b)
 
     @patch("app.handlers.matchmaking.get_user")
     @patch("app.handlers.matchmaking.get_db_session")
     async def test_16_relay_edited_message_unmapped_ignored(self, mock_get_db, mock_get_user):
         """Editing an unmapped message (e.g. system bot message) is safely ignored."""
+        self._setup_mock_db(mock_get_db)
         user_a = 7001
         user_b = 8002
 
-        reply_manager.clear_chat(user_a, user_b)
+        reply_manager.clear_chat_sync(user_a, user_b)
         mock_db_user = MagicMock()
         mock_db_user.current_partner_id = user_b
         mock_get_user.return_value = mock_db_user
@@ -506,6 +527,7 @@ class TestAsyncRelayReplyHandler(unittest.IsolatedAsyncioTestCase):
     @patch("app.handlers.matchmaking.get_db_session")
     async def test_17_relay_edited_message_no_partner_ignored(self, mock_get_db, mock_get_user):
         """Editing message when user is not in an active chat is ignored."""
+        self._setup_mock_db(mock_get_db)
         user_a = 7001
         mock_db_user = MagicMock()
         mock_db_user.current_partner_id = None
@@ -532,11 +554,12 @@ class TestAsyncRelayReplyHandler(unittest.IsolatedAsyncioTestCase):
     @patch("app.handlers.matchmaking.get_db_session")
     async def test_18_relay_edited_message_not_modified_error_handled(self, mock_get_db, mock_get_user):
         """TelegramBadRequest with 'message is not modified' is caught and handled cleanly."""
+        self._setup_mock_db(mock_get_db)
         user_a = 7001
         user_b = 8002
 
-        reply_manager.clear_chat(user_a, user_b)
-        reply_manager.register_message(
+        reply_manager.clear_chat_sync(user_a, user_b)
+        reply_manager.register_message_sync(
             sender_id=user_a,
             sender_msg_id=12,
             receiver_id=user_b,
@@ -567,7 +590,96 @@ class TestAsyncRelayReplyHandler(unittest.IsolatedAsyncioTestCase):
         await relay_edited_message(message=msg, bot=mock_bot, state=mock_state)
 
         mock_bot.edit_message_text.assert_awaited_once()
-        reply_manager.clear_chat(user_a, user_b)
+        reply_manager.clear_chat_sync(user_a, user_b)
+
+    @patch("app.handlers.matchmaking.get_active_session_by_user_id")
+    @patch("app.handlers.matchmaking.get_or_create_user")
+    @patch("app.handlers.matchmaking.get_db_session")
+    async def test_19_self_reply_relayed_with_reply_parameters(self, mock_get_db, mock_get_user, mock_get_active_session):
+        """User A replies to their OWN previous message; bot translates to partner's message ID and sends with ReplyParameters."""
+        self._setup_mock_db(mock_get_db)
+        user_a = 9001
+        user_b = 9002
+
+        reply_manager.clear_chat_sync(user_a, user_b)
+        # User A sent message 10, which User B received as message 20
+        reply_manager.register_message_sync(
+            sender_id=user_a,
+            sender_msg_id=10,
+            receiver_id=user_b,
+            receiver_msg_id=20,
+        )
+
+        mock_db_user = MagicMock()
+        mock_db_user.current_partner_id = user_b
+        mock_get_user.return_value = mock_db_user
+
+        mock_session_obj = MagicMock()
+        mock_session_obj.id = 138
+        mock_get_active_session.return_value = mock_session_obj
+
+        mock_bot = MagicMock(spec=Bot)
+        mock_state = MagicMock()
+        mock_state.get_state = AsyncMock(return_value=None)
+
+        # User A sends a new message 11, which replies to message 10 (User A's OWN message)
+        mock_msg = MagicMock(spec=Message)
+        mock_msg.from_user = MagicMock(spec=TgUser)
+        mock_msg.from_user.id = user_a
+        mock_msg.message_id = 11
+        mock_msg.text = "Replying to my own previous message!"
+        mock_msg.external_reply = None
+        mock_msg.reply_to_message = MagicMock(spec=Message)
+        mock_msg.reply_to_message.message_id = 10
+        mock_msg.reply_to_message.from_user = MagicMock(spec=TgUser)
+        mock_msg.reply_to_message.from_user.id = user_a  # SELF-REPLY
+        mock_msg.copy_to = AsyncMock(return_value=MagicMock(message_id=21))
+
+        from app.handlers.matchmaking import relay_anonymous_message
+        await relay_anonymous_message(message=mock_msg, bot=mock_bot, state=mock_state)
+
+        # Must have called copy_to with reply_parameters pointing to 20 in B's chat
+        mock_msg.copy_to.assert_awaited_once()
+        _, kwargs = mock_msg.copy_to.call_args
+        self.assertEqual(kwargs.get("chat_id"), user_b)
+        self.assertIsNotNone(kwargs.get("reply_parameters"))
+        self.assertEqual(kwargs["reply_parameters"].message_id, 20)
+
+        reply_manager.clear_chat_sync(user_a, user_b)
+
+    @patch("app.database.crud.get_mapped_target_message_id_from_db")
+    async def test_20_db_persistence_fallback_across_restart(self, mock_get_from_db):
+        """When in-memory cache is empty (simulating bot restart), DB fallback resolves target message."""
+        user_a = 9001
+        user_b = 9002
+
+        reply_manager.clear_chat_sync(user_a, user_b)
+        # Simulate in-memory cache MISS (empty)
+        self.assertEqual(reply_manager.active_chat_count(), 0)
+
+        # Mock DB returning partner's message ID 150
+        mock_get_from_db.return_value = 150
+        mock_session = AsyncMock()
+
+        target_id = await reply_manager.get_target_message_id(
+            sender_id=user_a,
+            partner_id=user_b,
+            replied_msg_id=75,
+            session=mock_session,
+        )
+
+        self.assertEqual(target_id, 150)
+        mock_get_from_db.assert_awaited_once_with(
+            session=mock_session,
+            sender_id=user_a,
+            partner_id=user_b,
+            replied_msg_id=75,
+        )
+
+        # And now it should be populated in in-memory cache!
+        self.assertEqual(reply_manager.get_target_message_id_sync(user_a, user_b, 75), 150)
+
+        reply_manager.clear_chat_sync(user_a, user_b)
 
 
 if __name__ == "__main__":

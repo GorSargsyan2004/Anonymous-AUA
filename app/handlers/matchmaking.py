@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database.crud import (
     end_active_session,
+    get_active_session_by_user_id,
     get_or_create_user,
     get_user,
     set_user_searching,
@@ -156,7 +157,7 @@ async def handle_stop(message: Message, bot: Bot, state: FSMContext) -> None:
             result = await end_active_session(session, user_id=user_id)
             if result:
                 chat_session, partner_id = result
-                reply_manager.clear_chat(user_id, partner_id)
+                await reply_manager.clear_chat(user_id, partner_id, session=session, session_id=chat_session.id)
 
                 # Notify initiating user
                 await message.answer(
@@ -218,7 +219,7 @@ async def handle_next(message: Message, bot: Bot, state: FSMContext) -> None:
             result = await end_active_session(session, user_id=user_id)
             if result:
                 chat_session, partner_id = result
-                reply_manager.clear_chat(user_id, partner_id)
+                await reply_manager.clear_chat(user_id, partner_id, session=session, session_id=chat_session.id)
 
                 await message.answer(
                     "⏭️ <b>Skipping to next partner...</b>\n\n"
@@ -281,11 +282,31 @@ async def relay_anonymous_message(message: Message, bot: Bot, state: FSMContext)
 
         # Check if incoming message is a reply to a previous message in the conversation
         reply_params: Optional[ReplyParameters] = None
-        if message.reply_to_message:
-            target_msg_id = reply_manager.get_target_message_id(
+        replied_msg = message.reply_to_message or message.external_reply
+        replied_msg_id = getattr(replied_msg, "message_id", None) if replied_msg else None
+
+        active_chat = await get_active_session_by_user_id(session, user_id=user_id)
+        session_id = active_chat.id if active_chat else None
+
+        if replied_msg_id:
+            target_msg_id = await reply_manager.get_target_message_id(
                 sender_id=user_id,
                 partner_id=partner_id,
-                replied_msg_id=message.reply_to_message.message_id,
+                replied_msg_id=replied_msg_id,
+                session=session,
+            )
+            is_self = bool(
+                message.reply_to_message
+                and message.reply_to_message.from_user
+                and message.reply_to_message.from_user.id == user_id
+            )
+            logger.info(
+                "Reply lookup: user %s replied to %s (self_reply=%s) -> target in %s is %s",
+                user_id,
+                replied_msg_id,
+                is_self,
+                partner_id,
+                target_msg_id,
             )
             if target_msg_id:
                 reply_params = ReplyParameters(
@@ -298,30 +319,43 @@ async def relay_anonymous_message(message: Message, bot: Bot, state: FSMContext)
             if reply_params:
                 try:
                     sent_msg = await message.copy_to(chat_id=partner_id, reply_parameters=reply_params)
+                    logger.info(
+                        "Relayed message with reply from %s to %s (target msg %s)",
+                        user_id,
+                        partner_id,
+                        target_msg_id,
+                    )
                 except TelegramBadRequest as e:
-                    # Fallback without reply parameters if Telegram rejects the target reply message
-                    if "reply" in str(e).lower():
+                    logger.warning(
+                        "Telegram rejected reply_parameters for partner %s (msg %s): %s",
+                        partner_id,
+                        target_msg_id,
+                        e,
+                    )
+                    if "reply" in str(e).lower() or "message to be replied not found" in str(e).lower():
                         sent_msg = await message.copy_to(chat_id=partner_id)
                     else:
                         raise
             else:
                 sent_msg = await message.copy_to(chat_id=partner_id)
 
-            # Record message ID mapping for bidirectional reply support
+            # Record message ID mapping for bidirectional reply support (both in-memory and PostgreSQL)
             sent_msg_id = getattr(sent_msg, "message_id", None)
             if sent_msg_id:
-                reply_manager.register_message(
+                await reply_manager.register_message(
                     sender_id=user_id,
                     sender_msg_id=message.message_id,
                     receiver_id=partner_id,
                     receiver_msg_id=sent_msg_id,
+                    session=session,
+                    session_id=session_id,
                 )
         except TelegramForbiddenError as e:
             logger.warning("Partner %s blocked the bot or is deactivated: %s", partner_id, e)
             result = await end_active_session(session, user_id=user_id)
             if result:
                 chat_session, _ = result
-                reply_manager.clear_chat(user_id, partner_id)
+                await reply_manager.clear_chat(user_id, partner_id, session=session, session_id=chat_session.id)
                 await message.answer(
                     "⚠️ <b>Your partner has disconnected or left the chat.</b>\n\n"
                     "How was your conversation?",
@@ -336,7 +370,7 @@ async def relay_anonymous_message(message: Message, bot: Bot, state: FSMContext)
                 result = await end_active_session(session, user_id=user_id)
                 if result:
                     chat_session, _ = result
-                    reply_manager.clear_chat(user_id, partner_id)
+                    await reply_manager.clear_chat(user_id, partner_id, session=session, session_id=chat_session.id)
                     await message.answer(
                         "⚠️ <b>Your partner has disconnected or left the chat.</b>\n\n"
                         "How was your conversation?",
@@ -376,11 +410,12 @@ async def relay_message_reaction(event: MessageReactionUpdated, bot: Bot) -> Non
             return
         partner_id = db_user.current_partner_id
 
-    # Find corresponding message ID in partner's chat
-    target_msg_id = reply_manager.get_target_message_id(
+    # Find corresponding message ID in partner's chat (check memory then DB)
+    target_msg_id = await reply_manager.get_target_message_id(
         sender_id=user_id,
         partner_id=partner_id,
         replied_msg_id=event.message_id,
+        session=session,
     )
     if not target_msg_id:
         logger.debug(
@@ -445,11 +480,12 @@ async def relay_edited_message(message: Message, bot: Bot, state: FSMContext) ->
             return
         partner_id = db_user.current_partner_id
 
-    # Resolve corresponding message ID in partner's chat
-    target_msg_id = reply_manager.get_target_message_id(
+    # Resolve corresponding message ID in partner's chat (check memory then DB)
+    target_msg_id = await reply_manager.get_target_message_id(
         sender_id=user_id,
         partner_id=partner_id,
         replied_msg_id=message.message_id,
+        session=session,
     )
     if not target_msg_id:
         logger.debug(
