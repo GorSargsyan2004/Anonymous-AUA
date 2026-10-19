@@ -22,6 +22,7 @@ An asynchronous, production-ready Telegram bot created exclusively for students 
 - [📋 Bot Commands Reference](#-bot-commands-reference)
 - [🏗️ Project Architecture](#️-project-architecture)
 - [💾 Database Models & Schema](#-database-models--schema)
+- [🗄️ Automated Database Backups & Recovery](#️-automated-database-backups--recovery)
 - [🚀 Quickstart & Deployment](#-quickstart--deployment)
   - [Prerequisites](#prerequisites)
   - [1. Clone Repository](#1-clone-repository)
@@ -260,6 +261,33 @@ erDiagram
 
 ---
 
+## 🗄️ Automated Database Backups & Recovery
+
+The bot includes an enterprise-grade automated backup system designed to safeguard student data, matching histories, and preferences against hardware crashes, data corruption, or accidental deletions.
+
+### 🌟 Key Backup Features
+1. **Automated Hourly Execution**: A non-blocking background async task runs inside the bot container every 60 minutes.
+2. **Atomic Replacement**: Backups stream into a temporary archive (`.dump_<timestamp>.tmp.gz`), verify data integrity and non-zero size, and only then atomically replace `backups/latest.sql.gz`. A corrupted dump will **never** overwrite a healthy backup.
+3. **Gzip Stream Compression**: SQL dumps are compressed on-the-fly, reducing file size by 85–90% (~6 KB per snapshot) with near-zero CPU and disk footprint.
+4. **Rolling 24-Hour Archive**: In addition to `latest.sql.gz`, the system retains the last 24 timestamped snapshots (`backups/backup_YYYYMMDD_HHMMSS.sql.gz`) with automatic FIFO pruning.
+5. **Strict Git & Privacy Isolation**:
+   - `backups/`, `*.sql`, `*.sql.gz`, and `*.dump` are strictly declared in [`.gitignore`](file:///home/gor/Projects/Anonymous-AUA/.gitignore).
+   - Sensitive student chat data, IDs, and reputation scores are **never** committed or exposed on GitHub.
+6. **Admin On-Demand Snapshot (`/backup`)**: Administrators can trigger an instant snapshot anytime via Telegram before container upgrades or server maintenance.
+
+### 🔄 How to Restore Database from Backup
+To restore the PostgreSQL database from the latest snapshot:
+
+```bash
+# 1. Decompress and restore into the running PostgreSQL container:
+gunzip -c backups/latest.sql.gz | docker exec -i aua_postgres psql -U bruce -d aua_chat_db
+
+# 2. Or restore from any specific historical snapshot:
+gunzip -c backups/backup_20261019_144856.sql.gz | docker exec -i aua_postgres psql -U bruce -d aua_chat_db
+```
+
+---
+
 ## 🚀 Quickstart & Deployment
 
 ### Prerequisites
@@ -390,6 +418,25 @@ Admins can send `/stata` to view an aggregated dashboard:
 • Total Filed: 5
 • ✅ Resolved: 4
 • ⏳ Pending: 1
+
+💾 Database Backups:
+✅ Active (2026-10-19 14:48:56 UTC)
+• Primary File: backups/latest.sql.gz (5.9 KB)
+• Rolling Snapshots: 1
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+```
+
+### On-Demand Database Backup (`/backup`)
+Admins can send `/backup` at any time to immediately export and compress a clean SQL dump of the database:
+```text
+💾 PostgreSQL Database Backup Created Successfully! 🦅🇦🇲
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📁 Primary: backups/latest.sql.gz
+📦 Archive Snapshot: backup_20261019_144856.sql.gz
+📊 Snapshot Size: 5.86 KB
+🗂 Total Rolling Snapshots: 1
+🕒 Timestamp: 2026-10-19 14:48:56 UTC
+🔒 Security: Strict 0644 / Git-ignored / Isolated
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 ```
 
@@ -399,6 +446,7 @@ When a user submits a report:
 2. Admins can click:
    - `[⚖️ Penalize User]`: Prompts admin for the number of points to deduct (e.g., `15`). The user's priority is reduced (clamped at minimum `0`), and the report is marked resolved.
    - `[✅ Dismiss]`: Resolves the report with `0` penalty.
+
 
 ---
 

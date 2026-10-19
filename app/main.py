@@ -14,6 +14,8 @@ from app.config import settings
 from app.database.crud import sync_active_sessions_on_startup
 from app.database.session import engine, get_db_session, init_db
 from app.handlers import register_handlers
+from app.services.backup import hourly_backup_worker
+
 
 # Configure logging
 logging.basicConfig(
@@ -105,7 +107,10 @@ async def main() -> None:
     except Exception as e:
         logger.debug("Could not enforce bot profile: %s", e)
 
-    # 6. Start Polling (preserve pending updates so messages sent during restart are not lost)
+    # 6. Start background workers
+    backup_task = asyncio.create_task(hourly_backup_worker(bot))
+
+    # 7. Start Polling (preserve pending updates so messages sent during restart are not lost)
     logger.info("Starting polling with admin IDs: %s", settings.ADMIN_IDS)
     try:
         await bot.delete_webhook(drop_pending_updates=False)
@@ -115,6 +120,12 @@ async def main() -> None:
             drop_pending_updates=False,
         )
     finally:
+        logger.info("Stopping background backup task...")
+        backup_task.cancel()
+        try:
+            await backup_task
+        except (asyncio.CancelledError, Exception):
+            pass
         logger.info("Closing bot session...")
         await bot.session.close()
         logger.info("Disposing database engine...")

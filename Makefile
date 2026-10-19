@@ -7,7 +7,7 @@ PROJECT_DIR := $(shell pwd)
 SERVICE_NAME := aua-bot
 COMPOSE := docker compose
 
-.PHONY: help init start up run stop down restart logs logs-bot logs-db ps status autostart enable-boot update clean db-shell
+.PHONY: help init start up run stop down restart logs logs-bot logs-db ps status autostart enable-boot update clean db-shell backup restore
 
 # Default target: display help
 all: help
@@ -26,6 +26,8 @@ help:
 	@echo "  make status (or ps)    Display current status and health of containers"
 	@echo "  make update            Pull latest git changes and rebuild containers"
 	@echo "  make db-shell          Open an interactive PostgreSQL psql session"
+	@echo "  make backup            Trigger an instant database backup snapshot"
+	@echo "  make restore           Restore database from backups/latest.sql.gz"
 	@echo "  make clean             Clean up unused Docker images and build caches"
 	@echo "================================================================================"
 
@@ -125,8 +127,24 @@ db-shell:
 	@echo "🔑 Connecting to PostgreSQL database (aua_chat_db)..."
 	docker exec -it aua_postgres psql -U $${POSTGRES_USER:-bruce} -d $${POSTGRES_DB:-aua_chat_db}
 
+# Trigger manual database backup
+backup:
+	@echo "💾 Triggering database backup snapshot..."
+	@docker exec aua_bot python -c "import asyncio; from app.services.backup import create_database_backup; ok, name, sz = asyncio.run(create_database_backup()); print(f'Backup status: ok={ok}, file={name}, size={sz} bytes')"
+
+# Restore database from latest backup
+restore:
+	@if [ ! -f backups/latest.sql.gz ]; then \
+		echo "❌ backups/latest.sql.gz does not exist!"; \
+		exit 1; \
+	fi
+	@echo "⚠️ Restoring database from backups/latest.sql.gz..."
+	gunzip -c backups/latest.sql.gz | docker exec -i aua_postgres psql -U $${POSTGRES_USER:-bruce} -d $${POSTGRES_DB:-aua_chat_db}
+	@echo "✅ Database restored successfully!"
+
 # Clean unused docker resources
 clean:
 	@echo "🧹 Cleaning unused Docker images and build caches..."
 	docker image prune -f
 	@echo "✓ Clean complete."
+

@@ -17,7 +17,9 @@ from app.database.crud import (
 )
 from app.database.session import get_db_session
 from app.filters.admin import IsAdminFilter
+from app.services.backup import create_database_backup, get_backup_metadata
 from app.states.states import AdminPenalizeState, AdminReplyState
+
 
 logger = logging.getLogger(__name__)
 router = Router(name="admin_router")
@@ -29,9 +31,20 @@ router.callback_query.filter(IsAdminFilter())
 
 @router.message(Command("stata"))
 async def handle_stata(message: Message) -> None:
-    """Display real-time aggregated metrics for Anonymous AUA Bot."""
+    """Display real-time aggregated metrics and backup status for Anonymous AUA Bot."""
     async with get_db_session() as session:
         stats = await get_admin_stats(session)
+
+    backup_info = get_backup_metadata()
+    if backup_info["exists"]:
+        latest_kb = backup_info["latest_size_bytes"] / 1024
+        backup_str = (
+            f"✅ Active ({backup_info['latest_modified']})\n"
+            f"• Primary File: <code>backups/latest.sql.gz</code> ({latest_kb:.1f} KB)\n"
+            f"• Rolling Snapshots: <b>{backup_info['total_snapshots']}</b>"
+        )
+    else:
+        backup_str = "⚠️ No backup snapshot found yet (run /backup)"
 
     dashboard = (
         "📊 <b>AUA Anonymous Chat — Administrator Dashboard</b> 🦅🇦🇲\n"
@@ -61,11 +74,48 @@ async def handle_stata(message: Message) -> None:
         f"🚨 <b>Reports Summary:</b>\n"
         f"• Total Filed: <b>{stats['total_reports']}</b>\n"
         f"• ✅ Resolved: <b>{stats['resolved_reports']}</b>\n"
-        f"• ⏳ Pending: <b>{stats['pending_reports']}</b>\n"
-        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        f"• ⏳ Pending: <b>{stats['pending_reports']}</b>\n\n"
+        f"💾 <b>Database Backups:</b>\n"
+        f"{backup_str}\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        "💡 <i>Tip: Use /backup to trigger an on-demand database snapshot.</i>"
     )
 
     await message.answer(dashboard, parse_mode="HTML")
+
+
+@router.message(Command("backup"))
+async def handle_admin_backup(message: Message) -> None:
+    """Trigger an immediate manual PostgreSQL database backup and report status."""
+    status_msg = await message.reply("⏳ <i>Creating PostgreSQL database backup snapshot...</i>", parse_mode="HTML")
+    success, filename_or_err, size_bytes = await create_database_backup()
+
+    if success:
+        size_kb = size_bytes / 1024
+        size_display = f"{size_kb / 1024:.2f} MB" if size_kb >= 1024 else f"{size_kb:.1f} KB"
+        meta = get_backup_metadata()
+        report = (
+            "💾 <b>PostgreSQL Database Backup Created Successfully!</b> 🦅🇦🇲\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"📁 <b>Primary:</b> <code>backups/latest.sql.gz</code>\n"
+            f"📦 <b>Archive Snapshot:</b> <code>{filename_or_err}</code>\n"
+            f"📊 <b>Snapshot Size:</b> <b>{size_display}</b>\n"
+            f"🗂 <b>Total Rolling Snapshots:</b> <b>{meta['total_snapshots']}</b>\n"
+            f"🕒 <b>Timestamp:</b> <b>{meta['latest_modified']}</b>\n"
+            "🔒 <b>Security:</b> Strict 0644 / Git-ignored / Isolated\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        )
+        await status_msg.edit_text(report, parse_mode="HTML")
+    else:
+        safe_err = html.escape(str(filename_or_err))
+        await status_msg.edit_text(
+            "❌ <b>Database Backup Failed</b> 🦅🇦🇲\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"<b>Error Details:</b>\n<code>{safe_err}</code>\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+            parse_mode="HTML",
+        )
+
 
 
 @router.callback_query(F.data.startswith("admin_dismiss:"))

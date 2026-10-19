@@ -41,6 +41,12 @@ venv.bak/
 # Docker / Database Data
 postgres_data/
 
+# Database Backups (Strictly Private)
+backups/
+*.sql
+*.sql.gz
+*.dump
+
 # Alembic migrations cache
 alembic/versions/__pycache__/
 
