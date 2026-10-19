@@ -2,7 +2,7 @@
 
 import asyncio
 import logging
-from typing import Optional
+from typing import Dict, Optional
 from aiogram import Bot, F, Router
 from aiogram.exceptions import (
     TelegramAPIError,
@@ -29,6 +29,52 @@ from app.services.reply_manager import reply_manager
 
 logger = logging.getLogger(__name__)
 router = Router(name="matchmaking_router")
+
+EMULATED_TYPING_SLEEP = True
+_user_relay_locks: Dict[int, asyncio.Lock] = {}
+
+
+def get_user_relay_lock(user_id: int) -> asyncio.Lock:
+    """Retrieve or initialize an asyncio.Lock per user ensuring strict FIFO message relay ordering."""
+    if user_id not in _user_relay_locks:
+        _user_relay_locks[user_id] = asyncio.Lock()
+    return _user_relay_locks[user_id]
+
+
+def get_chat_action_for_message(message: Message) -> str:
+    """Determine the appropriate Telegram chat action based on incoming message type."""
+    if message.text:
+        return "typing"
+    elif message.photo:
+        return "upload_photo"
+    elif message.voice:
+        return "record_voice"
+    elif message.video:
+        return "upload_video"
+    elif message.video_note:
+        return "record_video_note"
+    elif message.sticker:
+        return "choose_sticker"
+    elif message.audio:
+        return "upload_document"
+    elif message.document:
+        return "upload_document"
+    return "typing"
+
+
+def get_emulated_typing_duration(message: Message) -> float:
+    """Calculate natural typing delay in seconds based on message length and content."""
+    if message.text:
+        length = len(message.text)
+        return min(max(0.5, 0.5 + length * 0.01), 1.8)
+    elif message.caption:
+        length = len(message.caption)
+        return min(max(0.6, 0.6 + length * 0.01), 1.8)
+    elif message.voice or message.video_note:
+        return 1.0
+    elif message.photo or message.video or message.document or message.audio:
+        return 0.8
+    return 0.5
 
 
 async def schedule_search_notice(bot: Bot, user_id: int) -> None:
@@ -314,59 +360,60 @@ async def relay_anonymous_message(message: Message, bot: Bot, state: FSMContext)
                     allow_sending_without_reply=True,
                 )
 
-        # Attempt to relay message to partner
-        try:
-            if reply_params:
-                try:
-                    sent_msg = await message.copy_to(chat_id=partner_id, reply_parameters=reply_params)
-                    logger.info(
-                        "Relayed message with reply from %s to %s (target msg %s)",
-                        user_id,
-                        partner_id,
-                        target_msg_id,
-                    )
-                except TelegramBadRequest as e:
-                    logger.warning(
-                        "Telegram rejected reply_parameters for partner %s (msg %s): %s",
-                        partner_id,
-                        target_msg_id,
-                        e,
-                    )
-                    if "reply" in str(e).lower() or "message to be replied not found" in str(e).lower():
-                        sent_msg = await message.copy_to(chat_id=partner_id)
-                    else:
-                        raise
-            else:
-                sent_msg = await message.copy_to(chat_id=partner_id)
+        # Acquire per-user lock to maintain strict FIFO message ordering during typing emulation
+        async with get_user_relay_lock(user_id):
+            show_typing = getattr(user, "show_typing", True)
+            if show_typing is None:
+                show_typing = True
 
-            # Record message ID mapping for bidirectional reply support (both in-memory and PostgreSQL)
-            sent_msg_id = getattr(sent_msg, "message_id", None)
-            if sent_msg_id:
-                await reply_manager.register_message(
-                    sender_id=user_id,
-                    sender_msg_id=message.message_id,
-                    receiver_id=partner_id,
-                    receiver_msg_id=sent_msg_id,
-                    session=session,
-                    session_id=session_id,
-                )
-        except TelegramForbiddenError as e:
-            logger.warning("Partner %s blocked the bot or is deactivated: %s", partner_id, e)
-            result = await end_active_session(session, user_id=user_id)
-            if result:
-                chat_session, _ = result
-                await reply_manager.clear_chat(user_id, partner_id, session=session, session_id=chat_session.id)
-                await message.answer(
-                    "⚠️ <b>Your partner has disconnected or left the chat.</b>\n\n"
-                    "How was your conversation?",
-                    reply_markup=get_feedback_keyboard(chat_session.id, partner_id),
-                    parse_mode="HTML",
-                )
-                await maybe_send_bot_feedback_prompt(bot, session, user_id)
-        except TelegramBadRequest as e:
-            err_msg = str(e).lower()
-            if any(term in err_msg for term in ["chat not found", "user is deactivated", "bot was blocked"]):
-                logger.warning("Partner %s unavailable (%s): %s", partner_id, err_msg, e)
+            if show_typing:
+                action = get_chat_action_for_message(message)
+                duration = get_emulated_typing_duration(message) if EMULATED_TYPING_SLEEP else 0.0
+                try:
+                    await bot.send_chat_action(chat_id=partner_id, action=action)
+                except Exception as e:
+                    logger.debug("Failed to send chat action '%s' to partner %s: %s", action, partner_id, e)
+                if duration > 0:
+                    await asyncio.sleep(duration)
+
+            # Attempt to relay message to partner
+            try:
+                if reply_params:
+                    try:
+                        sent_msg = await message.copy_to(chat_id=partner_id, reply_parameters=reply_params)
+                        logger.info(
+                            "Relayed message with reply from %s to %s (target msg %s)",
+                            user_id,
+                            partner_id,
+                            target_msg_id,
+                        )
+                    except TelegramBadRequest as e:
+                        logger.warning(
+                            "Telegram rejected reply_parameters for partner %s (msg %s): %s",
+                            partner_id,
+                            target_msg_id,
+                            e,
+                        )
+                        if "reply" in str(e).lower() or "message to be replied not found" in str(e).lower():
+                            sent_msg = await message.copy_to(chat_id=partner_id)
+                        else:
+                            raise
+                else:
+                    sent_msg = await message.copy_to(chat_id=partner_id)
+
+                # Record message ID mapping for bidirectional reply support (both in-memory and PostgreSQL)
+                sent_msg_id = getattr(sent_msg, "message_id", None)
+                if sent_msg_id:
+                    await reply_manager.register_message(
+                        sender_id=user_id,
+                        sender_msg_id=message.message_id,
+                        receiver_id=partner_id,
+                        receiver_msg_id=sent_msg_id,
+                        session=session,
+                        session_id=session_id,
+                    )
+            except TelegramForbiddenError as e:
+                logger.warning("Partner %s blocked the bot or is deactivated: %s", partner_id, e)
                 result = await end_active_session(session, user_id=user_id)
                 if result:
                     chat_session, _ = result
@@ -378,21 +425,36 @@ async def relay_anonymous_message(message: Message, bot: Bot, state: FSMContext)
                         parse_mode="HTML",
                     )
                     await maybe_send_bot_feedback_prompt(bot, session, user_id)
-            else:
-                logger.error("Failed to relay message from %s to %s (bad request): %s", user_id, partner_id, e)
+            except TelegramBadRequest as e:
+                err_msg = str(e).lower()
+                if any(term in err_msg for term in ["chat not found", "user is deactivated", "bot was blocked"]):
+                    logger.warning("Partner %s unavailable (%s): %s", partner_id, err_msg, e)
+                    result = await end_active_session(session, user_id=user_id)
+                    if result:
+                        chat_session, _ = result
+                        await reply_manager.clear_chat(user_id, partner_id, session=session, session_id=chat_session.id)
+                        await message.answer(
+                            "⚠️ <b>Your partner has disconnected or left the chat.</b>\n\n"
+                            "How was your conversation?",
+                            reply_markup=get_feedback_keyboard(chat_session.id, partner_id),
+                            parse_mode="HTML",
+                        )
+                        await maybe_send_bot_feedback_prompt(bot, session, user_id)
+                else:
+                    logger.error("Failed to relay message from %s to %s (bad request): %s", user_id, partner_id, e)
+                    await message.answer(
+                        "⚠️ <i>Message could not be delivered to your partner. Please try again.</i>",
+                        parse_mode="HTML",
+                    )
+            except TelegramAPIError as e:
+                # Temporary network or Telegram server error: do NOT terminate the active session!
+                logger.error("Temporary Telegram API error while relaying from %s to %s: %s", user_id, partner_id, e)
                 await message.answer(
-                    "⚠️ <i>Message could not be delivered to your partner. Please try again.</i>",
+                    "⚠️ <i>Temporary connection issue delivering message. Your chat is still active. Please resend.</i>",
                     parse_mode="HTML",
                 )
-        except TelegramAPIError as e:
-            # Temporary network or Telegram server error: do NOT terminate the active session!
-            logger.error("Temporary Telegram API error while relaying from %s to %s: %s", user_id, partner_id, e)
-            await message.answer(
-                "⚠️ <i>Temporary connection issue delivering message. Your chat is still active. Please resend.</i>",
-                parse_mode="HTML",
-            )
-        except Exception as e:
-            logger.error("Unexpected error while relaying from %s to %s: %s", user_id, partner_id, e)
+            except Exception as e:
+                logger.error("Unexpected error while relaying from %s to %s: %s", user_id, partner_id, e)
 
 
 @router.message_reaction()

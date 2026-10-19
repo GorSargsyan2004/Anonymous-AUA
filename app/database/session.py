@@ -51,6 +51,11 @@ async def init_db() -> None:
                 "ALTER TABLE users ADD COLUMN IF NOT EXISTS target_orientations VARCHAR(128);"
             )
         )
+        await conn.execute(
+            text(
+                "ALTER TABLE users ADD COLUMN IF NOT EXISTS show_typing BOOLEAN NOT NULL DEFAULT true;"
+            )
+        )
         # Backfill default preferences for existing users who do not have them set
         await conn.execute(
             text(

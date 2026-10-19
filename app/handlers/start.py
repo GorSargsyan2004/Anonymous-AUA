@@ -7,6 +7,7 @@ from aiogram.types import CallbackQuery, Message
 from app.database.crud import (
     get_or_create_user,
     get_user,
+    set_user_typing_preference,
     update_user_preferences,
     update_user_profile,
 )
@@ -152,20 +153,25 @@ async def handle_preferences_command(message: Message, state: FSMContext) -> Non
             for o in (user.target_orientations or "").split(",")
             if o.strip()
         ] or def_orients
+        show_typing = getattr(user, "show_typing", True)
+        if show_typing is None:
+            show_typing = True
 
     await state.set_state(PreferencesState.configuring)
     await state.update_data(
         pref_sexes=selected_sexes,
         pref_orientations=selected_orientations,
+        pref_show_typing=show_typing,
         is_onboarding=False,
     )
 
     await message.answer(
-        "⚙️ <b>Matching Preferences</b>\n\n"
-        "Select who you want to be able to connect with in anonymous chats.\n"
-        "Matches occur when <b>both</b> students' preferences mutually match!\n\n"
+        "⚙️ <b>Preferences</b>\n\n"
+        "• Select who you want to be able to connect with in anonymous chats.\n"
+        "• Matches occur when <b>both</b> students' preferences mutually match!\n"
+        "• Toggle whether your partner sees when you are typing.\n\n"
         "<i>Toggle checkboxes below and press 'Save Preferences':</i>",
-        reply_markup=get_preferences_keyboard(selected_sexes, selected_orientations),
+        reply_markup=get_preferences_keyboard(selected_sexes, selected_orientations, show_typing=show_typing),
         parse_mode="HTML",
     )
 
@@ -254,15 +260,17 @@ async def handle_orientation_selected(callback: CallbackQuery, state: FSMContext
     await state.update_data(
         pref_sexes=selected_sexes,
         pref_orientations=selected_orientations,
+        pref_show_typing=True,
         is_onboarding=True,
     )
 
     await callback.message.edit_text(
         "🎯 <b>Who would you like to connect with?</b>\n\n"
         "By default, your preferences are set for finding a romantic partner. "
-        "You can also select if you'd like to talk to other sexes and orientations!\n\n"
+        "You can also select if you'd like to talk to other sexes and orientations, "
+        "and toggle whether partners see when you are typing!\n\n"
         "<i>Toggle checkboxes below and press 'Save Preferences' when ready:</i>",
-        reply_markup=get_preferences_keyboard(selected_sexes, selected_orientations),
+        reply_markup=get_preferences_keyboard(selected_sexes, selected_orientations, show_typing=True),
         parse_mode="HTML",
     )
     await callback.answer()
@@ -270,16 +278,17 @@ async def handle_orientation_selected(callback: CallbackQuery, state: FSMContext
 
 @router.callback_query(F.data.startswith("pref_toggle:"))
 async def handle_preference_toggle(callback: CallbackQuery, state: FSMContext) -> None:
-    """Toggle a sex or orientation checkbox in the preferences menu."""
+    """Toggle a sex, orientation, or typing status checkbox in the preferences menu."""
     parts = callback.data.split(":")
-    if len(parts) != 3:
+    if len(parts) < 2:
         await callback.answer()
         return
 
-    category, item = parts[1], parts[2].lower().strip()
+    category = parts[1]
     data = await state.get_data()
     selected_sexes = list(data.get("pref_sexes") or [])
     selected_orientations = list(data.get("pref_orientations") or [])
+    show_typing = data.get("pref_show_typing", True)
 
     # If state was lost or empty, recover from database
     if not selected_sexes or not selected_orientations:
@@ -297,7 +306,29 @@ async def handle_preference_toggle(callback: CallbackQuery, state: FSMContext) -
                     for o in (user.target_orientations or "").split(",")
                     if o.strip()
                 ] or def_orients
+                if user.show_typing is not None:
+                    show_typing = user.show_typing
 
+    if category == "typing":
+        show_typing = not show_typing
+        await state.update_data(pref_show_typing=show_typing)
+        try:
+            await callback.message.edit_reply_markup(
+                reply_markup=get_preferences_keyboard(
+                    selected_sexes, selected_orientations, show_typing=show_typing
+                )
+            )
+        except Exception:
+            pass
+        status_label = "enabled" if show_typing else "disabled (stealth mode)"
+        await callback.answer(f"Typing status {status_label}")
+        return
+
+    if len(parts) != 3:
+        await callback.answer()
+        return
+
+    item = parts[2].lower().strip()
     if category == "sex":
         if item in selected_sexes:
             if len(selected_sexes) <= 1:
@@ -319,7 +350,9 @@ async def handle_preference_toggle(callback: CallbackQuery, state: FSMContext) -
 
     try:
         await callback.message.edit_reply_markup(
-            reply_markup=get_preferences_keyboard(selected_sexes, selected_orientations)
+            reply_markup=get_preferences_keyboard(
+                selected_sexes, selected_orientations, show_typing=show_typing
+            )
         )
     except Exception:
         pass
@@ -332,6 +365,7 @@ async def handle_preference_save(callback: CallbackQuery, state: FSMContext) -> 
     data = await state.get_data()
     selected_sexes = list(data.get("pref_sexes") or [])
     selected_orientations = list(data.get("pref_orientations") or [])
+    show_typing = data.get("pref_show_typing", True)
     is_onboarding = data.get("is_onboarding", False)
 
     async with get_db_session() as session:
@@ -359,12 +393,14 @@ async def handle_preference_save(callback: CallbackQuery, state: FSMContext) -> 
             user_id=callback.from_user.id,
             target_sexes=selected_sexes,
             target_orientations=selected_orientations,
+            show_typing=show_typing,
         )
 
     await state.clear()
 
     formatted_sexes = ", ".join(s.capitalize() for s in selected_sexes)
     formatted_orients = ", ".join(o.capitalize() for o in selected_orientations)
+    typing_status_str = "Enabled ✅" if show_typing else "Disabled ❌ (Stealth Mode)"
 
     if is_onboarding:
         await callback.message.edit_text(
@@ -374,12 +410,13 @@ async def handle_preference_save(callback: CallbackQuery, state: FSMContext) -> 
             f"• Orientation: <b>{user.orientation.capitalize() if user.orientation else 'Not set'}</b>\n\n"
             f"🎯 <b>Matching Preferences:</b>\n"
             f"• Target Sexes: <b>{formatted_sexes}</b>\n"
-            f"• Target Orientations: <b>{formatted_orients}</b>\n\n"
+            f"• Target Orientations: <b>{formatted_orients}</b>\n"
+            f"• Typing Indicator: <b>{typing_status_str}</b>\n\n"
             "⚡ <b>How to Use:</b>\n"
             "• /search — Find an anonymous partner\n"
             "• /next — Skip to the next student\n"
             "• /stop — End chat or cancel search\n"
-            "• /preferences — Adjust who you connect with\n"
+            "• /preferences — Adjust who you connect with & typing status\n"
             "• /profile — Update your sex or orientation\n"
             "• /suggestion — Send ideas to bot admins\n\n"
             "✨ <i>Remember to be kind and respectful. Have fun connecting!</i>\n"
@@ -391,9 +428,38 @@ async def handle_preference_save(callback: CallbackQuery, state: FSMContext) -> 
         await callback.message.edit_text(
             "✅ <b>Preferences Saved!</b> 🎯\n\n"
             f"• Target Sexes: <b>{formatted_sexes}</b>\n"
-            f"• Target Orientations: <b>{formatted_orients}</b>\n\n"
+            f"• Target Orientations: <b>{formatted_orients}</b>\n"
+            f"• Typing Indicator: <b>{typing_status_str}</b>\n\n"
             "Matches will only be made when both your preferences and the other student's preferences match.\n\n"
             "Press /search to find a partner! 🦅🇦🇲",
             parse_mode="HTML",
         )
         await callback.answer("Preferences saved!")
+
+
+@router.message(Command("typing"))
+async def handle_typing_toggle_command(message: Message) -> None:
+    """Quickly toggle typing indicator visibility without leaving current chat."""
+    user_id = message.from_user.id
+    async with get_db_session() as session:
+        user = await get_or_create_user(session, user_id=user_id)
+        current_val = getattr(user, "show_typing", True)
+        if current_val is None:
+            current_val = True
+        new_val = not current_val
+        await set_user_typing_preference(session, user_id=user_id, show_typing=new_val)
+
+    if new_val:
+        await message.answer(
+            "💬 <b>Typing Indicator: Enabled ✅</b>\n\n"
+            "Your chat partner will see '<i>typing...</i>' at the top of the chat when you compose messages.\n"
+            "You can toggle this off anytime via /preferences or /typing.",
+            parse_mode="HTML",
+        )
+    else:
+        await message.answer(
+            "🔕 <b>Typing Indicator: Disabled ❌ (Stealth Mode)</b>\n\n"
+            "Your chat partner will not see when you are typing.\n"
+            "You can re-enable this anytime via /preferences or /typing.",
+            parse_mode="HTML",
+        )

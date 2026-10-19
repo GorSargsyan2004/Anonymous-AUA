@@ -54,6 +54,10 @@ University life is filled with incredible people, yet meeting compatible peers o
 - **Native Telegram Reply Support**: Students can swipe right or tap **Reply** on any message. The bot dynamically translates message IDs between the two private chats and delivers replies with native Telegram quote bubbles pointing to the partner's exact message (supports partner replies and self-quotes).
 - **Emoji Reactions Mirroring**: When a student reacts with an emoji (e.g. 👍, ❤️, 🔥, 😂) to a message or removes a reaction, the bot listens to `MessageReactionUpdated` and instantly mirrors the exact reaction onto the partner's corresponding message via `set_message_reaction`.
 - **Live Edited Messages Synchronization**: When a student edits a message (text or media caption) in their chat, the bot catches the update and immediately edits the corresponding message in the partner's chat in real-time, preserving rich text formatting and entities.
+- **Natural Typing Indicator Emulation (`typing...`)**:
+  - Emulates realistic human typing on the bot's header bar via Telegram's `sendChatAction` API (`typing`, `upload_photo`, `record_voice`, `upload_video`, `upload_document`), scaled naturally to message length.
+  - Features strict per-user FIFO concurrency locking to guarantee in-order message delivery.
+  - **Privacy Toggle**: Enabled by default, but users who prefer stealth can toggle it off anytime via `/preferences` or the `/typing` command.
 - **Smart Engagement Engine**:
   - Automatically notifies users after 30 seconds of searching, explaining that the bot is new and inviting them to share the bot link with classmates.
   - Prompts students for bot improvement ideas after every 2 completed sessions (throttled to at most once per day).
@@ -155,7 +159,8 @@ To eliminate malicious retaliation ("spite voting" where an angry user clicks "S
 | `/search` | Public | Enters the matchmaking queue to find an anonymous student partner. |
 | `/next` | Public | Ends the current conversation and immediately queues for a new partner. |
 | `/stop` | Public | Ends an active chat session or cancels a pending search. |
-| `/preferences` | Public | Adjusts target sexes and orientations via interactive checkbox menu. |
+| `/preferences` | Public | Adjusts target sexes, orientations, and typing indicator via checkbox menu. |
+| `/typing` | Public | Quickly toggles typing status indicator on/off (stealth mode). |
 | `/profile` | Public | Resets and reconfigures sex and sexual orientation. |
 | `/suggestion` | Public | Sends feedback, feature requests, or bug reports to admins. |
 | `/cancel` | Public | Aborts any active prompt or input without ending active chat. |

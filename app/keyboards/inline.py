@@ -28,13 +28,15 @@ def get_orientation_keyboard() -> InlineKeyboardMarkup:
 def get_preferences_keyboard(
     selected_sexes: Sequence[str],
     selected_orientations: Sequence[str],
+    show_typing: bool = True,
 ) -> InlineKeyboardMarkup:
-    """Return inline keyboard with checkboxes for matching preferences.
+    """Return inline keyboard with checkboxes for matching preferences and typing status.
 
     CRITICAL REQUIREMENT: Do NOT use any LGBT flags near the orientations.
     Clean checkboxes only:
       - Male, Female
       - Straight, Bisexual, Lesbian, Gay
+      - Typing status toggle ("✅ Show 'Typing...' Status" or "⬜ Show 'Typing...' Status")
       - Save Preferences
     """
     builder = InlineKeyboardBuilder()
@@ -58,9 +60,16 @@ def get_preferences_keyboard(
     builder.button(text=f"{les_check} Lesbian", callback_data="pref_toggle:orient:lesbian")
     builder.button(text=f"{gay_check} Gay", callback_data="pref_toggle:orient:gay")
 
+    # Typing status toggle
+    typing_check = "✅" if show_typing else "⬜"
+    builder.button(
+        text=f"{typing_check} Show 'Typing...' Status",
+        callback_data="pref_toggle:typing",
+    )
+
     # Action / Save button
     builder.button(text="💾 Save Preferences", callback_data="pref_save")
-    builder.adjust(2, 2, 2, 1)
+    builder.adjust(2, 2, 2, 1, 1)
     return builder.as_markup()
 
 

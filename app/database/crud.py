@@ -85,19 +85,40 @@ async def update_user_profile(
 async def update_user_preferences(
     session: AsyncSession,
     user_id: int,
-    target_sexes: List[str],
-    target_orientations: List[str],
+    target_sexes: Optional[List[str]] = None,
+    target_orientations: Optional[List[str]] = None,
+    show_typing: Optional[bool] = None,
 ) -> Optional[User]:
-    """Update user's configured matching preferences for target sexes and target orientations."""
+    """Update user's configured matching preferences and typing status settings."""
     stmt = select(User).where(User.id == user_id).with_for_update()
     result = await session.execute(stmt)
     user = result.scalar_one_or_none()
 
     if user:
-        clean_sexes = list(dict.fromkeys(s.lower().strip() for s in target_sexes if s.strip()))
-        clean_orients = list(dict.fromkeys(o.lower().strip() for o in target_orientations if o.strip()))
-        user.target_sexes = ",".join(clean_sexes)
-        user.target_orientations = ",".join(clean_orients)
+        if target_sexes is not None:
+            clean_sexes = list(dict.fromkeys(s.lower().strip() for s in target_sexes if s.strip()))
+            user.target_sexes = ",".join(clean_sexes)
+        if target_orientations is not None:
+            clean_orients = list(dict.fromkeys(o.lower().strip() for o in target_orientations if o.strip()))
+            user.target_orientations = ",".join(clean_orients)
+        if show_typing is not None:
+            user.show_typing = show_typing
+        await session.commit()
+        await session.refresh(user)
+    return user
+
+
+async def set_user_typing_preference(
+    session: AsyncSession,
+    user_id: int,
+    show_typing: bool,
+) -> Optional[User]:
+    """Toggle or update user's typing indicator visibility preference."""
+    stmt = select(User).where(User.id == user_id).with_for_update()
+    result = await session.execute(stmt)
+    user = result.scalar_one_or_none()
+    if user:
+        user.show_typing = show_typing
         await session.commit()
         await session.refresh(user)
     return user
