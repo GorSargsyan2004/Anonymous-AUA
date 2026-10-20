@@ -1,6 +1,7 @@
 """Matchmaking handlers (/search, /stop, /next) and anonymous message relay."""
 
 import asyncio
+import html
 import logging
 from typing import Dict, Optional
 from aiogram import Bot, F, Router
@@ -30,6 +31,7 @@ from app.keyboards.inline import (
     get_emergency_report_keyboard,
     get_feedback_keyboard,
 )
+from app.services.link_shield import link_shield
 from app.services.matcher import match_user_in_queue
 from app.services.media_batcher import media_batcher
 from app.services.rate_limiter import rate_limiter
@@ -453,6 +455,20 @@ async def relay_anonymous_message(message: Message, bot: Bot, state: FSMContext)
                 )
                 return
 
+            # Scan album captions for unsafe links or IP-trackers
+            for item in batch:
+                album_scan = await link_shield.scan_message(item)
+                if album_scan.is_blocked:
+                    reason = html.escape(album_scan.block_reason)
+                    await message.reply(
+                        "🚫 <b>Album Blocked by Link Shield</b>\n\n"
+                        "An item in your album was not delivered because it contains a link detected as an IP-tracker or unsafe download:\n"
+                        f"<code>{reason}</code>\n\n"
+                        "<i>Attempting to track, scam, or compromise students will result in an immediate permanent ban.</i>",
+                        parse_mode="HTML",
+                    )
+                    return
+
             async with get_user_relay_lock(user_id):
                 show_typing = getattr(user, "show_typing", True)
                 if show_typing is None:
@@ -572,6 +588,25 @@ async def relay_anonymous_message(message: Message, bot: Bot, state: FSMContext)
                     allow_sending_without_reply=True,
                 )
 
+        # Scan links with multi-tier Link Shield (IP-logger blocker + unshortener + malware check)
+        scan_res = await link_shield.scan_message(message)
+        if scan_res.is_blocked:
+            reason = html.escape(scan_res.block_reason)
+            await message.reply(
+                "🚫 <b>Message Blocked by Link Shield</b>\n\n"
+                "Your message was not delivered because it contains a link detected as a potential IP-tracker, phishing page, or unsafe file:\n"
+                f"<code>{reason}</code>\n\n"
+                "<i>Attempting to track, scam, or compromise students will result in an immediate permanent ban.</i>",
+                parse_mode="HTML",
+            )
+            logger.warning(
+                "Link Shield blocked message from user %s to %s: %s",
+                user_id,
+                partner_id,
+                scan_res.block_reason,
+            )
+            return
+
         # Acquire per-user lock to maintain strict FIFO message ordering during typing emulation
         async with get_user_relay_lock(user_id):
             show_typing = getattr(user, "show_typing", True)
@@ -625,16 +660,24 @@ async def relay_anonymous_message(message: Message, bot: Bot, state: FSMContext)
                         session_id=session_id,
                     )
 
-                # Phishing & link safety warning for recipient
-                text_to_scan = (message.text or message.caption or "").lower()
-                suspicious_links = ["http://", "https://", "t.me/", "telegram.me/", "bit.ly", "tinyurl", "iplogger", "grabify", "2no.co"]
-                if any(link in text_to_scan for link in suspicious_links):
+                # Phishing & link safety advisory for recipient
+                if scan_res.has_links and not scan_res.is_all_trusted:
+                    domains_str = ", ".join(f"<code>{html.escape(d)}</code>" for d in scan_res.final_domains[:3]) or "external website"
+                    unshortened_notes = ""
+                    if scan_res.unshortened_mappings:
+                        unshortened_notes = "\n".join(
+                            f"ℹ️ <i>Short link expanded: {html.escape(k)} ➔ <code>{html.escape(v)}</code></i>"
+                            for k, v in list(scan_res.unshortened_mappings.items())[:2]
+                        ) + "\n\n"
+
                     try:
                         await bot.send_message(
                             chat_id=partner_id,
                             text=(
-                                "⚠️ <b>Security Notice:</b> Your partner sent an external link.\n\n"
-                                "• Never enter passwords or personal data on unfamiliar pages.\n"
+                                "⚠️ <b>Security Notice: External Link</b>\n\n"
+                                f"Your partner sent an external link to: {domains_str}\n\n"
+                                f"{unshortened_notes}"
+                                "• Never enter your Telegram code, passwords, or personal credentials.\n"
                                 "• Telegram never shares your IP or identity unless you click external links.\n"
                                 "• If this person behaves suspiciously, type /report to immediately block them."
                             ),
@@ -784,6 +827,19 @@ async def relay_edited_message(message: Message, bot: Bot, state: FSMContext) ->
             "Edited message ignored: no mapped partner message for user %s, msg %s",
             user_id,
             message.message_id,
+        )
+        return
+
+    # Verify link safety on edited message
+    edit_scan = await link_shield.scan_message(message)
+    if edit_scan.is_blocked:
+        reason = html.escape(edit_scan.block_reason)
+        await message.reply(
+            "🚫 <b>Edit Blocked by Link Shield</b>\n\n"
+            "Your edited message contains a link detected as an unsafe URL or IP-tracker:\n"
+            f"<code>{reason}</code>\n\n"
+            "<i>The edit was not relayed to your partner.</i>",
+            parse_mode="HTML",
         )
         return
 

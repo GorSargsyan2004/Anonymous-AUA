@@ -61,7 +61,11 @@ University life is filled with incredible people, yet meeting compatible peers o
 - **Emergency In-Chat Reporting & Evidence Review (`/report`)**:
   - In-chat `/report` command providing a 1-click panic button (`🚨 Emergency Disconnect & Report`) that severs uncomfortable chats, auto-blocks the abuser, and accepts text or photo/screenshot evidence.
   - Fail-safe reporting: captures user feedback immediately upon clicking Report, with automatic session recovery and auto-forwarding of screenshot evidence to administrators.
-- **Anti-Phishing & Anti-IPLogger Shield**: Automatically inspects relayed messages for external links (`http://`, `https://`, `t.me/`, `iplogger`, `grabify`, `bit.ly`) and displays an immediate security warning banner protecting students from phishing and IP loggers.
+- **Multi-Tier Link Shield & Anti-IPLogger Engine**:
+  - **IP-Logger Auto-Block**: Instantly detects and blocks known tracking/IP-logger links (`grabify.link`, `iplogger.org`, `2no.co`, `yip.su`, etc.) and dangerous executables (`.apk`, `.exe`, `.scr`, `.bat`), dropping the message and warning the sender.
+  - **Real-Time URL Unshortener**: Disguised links (`bit.ly`, `tinyurl`, `t.ly`, etc.) are resolved asynchronously in real time to expose hidden IP-trackers before messages are delivered.
+  - **Cloudflare Zero-Trust Verification**: Validates unfamiliar domains against Cloudflare's malware and phishing intelligence via DoH (`1.1.1.2`).
+  - **In-Chat External Link Advisories**: Prompts recipients with clear safety warnings and exact destination domains whenever an unknown link is shared.
 - **Privacy & Anti-Blackmail Protection (`/safety`)**: Provides verifiable technical facts explaining that Telegram bots cannot expose avatars, phone numbers, or IP addresses, actively countering intimidation and extortion bluffs.
 - **Smart Engagement Engine**:
   - Automatically notifies users after 30 seconds of searching, explaining that the bot is new and inviting them to share the bot link with classmates.

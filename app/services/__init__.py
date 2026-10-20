@@ -5,6 +5,12 @@ from app.services.backup import (
     get_backup_metadata,
     hourly_backup_worker,
 )
+from app.services.link_shield import (
+    LinkScanResult,
+    LinkScanVerdict,
+    LinkShield,
+    link_shield,
+)
 from app.services.matcher import (
     get_compatible_criteria,
     match_user_in_queue,
@@ -27,6 +33,10 @@ __all__ = [
     "rate_limiter",
     "ReplyManager",
     "reply_manager",
+    "LinkShield",
+    "link_shield",
+    "LinkScanResult",
+    "LinkScanVerdict",
 ]
 
 
