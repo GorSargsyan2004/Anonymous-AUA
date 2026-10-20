@@ -1,21 +1,27 @@
 import html
+import math
 from aiogram import F, Router
 from aiogram.filters import Command, CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 
 from app.database.crud import (
+    delete_user_block,
     get_or_create_user,
+    get_public_community_stats,
     get_user,
+    get_user_blocks,
     set_user_typing_preference,
     update_user_preferences,
     update_user_profile,
 )
 from app.database.session import get_db_session
 from app.keyboards.inline import (
+    get_blocklist_keyboard,
     get_orientation_keyboard,
     get_preferences_keyboard,
     get_sex_keyboard,
+    get_unblock_confirmation_keyboard,
 )
 from app.services.matcher import get_default_preferences
 from app.states.states import OnboardingState, PreferencesState, SuggestionState
@@ -463,3 +469,184 @@ async def handle_typing_toggle_command(message: Message) -> None:
             "You can re-enable this anytime via /preferences or /typing.",
             parse_mode="HTML",
         )
+
+
+@router.message(Command("help"))
+async def handle_help_command(message: Message) -> None:
+    """Briefly display all available user commands and how to use the bot."""
+    help_text = (
+        "🦅 <b>Anonymous AUA — Help & Commands Guide</b> 🇦🇲\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        "⚡ <b>Core Chat Commands:</b>\n"
+        "• /search — Find an anonymous partner matching your preferences\n"
+        "• /next — Skip to the next conversation partner\n"
+        "• /stop — End your current chat or leave the search queue\n\n"
+        "⚙️ <b>Settings & Preferences:</b>\n"
+        "• /preferences — Customize partner gender and orientation\n"
+        "• /typing — Toggle 'typing...' stealth mode on/off\n"
+        "• /profile — Update your own sex or orientation\n"
+        "• /blocklist — View and manage blocked partners\n\n"
+        "📊 <b>Campus Info & Feedback:</b>\n"
+        "• /stats (or /stata) — View registered users, active chats, and community demographics\n"
+        "• /suggestion — Submit ideas or suggestions directly to AUA admins\n"
+        "• /help — Show this commands guide\n"
+        "• /cancel — Cancel any active input / action\n\n"
+        "🔒 <b>Safety & Privacy:</b>\n"
+        "All chats are strictly anonymous. After any chat, you can rate your experience, report issues, or choose not to connect with that partner again (for 1 day, 3 days, 1 week, or permanently)."
+    )
+    await message.answer(help_text, parse_mode="HTML")
+
+
+@router.message(Command("stats", "stata"))
+async def handle_user_stats(message: Message) -> None:
+    """Display public community statistics to users."""
+    async with get_db_session() as session:
+        stats = await get_public_community_stats(session)
+
+    stats_text = (
+        "📊 <b>Anonymous AUA Statistics</b> 🦅🇦🇲\n"
+        "━━━━━━━━━━━━━━━━━━━━\n\n"
+        "👥 <b>Community:</b>\n"
+        f"• Registered Students: <b>{stats['total_users']}</b>\n"
+        f"• Active Chats: <b>{stats['active_chats']}</b>\n\n"
+        "🚻 <b>Sex:</b>\n"
+        f"• Male: <b>{stats['male_count']}</b>\n"
+        f"• Female: <b>{stats['female_count']}</b>\n\n"
+        "🧭 <b>Orientations:</b>\n"
+        f"• Straight: <b>{stats['straight_count']}</b>\n"
+        f"• Bisexual: <b>{stats['bisexual_count']}</b>\n"
+        f"• Lesbian: <b>{stats['lesbian_count']}</b>\n"
+        f"• Gay: <b>{stats['gay_count']}</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        "🦅 <i>American University of Armenia</i>"
+    )
+    await message.answer(stats_text, parse_mode="HTML")
+
+
+@router.message(Command("blocklist"))
+async def handle_blocklist_command(message: Message) -> None:
+    """Display user's blocked partners list with pagination."""
+    user_id = message.from_user.id
+    async with get_db_session() as session:
+        blocks, total_count = await get_user_blocks(session, user_id=user_id, page=1, page_size=5)
+
+    if total_count == 0:
+        await message.answer(
+            "📋 <b>Your Blocklist is empty.</b>\n\n"
+            "You haven't blocked any partners yet. After stopping any conversation, "
+            "you can tap <b>'🚫 Don't connect again'</b> to avoid matching with that partner for 1 day, 3 days, 1 week, or permanently.",
+            parse_mode="HTML",
+        )
+        return
+
+    total_pages = math.ceil(total_count / 5)
+    reply_markup = get_blocklist_keyboard(blocks, page=1, total_pages=total_pages)
+
+    await message.answer(
+        f"📋 <b>Your Blocklist ({total_count} blocked):</b>\n\n"
+        "Tap any date button to unblock that partner and allow matching with them again:",
+        reply_markup=reply_markup,
+        parse_mode="HTML",
+    )
+
+
+@router.callback_query(F.data.startswith("bl_page:"))
+async def handle_blocklist_page(callback: CallbackQuery) -> None:
+    """Handle page turning for blocklist menu."""
+    page = int(callback.data.split(":")[1])
+    user_id = callback.from_user.id
+
+    async with get_db_session() as session:
+        blocks, total_count = await get_user_blocks(session, user_id=user_id, page=page, page_size=5)
+
+    if total_count == 0:
+        await callback.message.edit_text(
+            "📋 <b>Your Blocklist is empty.</b>\n\n"
+            "You haven't blocked any partners.",
+            parse_mode="HTML",
+        )
+        await callback.answer()
+        return
+
+    total_pages = math.ceil(total_count / 5)
+    page = min(page, total_pages)
+    reply_markup = get_blocklist_keyboard(blocks, page=page, total_pages=total_pages)
+
+    await callback.message.edit_text(
+        f"📋 <b>Your Blocklist ({total_count} blocked):</b>\n\n"
+        "Tap any date button to unblock that partner and allow matching with them again:",
+        reply_markup=reply_markup,
+        parse_mode="HTML",
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data == "bl_noop")
+async def handle_blocklist_noop(callback: CallbackQuery) -> None:
+    """Handle click on page indicator or disabled arrow."""
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("bl_select:"))
+async def handle_blocklist_select(callback: CallbackQuery) -> None:
+    """Prompt user with confirmation before unblocking a partner."""
+    parts = callback.data.split(":")
+    block_id = int(parts[1])
+    page = int(parts[2])
+
+    user_id = callback.from_user.id
+    async with get_db_session() as session:
+        from app.database.models import UserBlock
+        block = await session.get(UserBlock, block_id)
+
+    if not block or block.user_id != user_id:
+        await callback.answer("Block record not found or already unblocked.", show_alert=True)
+        return
+
+    date_str = block.created_at.strftime("%Y-%m-%d %H:%M")
+    await callback.message.edit_text(
+        "❓ <b>Unblock Partner?</b>\n\n"
+        f"Do you want to unblock the partner you blocked on <b>{date_str}</b>?\n\n"
+        "Once unblocked, you will be able to connect with them again in future anonymous chats.",
+        reply_markup=get_unblock_confirmation_keyboard(block_id=block_id, page=page),
+        parse_mode="HTML",
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("bl_unblock_confirm:"))
+async def handle_unblock_confirm(callback: CallbackQuery) -> None:
+    """Execute unblock action, remove block record, and refresh list."""
+    parts = callback.data.split(":")
+    block_id = int(parts[1])
+    page = int(parts[2])
+    user_id = callback.from_user.id
+
+    async with get_db_session() as session:
+        deleted = await delete_user_block(session, user_id=user_id, block_id=block_id)
+        blocks, total_count = await get_user_blocks(session, user_id=user_id, page=page, page_size=5)
+
+    if not deleted:
+        await callback.answer("Already unblocked.", show_alert=True)
+    else:
+        await callback.answer("Partner unblocked! ✅", show_alert=False)
+
+    if total_count == 0:
+        await callback.message.edit_text(
+            "✅ <b>Partner unblocked!</b>\n\n"
+            "Your blocklist is now empty. You can now connect with this partner again in future chats! 🦅🇦🇲",
+            parse_mode="HTML",
+        )
+        return
+
+    total_pages = math.ceil(total_count / 5)
+    page = min(page, total_pages)
+    reply_markup = get_blocklist_keyboard(blocks, page=page, total_pages=total_pages)
+
+    await callback.message.edit_text(
+        f"✅ <b>Partner unblocked!</b>\n\n"
+        f"📋 <b>Your Blocklist ({total_count} blocked):</b>\n\n"
+        "Tap any date button to unblock that partner and allow matching with them again:",
+        reply_markup=reply_markup,
+        parse_mode="HTML",
+    )

@@ -74,12 +74,63 @@ def get_preferences_keyboard(
 
 
 def get_feedback_keyboard(session_id: int, partner_id: int) -> InlineKeyboardMarkup:
-    """Return streamlined inline keyboard for post-chat feedback (2-tier anti-spite design)."""
+    """Return streamlined inline keyboard for post-chat feedback and blocking."""
     builder = InlineKeyboardBuilder()
     builder.button(text="👍 Great Chat", callback_data=f"fb:{session_id}:{partner_id}:like")
     builder.button(text="👎 Not for me", callback_data=f"fb:{session_id}:{partner_id}:dislike")
+    builder.button(text="🚫 Don't connect again", callback_data=f"block_prompt:{session_id}:{partner_id}")
     builder.button(text="⚠️ Report Issue...", callback_data=f"report_menu:{session_id}:{partner_id}")
-    builder.adjust(2, 1)
+    builder.adjust(2, 1, 1)
+    return builder.as_markup()
+
+
+def get_block_duration_keyboard(session_id: int, partner_id: int) -> InlineKeyboardMarkup:
+    """Return inline keyboard with cooldown options for not matching again."""
+    builder = InlineKeyboardBuilder()
+    builder.button(text="⏰ 1 Day", callback_data=f"block_dur:{partner_id}:1d")
+    builder.button(text="⏰ 3 Days", callback_data=f"block_dur:{partner_id}:3d")
+    builder.button(text="⏰ 1 Week", callback_data=f"block_dur:{partner_id}:7d")
+    builder.button(text="⛔ Permanently", callback_data=f"block_dur:{partner_id}:perm")
+    builder.button(text="🔙 Back", callback_data=f"fb_back:{session_id}:{partner_id}")
+    builder.adjust(2, 2, 1)
+    return builder.as_markup()
+
+
+def get_blocklist_keyboard(blocks: list, page: int, total_pages: int) -> InlineKeyboardMarkup:
+    """Return inline keyboard rendering blocked partners as date buttons with [<] [2/3] [>] pagination."""
+    builder = InlineKeyboardBuilder()
+
+    # Add blocked partner buttons (1 per row, showing the block date)
+    for block in blocks:
+        date_str = block.created_at.strftime("%Y-%m-%d %H:%M")
+        dur_label = " (perm)" if block.expires_at is None else " (temp)"
+        builder.button(
+            text=f"📅 {date_str}{dur_label}",
+            callback_data=f"bl_select:{block.id}:{page}",
+        )
+
+    adjust_pattern = [1] * len(blocks)
+
+    # Pagination row
+    if total_pages > 1:
+        prev_data = f"bl_page:{page - 1}" if page > 1 else "bl_noop"
+        next_data = f"bl_page:{page + 1}" if page < total_pages else "bl_noop"
+
+        builder.button(text="[<]", callback_data=prev_data)
+        builder.button(text=f"[{page}/{total_pages}]", callback_data="bl_noop")
+        builder.button(text="[>]", callback_data=next_data)
+        adjust_pattern.append(3)
+
+    builder.adjust(*adjust_pattern)
+    return builder.as_markup()
+
+
+def get_unblock_confirmation_keyboard(block_id: int, page: int) -> InlineKeyboardMarkup:
+    """Return inline keyboard prompting confirmation to unblock a partner."""
+    builder = InlineKeyboardBuilder()
+    builder.button(text="✅ Yes, Unblock", callback_data=f"bl_unblock_confirm:{block_id}:{page}")
+    builder.button(text="🔙 Cancel", callback_data=f"bl_page:{page}")
+    builder.adjust(2)
     return builder.as_markup()
 
 
@@ -118,6 +169,10 @@ def get_admin_report_keyboard(report_id: int, reported_id: int) -> InlineKeyboar
     """Return inline keyboard for administrator actions on a reported user."""
     builder = InlineKeyboardBuilder()
     builder.button(
+        text="🚫 Ban User",
+        callback_data=f"admin_ban_user:{reported_id}",
+    )
+    builder.button(
         text="⚖️ Penalize User",
         callback_data=f"admin_penalize:{report_id}:{reported_id}",
     )
@@ -125,6 +180,6 @@ def get_admin_report_keyboard(report_id: int, reported_id: int) -> InlineKeyboar
         text="✅ Dismiss",
         callback_data=f"admin_dismiss:{report_id}",
     )
-    builder.adjust(2)
+    builder.adjust(1, 2)
     return builder.as_markup()
 

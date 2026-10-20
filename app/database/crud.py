@@ -5,7 +5,15 @@ from typing import Any, Dict, List, Optional, Tuple
 from sqlalchemy import delete, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.database.models import ChatMessageMap, ChatSession, Feedback, Report, Suggestion, User
+from app.database.models import (
+    ChatMessageMap,
+    ChatSession,
+    Feedback,
+    Report,
+    Suggestion,
+    User,
+    UserBlock,
+)
 from app.services.matcher import get_default_preferences, normalize_orientation
 
 
@@ -785,4 +793,199 @@ async def delete_chat_message_mappings(
     stmt = delete(ChatMessageMap).where(ChatMessageMap.session_id == session_id)
     await session.execute(stmt)
     await session.commit()
+
+
+async def ban_user_by_admin(
+    session: AsyncSession,
+    user_id: int,
+) -> Tuple[bool, Optional[int]]:
+    """Ban a user by admin. Terminates any active chat session and cancels queue search.
+
+    Returns:
+        (success: bool, partner_id: Optional[int])
+    """
+    stmt = select(User).where(User.id == user_id).with_for_update()
+    result = await session.execute(stmt)
+    user = result.scalar_one_or_none()
+
+    if user is None:
+        user = User(id=user_id, is_banned=True, is_searching=False)
+        session.add(user)
+        await session.commit()
+        return True, None
+
+    user.is_banned = True
+    user.is_searching = False
+    partner_id = user.current_partner_id
+
+    if partner_id is not None:
+        await end_active_session(session, user_id=user_id)
+
+    await session.commit()
+    return True, partner_id
+
+
+async def unban_user_by_admin(
+    session: AsyncSession,
+    user_id: int,
+) -> bool:
+    """Unban a previously banned user."""
+    stmt = select(User).where(User.id == user_id).with_for_update()
+    result = await session.execute(stmt)
+    user = result.scalar_one_or_none()
+
+    if user:
+        user.is_banned = False
+        await session.commit()
+        return True
+    return False
+
+
+async def get_all_banned_user_ids(session: AsyncSession) -> List[int]:
+    """Retrieve all user IDs that are currently marked as banned."""
+    stmt = select(User.id).where(User.is_banned == True)  # noqa: E712
+    result = await session.execute(stmt)
+    return list(result.scalars().all())
+
+
+async def add_or_update_user_block(
+    session: AsyncSession,
+    user_id: int,
+    blocked_user_id: int,
+    expires_at: Optional[datetime],
+) -> UserBlock:
+    """Add or update a user-to-partner block/cooldown."""
+    stmt = select(UserBlock).where(
+        UserBlock.user_id == user_id,
+        UserBlock.blocked_user_id == blocked_user_id,
+    ).with_for_update()
+    result = await session.execute(stmt)
+    block = result.scalar_one_or_none()
+
+    now = datetime.now(timezone.utc)
+    if block:
+        block.created_at = now
+        block.expires_at = expires_at
+    else:
+        block = UserBlock(
+            user_id=user_id,
+            blocked_user_id=blocked_user_id,
+            created_at=now,
+            expires_at=expires_at,
+        )
+        session.add(block)
+
+    await session.commit()
+    await session.refresh(block)
+    return block
+
+
+async def get_user_blocks(
+    session: AsyncSession,
+    user_id: int,
+    page: int = 1,
+    page_size: int = 5,
+) -> Tuple[List[UserBlock], int]:
+    """Retrieve active blocked partners for a user with pagination.
+
+    Returns:
+        (blocks: List[UserBlock], total_count: int)
+    """
+    now = datetime.now(timezone.utc)
+    base_filter = [
+        UserBlock.user_id == user_id,
+        or_(UserBlock.expires_at.is_(None), UserBlock.expires_at > now),
+    ]
+
+    count_stmt = select(func.count(UserBlock.id)).where(*base_filter)
+    total_count = (await session.execute(count_stmt)).scalar_one() or 0
+
+    offset = max(0, (page - 1) * page_size)
+    list_stmt = (
+        select(UserBlock)
+        .where(*base_filter)
+        .order_by(UserBlock.created_at.desc(), UserBlock.id.desc())
+        .offset(offset)
+        .limit(page_size)
+    )
+    res = await session.execute(list_stmt)
+    blocks = list(res.scalars().all())
+    return blocks, total_count
+
+
+async def delete_user_block(
+    session: AsyncSession,
+    user_id: int,
+    block_id: int,
+) -> bool:
+    """Delete a user block by block ID for the owning user."""
+    stmt = delete(UserBlock).where(
+        UserBlock.id == block_id,
+        UserBlock.user_id == user_id,
+    )
+    result = await session.execute(stmt)
+    await session.commit()
+    return bool(result.rowcount > 0)
+
+
+async def get_public_community_stats(session: AsyncSession) -> Dict[str, Any]:
+    """Aggregate public community metrics for /stats and /stata."""
+    total_users = (
+        await session.execute(
+            select(func.count(User.id)).where(User.is_banned == False)  # noqa: E712
+        )
+    ).scalar_one() or 0
+
+    active_chats = (
+        await session.execute(
+            select(func.count(ChatSession.id)).where(ChatSession.is_active == True)  # noqa: E712
+        )
+    ).scalar_one() or 0
+
+    male_count = (
+        await session.execute(
+            select(func.count(User.id)).where(User.sex == "male", User.is_banned == False)  # noqa: E712
+        )
+    ).scalar_one() or 0
+
+    female_count = (
+        await session.execute(
+            select(func.count(User.id)).where(User.sex == "female", User.is_banned == False)  # noqa: E712
+        )
+    ).scalar_one() or 0
+
+    straight_count = (
+        await session.execute(
+            select(func.count(User.id)).where(User.orientation == "straight", User.is_banned == False)  # noqa: E712
+        )
+    ).scalar_one() or 0
+
+    bisexual_count = (
+        await session.execute(
+            select(func.count(User.id)).where(User.orientation == "bisexual", User.is_banned == False)  # noqa: E712
+        )
+    ).scalar_one() or 0
+
+    lesbian_count = (
+        await session.execute(
+            select(func.count(User.id)).where(User.orientation == "lesbian", User.is_banned == False)  # noqa: E712
+        )
+    ).scalar_one() or 0
+
+    gay_count = (
+        await session.execute(
+            select(func.count(User.id)).where(User.orientation == "gay", User.is_banned == False)  # noqa: E712
+        )
+    ).scalar_one() or 0
+
+    return {
+        "total_users": total_users,
+        "active_chats": active_chats,
+        "male_count": male_count,
+        "female_count": female_count,
+        "straight_count": straight_count,
+        "bisexual_count": bisexual_count,
+        "lesbian_count": lesbian_count,
+        "gay_count": gay_count,
+    }
 

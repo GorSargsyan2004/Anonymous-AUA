@@ -10,14 +10,18 @@ from aiogram.types import CallbackQuery, Message
 
 from app.database.crud import (
     apply_admin_penalty,
+    ban_user_by_admin,
     dismiss_report,
     get_admin_stats,
     reply_to_suggestion,
     resolve_report,
+    unban_user_by_admin,
 )
 from app.database.session import get_db_session
 from app.filters.admin import IsAdminFilter
 from app.services.backup import create_database_backup, get_backup_metadata
+from app.services.ban_manager import add_banned_user, remove_banned_user
+from app.services.reply_manager import reply_manager
 from app.states.states import AdminPenalizeState, AdminReplyState
 
 
@@ -196,6 +200,121 @@ async def handle_admin_penalty_amount(message: Message, state: FSMContext) -> No
         f"• <b>New Priority:</b> <b>{new_priority}/100</b>",
         parse_mode="HTML",
     )
+
+
+@router.message(Command("block"))
+async def handle_admin_block_user(message: Message, bot: Bot) -> None:
+    """Block a user from using the bot: /block [user_id]."""
+    args = message.text.strip().split()
+    if len(args) < 2 or not args[1].isdigit():
+        await message.reply(
+            "⚠️ <b>Usage:</b> <code>/block &lt;user_id&gt;</code>\n\n"
+            "Example: <code>/block 123456789</code>",
+            parse_mode="HTML",
+        )
+        return
+
+    target_id = int(args[1])
+    async with get_db_session() as session:
+        success, partner_id = await ban_user_by_admin(session, user_id=target_id)
+
+    # Update in-memory fast ban cache
+    add_banned_user(target_id)
+
+    # If partner was connected, notify and clear reply cache
+    if partner_id:
+        await reply_manager.clear_chat(target_id, partner_id)
+        try:
+            await bot.send_message(
+                chat_id=partner_id,
+                text=(
+                    "🛑 <b>Your partner has disconnected or left the chat.</b>\n\n"
+                    "Send /search to find a new partner! 🦅🇦🇲"
+                ),
+                parse_mode="HTML",
+            )
+        except TelegramAPIError:
+            pass
+
+    # Notify banned user if possible
+    try:
+        await bot.send_message(
+            chat_id=target_id,
+            text="🚫 <b>You have been banned by an administrator from using Anonymous AUA.</b>",
+            parse_mode="HTML",
+        )
+    except TelegramAPIError:
+        pass
+
+    admin_tag = f"@{message.from_user.username}" if message.from_user.username else f"ID:{message.from_user.id}"
+    await message.reply(
+        f"✅ <b>User <code>{target_id}</code> has been banned by {admin_tag}.</b>\n\n"
+        "They can no longer search or send messages in the bot.",
+        parse_mode="HTML",
+    )
+
+
+@router.message(Command("unblock"))
+async def handle_admin_unblock_user(message: Message) -> None:
+    """Unblock a previously banned user: /unblock [user_id]."""
+    args = message.text.strip().split()
+    if len(args) < 2 or not args[1].isdigit():
+        await message.reply(
+            "⚠️ <b>Usage:</b> <code>/unblock &lt;user_id&gt;</code>",
+            parse_mode="HTML",
+        )
+        return
+
+    target_id = int(args[1])
+    async with get_db_session() as session:
+        await unban_user_by_admin(session, user_id=target_id)
+
+    remove_banned_user(target_id)
+
+    admin_tag = f"@{message.from_user.username}" if message.from_user.username else f"ID:{message.from_user.id}"
+    await message.reply(
+        f"✅ <b>User <code>{target_id}</code> has been unbanned by {admin_tag}.</b>",
+        parse_mode="HTML",
+    )
+
+
+@router.callback_query(F.data.startswith("admin_ban_user:"))
+async def handle_admin_ban_callback(callback: CallbackQuery, bot: Bot) -> None:
+    """Ban a user directly via inline button on report alert."""
+    target_id = int(callback.data.split(":")[1])
+    async with get_db_session() as session:
+        success, partner_id = await ban_user_by_admin(session, user_id=target_id)
+
+    add_banned_user(target_id)
+
+    if partner_id:
+        await reply_manager.clear_chat(target_id, partner_id)
+        try:
+            await bot.send_message(
+                chat_id=partner_id,
+                text="🛑 <b>Your partner has disconnected.</b> Send /search to find a new partner.",
+                parse_mode="HTML",
+            )
+        except TelegramAPIError:
+            pass
+
+    try:
+        await bot.send_message(
+            chat_id=target_id,
+            text="🚫 <b>You have been banned by an administrator from using Anonymous AUA.</b>",
+            parse_mode="HTML",
+        )
+    except TelegramAPIError:
+        pass
+
+    admin_tag = f"@{callback.from_user.username}" if callback.from_user.username else f"ID:{callback.from_user.id}"
+    await callback.message.edit_text(
+        f"{callback.message.text}\n\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"🚫 <b>User <code>{target_id}</code> BANNED by {admin_tag}.</b>",
+        parse_mode="HTML",
+    )
+    await callback.answer(f"User {target_id} banned.")
 
 
 @router.callback_query(F.data.startswith("admin_reply_sug:"))

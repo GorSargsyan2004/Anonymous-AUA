@@ -1,3 +1,4 @@
+from datetime import datetime, timedelta, timezone
 import html
 import logging
 from aiogram import Bot, F, Router
@@ -7,6 +8,7 @@ from aiogram.types import CallbackQuery, Message
 
 from app.config import settings
 from app.database.crud import (
+    add_or_update_user_block,
     create_report,
     create_suggestion,
     get_user,
@@ -18,6 +20,7 @@ from app.database.session import get_db_session
 from app.keyboards.inline import (
     get_admin_report_keyboard,
     get_admin_suggestion_keyboard,
+    get_block_duration_keyboard,
     get_feedback_keyboard,
     get_report_options_keyboard,
 )
@@ -64,6 +67,69 @@ async def handle_feedback_back(callback: CallbackQuery) -> None:
         parse_mode="HTML",
     )
     await callback.answer()
+
+
+@router.callback_query(F.data.startswith("block_prompt:"))
+async def handle_block_prompt(callback: CallbackQuery) -> None:
+    """Prompt user to choose how long to avoid matching with partner."""
+    parts = callback.data.split(":")
+    if len(parts) != 3:
+        await callback.answer()
+        return
+    session_id = int(parts[1])
+    partner_id = int(parts[2])
+
+    await callback.message.edit_text(
+        "🚫 <b>Do Not Connect Again</b>\n\n"
+        "How long would you like to avoid connecting with this partner?\n\n"
+        "<i>Select a cooldown duration:</i>",
+        reply_markup=get_block_duration_keyboard(session_id, partner_id),
+        parse_mode="HTML",
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("block_dur:"))
+async def handle_block_duration(callback: CallbackQuery) -> None:
+    """Save user-to-partner block/cooldown and confirm to user."""
+    parts = callback.data.split(":")
+    if len(parts) != 3:
+        await callback.answer()
+        return
+    partner_id = int(parts[1])
+    dur_key = parts[2]
+    user_id = callback.from_user.id
+    now = datetime.now(timezone.utc)
+
+    if dur_key == "1d":
+        expires_at = now + timedelta(days=1)
+        dur_text = "1 day"
+    elif dur_key == "3d":
+        expires_at = now + timedelta(days=3)
+        dur_text = "3 days"
+    elif dur_key == "7d":
+        expires_at = now + timedelta(days=7)
+        dur_text = "1 week"
+    else:
+        expires_at = None
+        dur_text = "permanently"
+
+    async with get_db_session() as session:
+        await add_or_update_user_block(
+            session=session,
+            user_id=user_id,
+            blocked_user_id=partner_id,
+            expires_at=expires_at,
+        )
+
+    await callback.message.edit_text(
+        f"🛑 <b>Partner Blocked!</b>\n\n"
+        f"You will not connect with this anonymous partner for <b>{dur_text}</b>.\n\n"
+        "💡 <i>You can view, manage, or unblock partners anytime using /blocklist.</i>\n\n"
+        "Send /search to find a new chat partner! 🦅🇦🇲",
+        parse_mode="HTML",
+    )
+    await callback.answer("Partner blocked!")
 
 
 @router.callback_query(F.data.startswith("fb:"))
@@ -301,17 +367,19 @@ async def handle_report_reason(message: Message, bot: Bot, state: FSMContext) ->
 
     # Notify all administrators (priority is visible only to admins, escape user text)
     safe_reporter_username = html.escape(message.from_user.username or "N/A")
+    safe_reported_username = html.escape(reported_user.username or "N/A") if reported_user else "N/A"
     safe_reason = html.escape(reason_text)
 
     admin_text = (
         f"🚨 <b>NEW USER REPORT #{report.id}</b>\n"
         "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
         f"• <b>Session ID:</b> #{session_id}\n"
-        f"• <b>Reporter:</b> <code>{reporter_id}</code> (@{safe_reporter_username})\n"
-        f"• <b>Reported User:</b> <code>{reported_id}</code>\n"
+        f"• <b>Reported User ID:</b> <code>{reported_id}</code> (@{safe_reported_username})\n"
+        f"• <b>Reporter ID:</b> <code>{reporter_id}</code> (@{safe_reporter_username})\n"
         f"• <b>Current Priority:</b> {current_priority}/100\n\n"
-        f"📝 <b>Reason:</b>\n{safe_reason}\n"
-        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        f"📝 <b>Report Reason:</b>\n{safe_reason}\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"⚡ <i>Quick Command to Ban:</i> <code>/block {reported_id}</code>"
     )
 
     admin_keyboard = get_admin_report_keyboard(report.id, reported_id)

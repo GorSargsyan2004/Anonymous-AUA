@@ -60,6 +60,7 @@ class User(Base):
     target_sexes: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     target_orientations: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
     show_typing: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False, server_default=func.true())
+    is_banned: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False, server_default=func.false(), index=True)
     completed_sessions_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     spam_flags_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     last_suggestion_date: Mapped[Optional[datetime]] = mapped_column(
@@ -77,6 +78,7 @@ class User(Base):
 
     def __init__(self, **kwargs):
         kwargs.setdefault("show_typing", True)
+        kwargs.setdefault("is_banned", False)
         kwargs.setdefault("priority", 50)
         kwargs.setdefault("is_searching", False)
         kwargs.setdefault("completed_sessions_count", 0)
@@ -226,5 +228,36 @@ class ChatMessageMap(Base):
 
     def __repr__(self) -> str:
         return f"<ChatMessageMap id={self.id} session_id={self.session_id} sender={self.sender_id}:{self.sender_msg_id} -> receiver={self.receiver_id}:{self.receiver_msg_id}>"
+
+
+class UserBlock(Base):
+    """Tracks partner-to-partner blocks and temporary 'do not connect again' cooldowns."""
+    __tablename__ = "user_blocks"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    blocked_user_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+    )
+    expires_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+        index=True,
+    )
+
+    __table_args__ = (
+        UniqueConstraint("user_id", "blocked_user_id", name="uq_user_blocked_pair"),
+        Index("ix_ub_lookup", "user_id", "blocked_user_id", "expires_at"),
+    )
+
+    def __repr__(self) -> str:
+        return f"<UserBlock id={self.id} user={self.user_id} blocked={self.blocked_user_id} expires={self.expires_at}>"
 
 

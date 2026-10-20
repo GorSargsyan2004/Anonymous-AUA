@@ -4,7 +4,7 @@ from typing import List, Optional, Tuple
 from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.database.models import ChatSession, User
+from app.database.models import ChatSession, User, UserBlock
 
 
 def normalize_orientation(sex: str, orientation: str) -> str:
@@ -129,7 +129,7 @@ async def match_user_in_queue(
     user_res = await session.execute(user_stmt)
     current_user = user_res.scalar_one_or_none()
 
-    if not current_user or not current_user.sex or not current_user.orientation:
+    if not current_user or not current_user.sex or not current_user.orientation or getattr(current_user, "is_banned", False):
         return None, None
 
     # Load or initialize current user preferences
@@ -152,11 +152,30 @@ async def match_user_in_queue(
         current_user.target_orientations = ",".join(user_target_orientations)
         await session.commit()
 
+    # Subqueries for active blocks in either direction
+    blocked_by_user_subq = (
+        select(UserBlock.blocked_user_id)
+        .where(
+            UserBlock.user_id == current_user.id,
+            or_(UserBlock.expires_at.is_(None), UserBlock.expires_at > func.now()),
+        )
+    )
+    blocking_user_subq = (
+        select(UserBlock.user_id)
+        .where(
+            UserBlock.blocked_user_id == current_user.id,
+            or_(UserBlock.expires_at.is_(None), UserBlock.expires_at > func.now()),
+        )
+    )
+
     # Search for the best candidate whose preferences match mutually
     conditions = [
         User.id != current_user.id,
         User.is_searching == True,  # noqa: E712
+        User.is_banned == False,  # noqa: E712
         User.current_partner_id.is_(None),
+        User.id.not_in(blocked_by_user_subq),
+        User.id.not_in(blocking_user_subq),
         # User A accepts Candidate
         User.sex.in_(user_target_sexes),
         User.orientation.in_(user_target_orientations),

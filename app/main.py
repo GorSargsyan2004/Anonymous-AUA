@@ -16,7 +16,9 @@ from app.config import settings
 from app.database.crud import sync_active_sessions_on_startup
 from app.database.session import engine, get_db_session, init_db
 from app.handlers import register_handlers
+from app.middlewares.banned import BannedCheckMiddleware
 from app.services.backup import hourly_backup_worker
+from app.services.ban_manager import sync_banned_users
 
 
 # Configure logging
@@ -35,6 +37,9 @@ async def setup_bot_commands(bot: Bot) -> None:
         BotCommand(command="search", description="Search for an anonymous partner"),
         BotCommand(command="next", description="Skip to next chat partner"),
         BotCommand(command="stop", description="End current chat or search"),
+        BotCommand(command="help", description="Show bot commands & help guide"),
+        BotCommand(command="stats", description="View community stats & active chats"),
+        BotCommand(command="blocklist", description="View & manage blocked partners"),
         BotCommand(command="preferences", description="Adjust preferences & typing status"),
         BotCommand(command="typing", description="Toggle 'typing...' indicator on/off"),
         BotCommand(command="profile", description="Update sex or orientation"),
@@ -82,6 +87,8 @@ async def main() -> None:
                 "Active chat sessions verified: %d active session(s) preserved across restart.",
                 active_count,
             )
+            banned_count = await sync_banned_users(session)
+            logger.info("Banned users loaded into memory: %d banned user(s).", banned_count)
     except Exception as e:
         logger.critical("Failed to initialize database: %s", e)
         sys.exit(1)
@@ -101,8 +108,10 @@ async def main() -> None:
         default=DefaultBotProperties(parse_mode=ParseMode.HTML),
     )
 
-    # 3. Initialize Dispatcher with in-memory FSM storage
+    # 3. Initialize Dispatcher with in-memory FSM storage & anti-ban middleware
     dp = Dispatcher(storage=MemoryStorage())
+    dp.message.outer_middleware(BannedCheckMiddleware())
+    dp.callback_query.outer_middleware(BannedCheckMiddleware())
 
     # 4. Register all route handlers
     register_handlers(dp)
