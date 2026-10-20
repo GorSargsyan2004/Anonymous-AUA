@@ -58,6 +58,11 @@ University life is filled with incredible people, yet meeting compatible peers o
   - Emulates realistic human typing on the bot's header bar via Telegram's `sendChatAction` API (`typing`, `upload_photo`, `record_voice`, `upload_video`, `upload_document`), scaled naturally to message length.
   - Features strict per-user FIFO concurrency locking to guarantee in-order message delivery.
   - **Privacy Toggle**: Enabled by default, but users who prefer stealth can toggle it off anytime via `/preferences` or the `/typing` command.
+- **Emergency In-Chat Reporting & Evidence Review (`/report`)**:
+  - In-chat `/report` command providing a 1-click panic button (`🚨 Emergency Disconnect & Report`) that severs uncomfortable chats, auto-blocks the abuser, and accepts text or photo/screenshot evidence.
+  - Fail-safe reporting: captures user feedback immediately upon clicking Report, with automatic session recovery and auto-forwarding of screenshot evidence to administrators.
+- **Anti-Phishing & Anti-IPLogger Shield**: Automatically inspects relayed messages for external links (`http://`, `https://`, `t.me/`, `iplogger`, `grabify`, `bit.ly`) and displays an immediate security warning banner protecting students from phishing and IP loggers.
+- **Privacy & Anti-Blackmail Protection (`/safety`)**: Provides verifiable technical facts explaining that Telegram bots cannot expose avatars, phone numbers, or IP addresses, actively countering intimidation and extortion bluffs.
 - **Smart Engagement Engine**:
   - Automatically notifies users after 30 seconds of searching, explaining that the bot is new and inviting them to share the bot link with classmates.
   - Prompts students for bot improvement ideas after every 2 completed sessions (throttled to at most once per day).
@@ -160,6 +165,8 @@ To eliminate malicious retaliation ("spite voting" where an angry user clicks "S
 | `/search` | Public | Enters the matchmaking queue to find an anonymous student partner. |
 | `/next` | Public | Ends the current conversation and immediately queues for a new partner. |
 | `/stop` | Public | Ends an active chat session or cancels a pending search. |
+| `/report` | Public | Emergency shield: severs chat, auto-blocks partner, and accepts text/screenshot evidence. |
+| `/safety` | Public | Displays privacy facts, anti-blackmail advice, and debunking of IP/avatar leak myths. |
 | `/preferences` | Public | Adjusts target sexes, orientations, and typing indicator via checkbox menu. |
 | `/typing` | Public | Quickly toggles typing status indicator on/off (stealth mode). |
 | `/blocklist` | Public | Displays blocked partners as date buttons with `[<] [2/3] [>]` pagination to unblock. |
@@ -168,6 +175,7 @@ To eliminate malicious retaliation ("spite voting" where an angry user clicks "S
 | `/suggestion` | Public | Sends feedback, feature requests, or bug reports to admins. |
 | `/cancel` | Public | Aborts any active prompt or input without ending active chat. |
 | `/stata` | **Admins Only** | Displays full administrator dashboard (backups, feedbacks, reports, suggestions). |
+| `/backup` | **Admins Only** | Triggers an immediate on-demand database backup and gzipped SQL snapshot. |
 | `/block <user_id>` | **Admins Only** | Permanently bans a malicious user and disconnects any active chat partner. |
 | `/unblock <user_id>` | **Admins Only** | Unbans a previously banned user and restores bot access. |
 
@@ -270,6 +278,7 @@ erDiagram
         bigint reporter_id FK "Complainant"
         bigint reported_id FK "Reported student"
         text reason_text "Explanation"
+        varchar evidence_file_id "Telegram photo/doc ID"
         int penalty_applied "Points deducted"
         boolean is_resolved "Resolution status"
         timestamp created_at "Timestamp"
@@ -467,11 +476,14 @@ Admins can send `/backup` at any time to immediately export and compress a clean
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 ```
 
-### Handling User Reports
-When a user submits a report:
-1. Admins receive an alert containing the Report ID, Session ID, Reporter ID, Reported User ID, their current priority score, and the reason text.
-2. Admins can click:
-   - `[⚖️ Penalize User]`: Prompts admin for the number of points to deduct (e.g., `15`). The user's priority is reduced (clamped at minimum `0`), and the report is marked resolved.
+### Handling User Reports & Security Incidents
+When a student submits a report (via `/report` during chat or `⚠️ Report Issue...` after chat):
+1. **Automated Protection**: The reported user is immediately and permanently blocked from the reporter's matchmaking queue.
+2. **Urgent Keyword Escalation**: Reports containing critical terms (`blackmail`, `threat`, `leak`, `nude`, `dox`, `money`, `scam`) trigger an instant **`🚨 URGENT: CRITICAL REPORT ALERT`** to all administrators.
+3. **Evidence Forwarding**: If the student attaches a screenshot, photo, document, voice note, or video, the bot forwards the file directly to all admins alongside the report card.
+4. **Admin Moderation Actions**:
+   - `[⚖️ Penalize User]`: Prompts admin for the number of reputation points to deduct (e.g., `15`). The user's priority is reduced (clamped at minimum `0`), and the report is marked resolved.
+   - `[🚫 Ban User]`: Permanently bans the offender via `/block <user_id>`.
    - `[✅ Dismiss]`: Resolves the report with `0` penalty.
 
 
