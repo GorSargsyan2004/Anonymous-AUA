@@ -14,6 +14,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import Message, MessageReactionUpdated, ReplyParameters
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import settings
 from app.database.crud import (
     end_active_session,
     get_active_session_by_user_id,
@@ -25,6 +26,8 @@ from app.database.crud import (
 from app.database.session import get_db_session
 from app.keyboards.inline import get_bot_feedback_keyboard, get_feedback_keyboard
 from app.services.matcher import match_user_in_queue
+from app.services.media_batcher import media_batcher
+from app.services.rate_limiter import rate_limiter
 from app.services.reply_manager import reply_manager
 
 logger = logging.getLogger(__name__)
@@ -32,6 +35,18 @@ router = Router(name="matchmaking_router")
 
 EMULATED_TYPING_SLEEP = True
 _user_relay_locks: Dict[int, asyncio.Lock] = {}
+
+
+def get_message_file_size(message: Message) -> Optional[int]:
+    """Extract file size in bytes from any media type in message."""
+    photos = getattr(message, "photo", None)
+    if photos:
+        return getattr(photos[-1], "file_size", None)
+    for media_attr in ("video", "document", "audio", "voice", "video_note", "animation"):
+        media_obj = getattr(message, media_attr, None)
+        if media_obj and getattr(media_obj, "file_size", None) is not None:
+            return media_obj.file_size
+    return None
 
 
 def get_user_relay_lock(user_id: int) -> asyncio.Lock:
@@ -306,6 +321,30 @@ async def relay_anonymous_message(message: Message, bot: Bot, state: FSMContext)
         return
 
     user_id = message.from_user.id
+    media_group_id = getattr(message, "media_group_id", None)
+
+    # Anti-flood check (bypass check if message is part of an already-registering media group)
+    if not media_batcher.is_collecting(media_group_id):
+        is_allowed, reason, retry_after, should_notify = rate_limiter.check(user_id)
+        if not is_allowed:
+            if should_notify:
+                if reason == "cooldown_triggered":
+                    await message.answer(
+                        "🛑 <b>Anti-flood protection triggered:</b> Too many rapid messages detected.\n\n"
+                        "Messaging has been paused for 2 minutes to protect bot stability.",
+                        parse_mode="HTML",
+                    )
+                elif reason == "cooldown":
+                    await message.answer(
+                        f"⏳ <b>Anti-flood cooldown active:</b> Please wait {int(retry_after)}s before sending messages.",
+                        parse_mode="HTML",
+                    )
+                else:
+                    await message.answer(
+                        "⚠️ <b>Slow down!</b> You are sending messages too quickly. Please wait a moment.",
+                        parse_mode="HTML",
+                    )
+            return
 
     async with get_db_session() as session:
         user = await get_or_create_user(session, user_id=user_id)
@@ -326,13 +365,132 @@ async def relay_anonymous_message(message: Message, bot: Bot, state: FSMContext)
                 )
             return
 
+        active_chat = await get_active_session_by_user_id(session, user_id=user_id)
+        session_id = active_chat.id if active_chat else None
+
+        # Check file size limit for single media messages
+        max_bytes = settings.MAX_MEDIA_FILE_SIZE_MB * 1024 * 1024
+        if not media_group_id:
+            file_size = get_message_file_size(message)
+            if file_size and file_size > max_bytes:
+                file_size_mb = file_size / (1024 * 1024)
+                await message.answer(
+                    f"⚠️ <b>File too large ({file_size_mb:.1f} MB).</b>\n\n"
+                    f"To ensure fast delivery and protect mobile data, files are limited to {settings.MAX_MEDIA_FILE_SIZE_MB} MB. "
+                    "Please compress or send a smaller file.",
+                    parse_mode="HTML",
+                )
+                return
+
+        # Handle album / media group batching
+        if media_group_id:
+            batch = await media_batcher.add_message(media_group_id, message)
+            if batch is None:
+                # Secondary album item debounced into batch; leader will relay all
+                return
+
+            # Check if any files in album exceed MAX_MEDIA_FILE_SIZE_MB
+            oversized = [m for m in batch if (get_message_file_size(m) or 0) > max_bytes]
+            if oversized:
+                await message.answer(
+                    f"⚠️ <b>One or more files in your album exceed {settings.MAX_MEDIA_FILE_SIZE_MB} MB.</b>\n\n"
+                    "Please compress or remove oversized items before sending.",
+                    parse_mode="HTML",
+                )
+                return
+
+            async with get_user_relay_lock(user_id):
+                show_typing = getattr(user, "show_typing", True)
+                if show_typing is None:
+                    show_typing = True
+
+                if show_typing:
+                    action = get_chat_action_for_message(batch[0])
+                    duration = get_emulated_typing_duration(batch[0]) if EMULATED_TYPING_SLEEP else 0.0
+                    try:
+                        await bot.send_chat_action(chat_id=partner_id, action=action)
+                    except Exception as e:
+                        logger.debug("Failed to send album chat action '%s' to partner %s: %s", action, partner_id, e)
+                    if duration > 0:
+                        await asyncio.sleep(duration)
+
+                # Relay album batch preserving Telegram album grid layout
+                try:
+                    copied_msg_ids = await bot.copy_messages(
+                        chat_id=partner_id,
+                        from_chat_id=user_id,
+                        message_ids=[m.message_id for m in batch],
+                    )
+                    for orig_msg, copied_id_obj in zip(batch, copied_msg_ids):
+                        sent_msg_id = getattr(copied_id_obj, "message_id", None)
+                        if sent_msg_id:
+                            await reply_manager.register_message(
+                                sender_id=user_id,
+                                sender_msg_id=orig_msg.message_id,
+                                receiver_id=partner_id,
+                                receiver_msg_id=sent_msg_id,
+                                session=session,
+                                session_id=session_id,
+                            )
+                    logger.info(
+                        "Relayed album of %d messages from %s to %s",
+                        len(batch),
+                        user_id,
+                        partner_id,
+                    )
+                except TelegramForbiddenError as e:
+                    logger.warning("Partner %s blocked the bot or is deactivated during album relay: %s", partner_id, e)
+                    result = await end_active_session(session, user_id=user_id)
+                    if result:
+                        chat_session, _ = result
+                        await reply_manager.clear_chat(user_id, partner_id, session=session, session_id=chat_session.id)
+                        await message.answer(
+                            "⚠️ <b>Your partner has disconnected or left the chat.</b>\n\n"
+                            "How was your conversation?",
+                            reply_markup=get_feedback_keyboard(chat_session.id, partner_id),
+                            parse_mode="HTML",
+                        )
+                        await maybe_send_bot_feedback_prompt(bot, session, user_id)
+                except TelegramBadRequest as e:
+                    err_msg = str(e).lower()
+                    if any(term in err_msg for term in ["chat not found", "user is deactivated", "bot was blocked"]):
+                        logger.warning("Partner %s unavailable during album relay (%s): %s", partner_id, err_msg, e)
+                        result = await end_active_session(session, user_id=user_id)
+                        if result:
+                            chat_session, _ = result
+                            await reply_manager.clear_chat(user_id, partner_id, session=session, session_id=chat_session.id)
+                            await message.answer(
+                                "⚠️ <b>Your partner has disconnected or left the chat.</b>\n\n"
+                                "How was your conversation?",
+                                reply_markup=get_feedback_keyboard(chat_session.id, partner_id),
+                                parse_mode="HTML",
+                            )
+                            await maybe_send_bot_feedback_prompt(bot, session, user_id)
+                    else:
+                        logger.warning("bot.copy_messages failed for album (%s), falling back to individual copy_to", e)
+                        for item in batch:
+                            try:
+                                sent_item = await item.copy_to(chat_id=partner_id)
+                                sent_item_id = getattr(sent_item, "message_id", None)
+                                if sent_item_id:
+                                    await reply_manager.register_message(
+                                        sender_id=user_id,
+                                        sender_msg_id=item.message_id,
+                                        receiver_id=partner_id,
+                                        receiver_msg_id=sent_item_id,
+                                        session=session,
+                                        session_id=session_id,
+                                    )
+                            except Exception as item_err:
+                                logger.error("Fallback copy_to failed for album item %s: %s", item.message_id, item_err)
+                except Exception as e:
+                    logger.error("Unexpected error relaying album from %s to %s: %s", user_id, partner_id, e)
+            return
+
         # Check if incoming message is a reply to a previous message in the conversation
         reply_params: Optional[ReplyParameters] = None
         replied_msg = message.reply_to_message or message.external_reply
         replied_msg_id = getattr(replied_msg, "message_id", None) if replied_msg else None
-
-        active_chat = await get_active_session_by_user_id(session, user_id=user_id)
-        session_id = active_chat.id if active_chat else None
 
         if replied_msg_id:
             target_msg_id = await reply_manager.get_target_message_id(

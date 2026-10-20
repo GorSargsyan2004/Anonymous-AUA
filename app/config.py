@@ -1,6 +1,6 @@
 """Configuration settings loaded from environment variables using pydantic-settings."""
 
-from typing import Any, List, Union
+from typing import Any, List, Optional, Union
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -19,6 +19,22 @@ class Settings(BaseSettings):
     ADMIN_IDS: Any = Field(
         default_factory=list,
         description="Comma-separated Telegram user IDs of bot administrators",
+    )
+    MAX_MEDIA_FILE_SIZE_MB: int = Field(
+        default=100,
+        description="Max allowed media file size in megabytes before rejection",
+    )
+    TELEGRAM_API_ID: Optional[int] = Field(
+        default=None,
+        description="Telegram App API ID for local bot API server",
+    )
+    TELEGRAM_API_HASH: Optional[str] = Field(
+        default=None,
+        description="Telegram App API Hash for local bot API server",
+    )
+    TELEGRAM_BOT_API_URL: Optional[str] = Field(
+        default=None,
+        description="Custom Telegram Bot API URL (e.g. http://telegram-bot-api:8081/bot)",
     )
 
     # PostgreSQL Database Configuration

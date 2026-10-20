@@ -6,6 +6,8 @@ import sys
 
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
+from aiogram.client.session.aiohttp import AiohttpSession
+from aiogram.client.telegram import TelegramAPIServer
 from aiogram.enums import ParseMode
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import BotCommand, BotCommandScopeDefault
@@ -84,9 +86,18 @@ async def main() -> None:
         logger.critical("Failed to initialize database: %s", e)
         sys.exit(1)
 
-    # 2. Initialize Bot instance
+    # 2. Initialize Bot instance (support optional Local Bot API server)
+    session = None
+    if settings.TELEGRAM_BOT_API_URL:
+        logger.info("Connecting Bot via Local Telegram Bot API server at: %s", settings.TELEGRAM_BOT_API_URL)
+        api_server = TelegramAPIServer.from_base(settings.TELEGRAM_BOT_API_URL, is_local=True)
+        session = AiohttpSession(api=api_server)
+    else:
+        logger.info("Using standard public Telegram Bot API server.")
+
     bot = Bot(
         token=settings.BOT_TOKEN,
+        session=session,
         default=DefaultBotProperties(parse_mode=ParseMode.HTML),
     )
 

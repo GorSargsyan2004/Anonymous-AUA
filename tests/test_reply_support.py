@@ -653,7 +653,7 @@ class TestAsyncRelayReplyHandler(unittest.IsolatedAsyncioTestCase):
         user_a = 9001
         user_b = 9002
 
-        reply_manager.clear_chat_sync(user_a, user_b)
+        reply_manager._chats.clear()
         # Simulate in-memory cache MISS (empty)
         self.assertEqual(reply_manager.active_chat_count(), 0)
 

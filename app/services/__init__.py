@@ -10,6 +10,8 @@ from app.services.matcher import (
     match_user_in_queue,
     normalize_orientation,
 )
+from app.services.media_batcher import MediaGroupBatcher, media_batcher
+from app.services.rate_limiter import TokenBucketRateLimiter, rate_limiter
 from app.services.reply_manager import ReplyManager, reply_manager
 
 __all__ = [
@@ -19,6 +21,10 @@ __all__ = [
     "get_compatible_criteria",
     "match_user_in_queue",
     "normalize_orientation",
+    "MediaGroupBatcher",
+    "media_batcher",
+    "TokenBucketRateLimiter",
+    "rate_limiter",
     "ReplyManager",
     "reply_manager",
 ]
