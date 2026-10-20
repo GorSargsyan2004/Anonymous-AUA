@@ -61,6 +61,11 @@ async def init_db() -> None:
                 "ALTER TABLE users ADD COLUMN IF NOT EXISTS is_banned BOOLEAN NOT NULL DEFAULT false;"
             )
         )
+        await conn.execute(
+            text(
+                "ALTER TABLE reports ADD COLUMN IF NOT EXISTS evidence_file_id VARCHAR(256);"
+            )
+        )
         # Backfill default preferences for existing users who do not have them set
         await conn.execute(
             text(

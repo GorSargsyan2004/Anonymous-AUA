@@ -162,6 +162,7 @@ class Report(Base):
         BigInteger, ForeignKey("users.id", ondelete="CASCADE"), nullable=False
     )
     reason_text: Mapped[str] = mapped_column(Text, nullable=False)
+    evidence_file_id: Mapped[Optional[str]] = mapped_column(String(256), nullable=True)
     penalty_applied: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     is_resolved: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     created_at: Mapped[datetime] = mapped_column(

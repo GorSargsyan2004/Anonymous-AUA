@@ -499,6 +499,7 @@ async def create_report(
     reporter_id: int,
     reported_id: int,
     reason_text: str,
+    evidence_file_id: Optional[str] = None,
 ) -> Report:
     """Create a new report filed against a user."""
     report = Report(
@@ -506,6 +507,7 @@ async def create_report(
         reporter_id=reporter_id,
         reported_id=reported_id,
         reason_text=reason_text,
+        evidence_file_id=evidence_file_id,
         is_resolved=False,
         penalty_applied=None,
     )
@@ -513,6 +515,21 @@ async def create_report(
     await session.commit()
     await session.refresh(report)
     return report
+
+
+async def get_latest_session_for_user(
+    session: AsyncSession,
+    user_id: int,
+) -> Optional[ChatSession]:
+    """Retrieve the most recent chat session for a user (active or completed)."""
+    stmt = (
+        select(ChatSession)
+        .where(or_(ChatSession.user1_id == user_id, ChatSession.user2_id == user_id))
+        .order_by(desc(ChatSession.id))
+        .limit(1)
+    )
+    result = await session.execute(stmt)
+    return result.scalar_one_or_none()
 
 
 async def get_report_by_id(

@@ -37,6 +37,8 @@ async def setup_bot_commands(bot: Bot) -> None:
         BotCommand(command="search", description="Search for an anonymous partner"),
         BotCommand(command="next", description="Skip to next chat partner"),
         BotCommand(command="stop", description="End current chat or search"),
+        BotCommand(command="report", description="Emergency report & block partner"),
+        BotCommand(command="safety", description="Privacy facts & anti-scam shield"),
         BotCommand(command="help", description="Show bot commands & help guide"),
         BotCommand(command="stats", description="View community stats & active chats"),
         BotCommand(command="blocklist", description="View & manage blocked partners"),

@@ -137,11 +137,22 @@ def get_unblock_confirmation_keyboard(block_id: int, page: int) -> InlineKeyboar
 def get_report_options_keyboard(session_id: int, partner_id: int) -> InlineKeyboardMarkup:
     """Return inline keyboard with specific issue categories and back button."""
     builder = InlineKeyboardBuilder()
+    builder.button(text="🚨 Blackmail / Threats", callback_data=f"report_start:{session_id}:{partner_id}")
+    builder.button(text="⚠️ Harassment / Abuse", callback_data=f"report_start:{session_id}:{partner_id}")
     builder.button(text="🚫 Spam / Promo", callback_data=f"fb:{session_id}:{partner_id}:spam")
     builder.button(text="🏫 Not from AUA", callback_data=f"fb:{session_id}:{partner_id}:not_aua")
-    builder.button(text="🚨 Harassment / Other", callback_data=f"report_start:{session_id}:{partner_id}")
     builder.button(text="🔙 Back", callback_data=f"fb_back:{session_id}:{partner_id}")
-    builder.adjust(2, 1, 1)
+    builder.adjust(2, 2, 1)
+    return builder.as_markup()
+
+
+def get_emergency_report_keyboard(session_id: int, partner_id: int) -> InlineKeyboardMarkup:
+    """Return inline keyboard for in-chat emergency /report command."""
+    builder = InlineKeyboardBuilder()
+    builder.button(text="🛑 End Chat & Report", callback_data=f"emerg_report:{session_id}:{partner_id}")
+    builder.button(text="🛡️ Block & Report Partner", callback_data=f"emerg_block_report:{session_id}:{partner_id}")
+    builder.button(text="✖️ Cancel", callback_data="emerg_cancel")
+    builder.adjust(1, 1, 1)
     return builder.as_markup()
 
 

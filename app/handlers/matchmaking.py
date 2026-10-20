@@ -18,17 +18,23 @@ from app.config import settings
 from app.database.crud import (
     end_active_session,
     get_active_session_by_user_id,
+    get_latest_session_for_user,
     get_or_create_user,
     get_user,
     set_user_searching,
     should_prompt_bot_feedback,
 )
 from app.database.session import get_db_session
-from app.keyboards.inline import get_bot_feedback_keyboard, get_feedback_keyboard
+from app.keyboards.inline import (
+    get_bot_feedback_keyboard,
+    get_emergency_report_keyboard,
+    get_feedback_keyboard,
+)
 from app.services.matcher import match_user_in_queue
 from app.services.media_batcher import media_batcher
 from app.services.rate_limiter import rate_limiter
 from app.services.reply_manager import reply_manager
+from app.states.states import ReportState
 
 logger = logging.getLogger(__name__)
 router = Router(name="matchmaking_router")
@@ -177,8 +183,10 @@ async def perform_search(user_id: int, bot: Bot, message: Message) -> None:
             "✨ <b>Partner found!</b> 🎭\n\n"
             "You are now connected anonymously. Say hello! 👾\n\n"
             "⚡ <b>Commands:</b>\n"
+            "• /report — Emergency report & block partner\n"
             "• /next — Skip to the next partner\n"
-            "• /stop — End this chat"
+            "• /stop — End this chat\n\n"
+            "🔒 <i>Privacy Shield Active: Your profile, phone number, and IP are strictly hidden.</i>"
         )
         # Notify initiating user
         await message.answer(match_msg, parse_mode="HTML")
@@ -195,6 +203,52 @@ async def perform_search(user_id: int, bot: Bot, message: Message) -> None:
         )
         # Schedule the 30-second notification if still searching
         asyncio.create_task(schedule_search_notice(bot, user_id))
+
+
+@router.message(Command("report"))
+async def handle_report_command(message: Message, bot: Bot, state: FSMContext) -> None:
+    """Handle /report command during an active chat or after a chat to report partner."""
+    user_id = message.from_user.id
+    async with get_db_session() as session:
+        user = await get_or_create_user(session, user_id=user_id)
+        partner_id = user.current_partner_id
+        active_chat = await get_active_session_by_user_id(session, user_id=user_id) if partner_id else None
+
+        if partner_id and active_chat:
+            await message.answer(
+                "🚨 <b>Emergency Safety & Report Shield</b> 🛡️\n"
+                "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                "You requested to report your current chat partner.\n\n"
+                "🔒 <b>You are completely safe:</b>\n"
+                "• Your partner <b>CANNOT</b> see your phone number, real name, @username, or profile picture.\n"
+                "• Telegram does NOT reveal IP addresses. Claims of 'hacking' or 'tracking your location' are <b>100% fake bluffs</b>.\n\n"
+                "👉 <i>Would you like to immediately disconnect and block this partner while filing the report?</i>",
+                reply_markup=get_emergency_report_keyboard(active_chat.id, partner_id),
+                parse_mode="HTML",
+            )
+            return
+
+        # User is not in active chat: look up latest session
+        latest_session = await get_latest_session_for_user(session, user_id=user_id)
+        if latest_session:
+            rep_id = latest_session.user2_id if latest_session.user1_id == user_id else latest_session.user1_id
+            await state.set_state(ReportState.waiting_for_reason)
+            await state.update_data(session_id=latest_session.id, reported_id=rep_id)
+            await message.answer(
+                "🚨 <b>Report Previous Partner</b> 🛡️\n"
+                "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                "Reporting your last chat partner.\n\n"
+                "Please describe what happened (blackmail, threats, harassment, scam) or <b>attach a screenshot</b> as evidence:\n\n"
+                "🔒 <i>Your identity is 100% private. (Send /cancel to abort)</i>",
+                parse_mode="HTML",
+            )
+            return
+
+    await message.answer(
+        "💬 <b>No recent chat found to report.</b>\n\n"
+        "You can use /report whenever you are in an active chat or after completing a conversation.",
+        parse_mode="HTML",
+    )
 
 
 @router.message(Command("search"))
@@ -570,6 +624,24 @@ async def relay_anonymous_message(message: Message, bot: Bot, state: FSMContext)
                         session=session,
                         session_id=session_id,
                     )
+
+                # Phishing & link safety warning for recipient
+                text_to_scan = (message.text or message.caption or "").lower()
+                suspicious_links = ["http://", "https://", "t.me/", "telegram.me/", "bit.ly", "tinyurl", "iplogger", "grabify", "2no.co"]
+                if any(link in text_to_scan for link in suspicious_links):
+                    try:
+                        await bot.send_message(
+                            chat_id=partner_id,
+                            text=(
+                                "⚠️ <b>Security Notice:</b> Your partner sent an external link.\n\n"
+                                "• Never enter passwords or personal data on unfamiliar pages.\n"
+                                "• Telegram never shares your IP or identity unless you click external links.\n"
+                                "• If this person behaves suspiciously, type /report to immediately block them."
+                            ),
+                            parse_mode="HTML",
+                        )
+                    except Exception:
+                        pass
             except TelegramForbiddenError as e:
                 logger.warning("Partner %s blocked the bot or is deactivated: %s", partner_id, e)
                 result = await end_active_session(session, user_id=user_id)

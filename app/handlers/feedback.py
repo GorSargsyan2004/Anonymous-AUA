@@ -11,6 +11,8 @@ from app.database.crud import (
     add_or_update_user_block,
     create_report,
     create_suggestion,
+    end_active_session,
+    get_latest_session_for_user,
     get_user,
     process_feedback_with_consensus,
     record_feedback,
@@ -21,6 +23,7 @@ from app.keyboards.inline import (
     get_admin_report_keyboard,
     get_admin_suggestion_keyboard,
     get_block_duration_keyboard,
+    get_emergency_report_keyboard,
     get_feedback_keyboard,
     get_report_options_keyboard,
 )
@@ -31,7 +34,7 @@ router = Router(name="feedback_router")
 
 
 @router.callback_query(F.data.startswith("report_menu:"))
-async def handle_report_menu(callback: CallbackQuery) -> None:
+async def handle_report_menu(callback: CallbackQuery, state: FSMContext) -> None:
     """Show specific issue options when user clicks 'Report Issue...'."""
     parts = callback.data.split(":")
     if len(parts) != 3:
@@ -40,10 +43,14 @@ async def handle_report_menu(callback: CallbackQuery) -> None:
     session_id = int(parts[1])
     partner_id = int(parts[2])
 
+    # Immediately arm FSM state so any typed message/screenshot is captured as a report!
+    await state.set_state(ReportState.waiting_for_reason)
+    await state.update_data(session_id=session_id, reported_id=partner_id)
+
     await callback.message.edit_text(
-        "⚠️ <b>Report an Issue</b>\n\n"
+        "⚠️ <b>Report an Issue / Incident</b> 🛡️\n\n"
         "What problem did you encounter with this partner?\n\n"
-        "<i>Select a category below:</i>",
+        "<i>Select a category below, or simply type your report / attach a screenshot:</i>",
         reply_markup=get_report_options_keyboard(session_id, partner_id),
         parse_mode="HTML",
     )
@@ -51,8 +58,9 @@ async def handle_report_menu(callback: CallbackQuery) -> None:
 
 
 @router.callback_query(F.data.startswith("fb_back:"))
-async def handle_feedback_back(callback: CallbackQuery) -> None:
+async def handle_feedback_back(callback: CallbackQuery, state: FSMContext) -> None:
     """Return to Tier 1 post-chat rating keyboard."""
+    await state.clear()
     parts = callback.data.split(":")
     if len(parts) != 3:
         await callback.answer()
@@ -323,44 +331,161 @@ async def handle_report_start_callback(callback: CallbackQuery, state: FSMContex
     await state.update_data(session_id=session_id, reported_id=reported_id)
 
     await callback.message.edit_text(
-        "⚠️ <b>Reporting User</b>\n\n"
-        "Please describe why you are reporting this user "
-        "(e.g., harassment, inappropriate content, scam, non-AUA):\n\n"
-        "<i>Send your explanation as a message below, or /stop to cancel.</i>",
+        "🚨 <b>Describe the Incident / Attach Evidence</b> 🛡️\n\n"
+        "Please describe what happened (blackmail, threats, harassment, non-AUA intruder):\n\n"
+        "📷 <b>You can send text, a screenshot, or photo proof.</b>\n"
+        "Our administration reviews all reports immediately.\n\n"
+        "<i>(Send /cancel to abort)</i>",
         parse_mode="HTML",
     )
     await callback.answer()
 
 
-@router.message(ReportState.waiting_for_reason, F.text)
+@router.callback_query(F.data.startswith("emerg_report:") | F.data.startswith("emerg_block_report:"))
+async def handle_emergency_report_callback(callback: CallbackQuery, bot: Bot, state: FSMContext) -> None:
+    """Handle emergency in-chat report: disconnect active chat and prompt for evidence."""
+    parts = callback.data.split(":")
+    is_block = parts[0] == "emerg_block_report"
+    session_id = int(parts[1])
+    partner_id = int(parts[2])
+    user_id = callback.from_user.id
+
+    # 1. Terminate active chat immediately
+    async with get_db_session() as session:
+        await end_active_session(session, user_id=user_id)
+        if is_block:
+            await add_or_update_user_block(session, user_id=user_id, blocked_user_id=partner_id, expires_at=None)
+
+    # Clear reply cache
+    from app.handlers.matchmaking import reply_manager
+    await reply_manager.clear_chat(user_id, partner_id)
+
+    # Notify partner they were disconnected
+    try:
+        await bot.send_message(
+            chat_id=partner_id,
+            text="🛑 <b>Your partner has disconnected or left the chat.</b>\n\nSend /search to find a new partner! ×͜×",
+            parse_mode="HTML",
+        )
+    except Exception:
+        pass
+
+    # Arm FSM state for report description
+    await state.set_state(ReportState.waiting_for_reason)
+    await state.update_data(session_id=session_id, reported_id=partner_id)
+
+    block_note = " and permanently blocked" if is_block else ""
+    await callback.message.edit_text(
+        f"🛑 <b>Chat disconnected{block_note}.</b> 🛡️\n\n"
+        "You are now safe. Please describe what happened (blackmail, threats, harassment) or <b>attach a screenshot</b> as evidence:\n\n"
+        "<i>(Send /cancel to abort)</i>",
+        parse_mode="HTML",
+    )
+    await callback.answer("Chat ended.")
+
+
+@router.callback_query(F.data == "emerg_cancel")
+async def handle_emergency_cancel(callback: CallbackQuery) -> None:
+    """Cancel in-chat emergency report."""
+    await callback.message.edit_text(
+        "✅ <b>Report cancelled.</b> You are still connected in your chat.",
+        parse_mode="HTML",
+    )
+    await callback.answer()
+
+
+@router.message(
+    ReportState.waiting_for_reason,
+    F.text | F.photo | F.document | F.voice | F.video,
+)
 async def handle_report_reason(message: Message, bot: Bot, state: FSMContext) -> None:
     """Receive the report reason, record in DB, and notify all administrators."""
-    if message.text.startswith("/"):
+    if message.text and message.text.strip().lower() in ["/cancel", "/stop"]:
+        await state.clear()
+        await message.answer("✅ Report cancelled.", parse_mode="HTML")
         return
 
     data = await state.get_data()
     session_id = data.get("session_id")
     reported_id = data.get("reported_id")
     reporter_id = message.from_user.id
-    reason_text = message.text.strip()
+
+    # Fallback to DB latest session if state data was lost across restart
+    if not session_id or not reported_id:
+        async with get_db_session() as session:
+            latest = await get_latest_session_for_user(session, user_id=reporter_id)
+            if latest:
+                session_id = latest.id
+                reported_id = latest.user2_id if latest.user1_id == reporter_id else latest.user1_id
+
+    # If still no session_id or reported_id, cannot proceed with DB constraint
+    if not session_id or not reported_id:
+        await state.clear()
+        await message.answer(
+            "⚠️ <b>Could not locate an associated chat session for this report.</b>\n\n"
+            "Please send /suggestion to report this issue directly to admins.",
+            parse_mode="HTML",
+        )
+        return
+
+    # Extract reason and evidence
+    evidence_file_id = None
+    evidence_type = None
+
+    if message.photo:
+        evidence_file_id = message.photo[-1].file_id
+        evidence_type = "photo"
+        reason_text = message.caption.strip() if message.caption else "[Screenshot / Photo Evidence Attached]"
+    elif message.document:
+        evidence_file_id = message.document.file_id
+        evidence_type = "document"
+        reason_text = message.caption.strip() if message.caption else f"[Document Attached: {message.document.file_name or 'file'}]"
+    elif message.voice:
+        evidence_file_id = message.voice.file_id
+        evidence_type = "voice"
+        reason_text = message.caption.strip() if message.caption else "[Voice Message Evidence Attached]"
+    elif message.video:
+        evidence_file_id = message.video.file_id
+        evidence_type = "video"
+        reason_text = message.caption.strip() if message.caption else "[Video Evidence Attached]"
+    elif message.text:
+        reason_text = message.text.strip()
+    else:
+        reason_text = "[No text explanation provided]"
 
     await state.clear()
 
     async with get_db_session() as session:
-        # Create Report
+        # Create Report in database
         report = await create_report(
             session=session,
             session_id=session_id,
             reporter_id=reporter_id,
             reported_id=reported_id,
             reason_text=reason_text,
+            evidence_file_id=evidence_file_id,
+        )
+        # Automatically block this partner permanently for the reporter
+        await add_or_update_user_block(
+            session=session,
+            user_id=reporter_id,
+            blocked_user_id=reported_id,
+            expires_at=None,
         )
         reported_user = await get_user(session, user_id=reported_id)
         current_priority = reported_user.priority if reported_user else 50
 
+    critical_keywords = ["blackmail", "scam", "extort", "threat", "photo", "leak", "money", "nude", "police", "doxx", "hack", "pay"]
+    is_critical = any(kw in reason_text.lower() for kw in critical_keywords)
+    header_alert = "🚨🚨🚨 <b>CRITICAL EMERGENCY REPORT: BLACKMAIL / THREAT DETECTED!</b>" if is_critical else f"🚨 <b>NEW USER REPORT #{report.id}</b>"
+
     await message.answer(
-        "✅ <b>Your report has been submitted to AUA moderators.</b>\n\n"
-        "Thank you for helping keep our university community safe and respectful. 🎭\n\n"
+        "✅ <b>Your report has been submitted to AUA administrators.</b> 🛡️\n\n"
+        "We take harassment, threats, and blackmail extremely seriously. Our team has received your report and evidence.\n\n"
+        "🔒 <b>Your Privacy & Safety Guarantee:</b>\n"
+        "• <b>The other user DOES NOT know who you are.</b> Telegram never reveals your phone number, real name, @username, or IP address.\n"
+        "• Claims of 'tracking your IP' or 'hacking your data' are <b>100% fake scare tactics</b> used by scammers to bluff and intimidate.\n"
+        "• This user has been <b>permanently blocked</b> so you will never match with them again.\n\n"
         "Send /search whenever you want to find a new chat partner.",
         parse_mode="HTML",
     )
@@ -371,8 +496,9 @@ async def handle_report_reason(message: Message, bot: Bot, state: FSMContext) ->
     safe_reason = html.escape(reason_text)
 
     admin_text = (
-        f"🚨 <b>NEW USER REPORT #{report.id}</b>\n"
+        f"{header_alert}\n"
         "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"• <b>Report ID:</b> #{report.id}\n"
         f"• <b>Session ID:</b> #{session_id}\n"
         f"• <b>Reported User ID:</b> <code>{reported_id}</code> (@{safe_reported_username})\n"
         f"• <b>Reporter ID:</b> <code>{reporter_id}</code> (@{safe_reporter_username})\n"
@@ -392,5 +518,34 @@ async def handle_report_reason(message: Message, bot: Bot, state: FSMContext) ->
                 reply_markup=admin_keyboard,
                 parse_mode="HTML",
             )
+            if evidence_file_id:
+                if evidence_type == "photo":
+                    await bot.send_photo(
+                        chat_id=admin_id,
+                        photo=evidence_file_id,
+                        caption=f"📸 <b>Evidence attached to Report #{report.id}</b>",
+                        parse_mode="HTML",
+                    )
+                elif evidence_type == "document":
+                    await bot.send_document(
+                        chat_id=admin_id,
+                        document=evidence_file_id,
+                        caption=f"📄 <b>Document evidence attached to Report #{report.id}</b>",
+                        parse_mode="HTML",
+                    )
+                elif evidence_type == "voice":
+                    await bot.send_voice(
+                        chat_id=admin_id,
+                        voice=evidence_file_id,
+                        caption=f"🎙️ <b>Voice evidence attached to Report #{report.id}</b>",
+                        parse_mode="HTML",
+                    )
+                elif evidence_type == "video":
+                    await bot.send_video(
+                        chat_id=admin_id,
+                        video=evidence_file_id,
+                        caption=f"🎥 <b>Video evidence attached to Report #{report.id}</b>",
+                        parse_mode="HTML",
+                    )
         except TelegramAPIError as e:
             logger.error("Failed to notify admin %s of report #%s: %s", admin_id, report.id, e)

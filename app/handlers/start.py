@@ -481,7 +481,9 @@ async def handle_help_command(message: Message) -> None:
         "⚡ <b>Core Chat Commands:</b>\n"
         "• /search — Find an anonymous partner matching your preferences\n"
         "• /next — Skip to the next conversation partner\n"
-        "• /stop — End your current chat or leave the search queue\n\n"
+        "• /stop — End your current chat or leave the search queue\n"
+        "• /report — Emergency report & block partner\n"
+        "• /safety — Anti-scam, blackmail protection & privacy facts\n\n"
         "⚙️ <b>Settings & Preferences:</b>\n"
         "• /preferences — Customize partner gender and orientation\n"
         "• /typing — Toggle 'typing...' stealth mode on/off\n"
@@ -496,6 +498,32 @@ async def handle_help_command(message: Message) -> None:
         "All chats are strictly anonymous. After any chat, you can rate your experience, report issues, or choose not to connect with that partner again (for 1 day, 3 days, 1 week, or permanently)."
     )
     await message.answer(help_text, parse_mode="HTML")
+
+
+@router.message(Command("safety"))
+async def handle_safety_command(message: Message) -> None:
+    """Display comprehensive security, anti-scam, and blackmail protection facts."""
+    safety_text = (
+        "🛡️ <b>Anonymous AUA — Privacy & Safety Shield</b> 🥷\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        "Your safety and peace of mind are our highest priorities. Here is how Anonymous AUA protects you:\n\n"
+        "🔒 <b>1. Zero Identity Exposure:</b>\n"
+        "• <b>No Phone Numbers:</b> Telegram never reveals your phone number or account credentials to partners.\n"
+        "• <b>No Usernames or Profiles:</b> All messages are relayed as anonymous copies stripped of sender metadata.\n"
+        "• <b>No Avatar or Reaction Leaks:</b> When you react with emojis or type, the bot generates the action from its own account.\n"
+        "• <b>No IP Address Sharing:</b> Connections route entirely through Telegram's encrypted data centers. Direct peer-to-peer IP exposure is technically impossible.\n\n"
+        "🎭 <b>2. Spotting Scammer & Blackmailer Bluffs:</b>\n"
+        "• <b>'I know who you are / I tracked your IP':</b> This is a <b>100% fake bluff</b>. Scammers use fear and guesswork to trick students.\n"
+        "• <b>'Send money / photos or I will leak':</b> Never comply with blackmailers. Immediately type /report and cut them off.\n"
+        "• <b>Phishing Links:</b> Never click links sent by strangers (like bit.ly, iplogger, or login portals).\n\n"
+        "⚡ <b>3. What to do if someone threatens you:</b>\n"
+        "• Type /report — Instantly disconnects, blocks the user, and alerts AUA admins with your evidence.\n"
+        "• Tap /blocklist — Verify and manage blocked users.\n"
+        "• Use /stop — Terminate the chat at any second.\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        "<i>Have questions or need assistance? Send /suggestion to speak with bot admins.</i>"
+    )
+    await message.answer(safety_text, parse_mode="HTML")
 
 
 @router.message(Command("stats", "stata"))

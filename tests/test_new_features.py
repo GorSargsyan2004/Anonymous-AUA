@@ -208,10 +208,11 @@ class TestReportNotificationReportedId(unittest.IsolatedAsyncioTestCase):
     """Test report reason handler prominently provides reported user ID."""
 
     @patch("app.handlers.feedback.get_db_session")
+    @patch("app.handlers.feedback.add_or_update_user_block")
     @patch("app.handlers.feedback.create_report")
     @patch("app.handlers.feedback.get_user")
     async def test_report_includes_reported_user_id_and_ban_command(
-        self, mock_get_user, mock_create_rep, mock_db_session
+        self, mock_get_user, mock_create_rep, mock_add_block, mock_db_session
     ) -> None:
         """Admin alert includes Reported User ID and /block command."""
         mock_create_rep.return_value = MagicMock(id=42)
@@ -224,6 +225,10 @@ class TestReportNotificationReportedId(unittest.IsolatedAsyncioTestCase):
 
         msg = AsyncMock()
         msg.text = "Inappropriate harassment"
+        msg.photo = None
+        msg.document = None
+        msg.voice = None
+        msg.video = None
         msg.from_user = MagicMock(id=11111, username="good_student")
 
         with patch("app.handlers.feedback.settings.ADMIN_IDS", [5321254678]):
@@ -235,6 +240,57 @@ class TestReportNotificationReportedId(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Reported User ID:</b> <code>98765</code>", admin_alert)
         self.assertIn("Reporter ID:</b> <code>11111</code>", admin_alert)
         self.assertIn("/block 98765", admin_alert)
+
+    @patch("app.handlers.feedback.get_db_session")
+    @patch("app.handlers.feedback.add_or_update_user_block")
+    @patch("app.handlers.feedback.create_report")
+    @patch("app.handlers.feedback.get_user")
+    async def test_report_with_screenshot_photo(
+        self, mock_get_user, mock_create_rep, mock_add_block, mock_db_session
+    ) -> None:
+        """User attaching a screenshot photo has evidence recorded and sent to admins."""
+        mock_create_rep.return_value = MagicMock(id=43)
+        mock_get_user.return_value = MagicMock(username="blackmailer", priority=30)
+
+        bot = AsyncMock()
+        state = AsyncMock()
+        state.get_data.return_value = {"session_id": 12, "reported_id": 55555}
+
+        msg = AsyncMock()
+        msg.text = None
+        photo_mock = MagicMock(file_id="photo_xyz_123")
+        msg.photo = [photo_mock]
+        msg.caption = "This user is blackmailing me saying he tracked my IP"
+        msg.document = None
+        msg.voice = None
+        msg.video = None
+        msg.from_user = MagicMock(id=22222, username="victim_student")
+
+        with patch("app.handlers.feedback.settings.ADMIN_IDS", [5321254678]):
+            await feedback_handlers.handle_report_reason(msg, bot, state)
+
+        mock_create_rep.assert_awaited_once_with(
+            session=unittest.mock.ANY,
+            session_id=12,
+            reporter_id=22222,
+            reported_id=55555,
+            reason_text="This user is blackmailing me saying he tracked my IP",
+            evidence_file_id="photo_xyz_123",
+        )
+        # Verify photo evidence was sent to admin
+        bot.send_photo.assert_awaited_once_with(
+            chat_id=5321254678,
+            photo="photo_xyz_123",
+            caption=unittest.mock.ANY,
+            parse_mode="HTML",
+        )
+        # Verify blackmailer was auto-blocked
+        mock_add_block.assert_awaited_once_with(
+            session=unittest.mock.ANY,
+            user_id=22222,
+            blocked_user_id=55555,
+            expires_at=None,
+        )
 
 
 class TestPartnerBlockAndCooldown(unittest.IsolatedAsyncioTestCase):
