@@ -156,15 +156,20 @@ To eliminate malicious retaliation ("spite voting" where an angry user clicks "S
 | Command | Audience | Description |
 | :--- | :---: | :--- |
 | `/start` | Public | Initiates the onboarding profile setup or displays welcome menu. |
+| `/help` | Public | Displays reference guide and summary of all available bot commands. |
 | `/search` | Public | Enters the matchmaking queue to find an anonymous student partner. |
 | `/next` | Public | Ends the current conversation and immediately queues for a new partner. |
 | `/stop` | Public | Ends an active chat session or cancels a pending search. |
 | `/preferences` | Public | Adjusts target sexes, orientations, and typing indicator via checkbox menu. |
 | `/typing` | Public | Quickly toggles typing status indicator on/off (stealth mode). |
+| `/blocklist` | Public | Displays blocked partners as date buttons with `[<] [2/3] [>]` pagination to unblock. |
+| `/stats` (or `/stata`) | Public | Shows community metrics: registered count, active chats, male/female, and orientations. |
 | `/profile` | Public | Resets and reconfigures sex and sexual orientation. |
 | `/suggestion` | Public | Sends feedback, feature requests, or bug reports to admins. |
 | `/cancel` | Public | Aborts any active prompt or input without ending active chat. |
-| `/stata` | **Admins Only** | Displays real-time campus metrics, user breakdowns, and report statuses. |
+| `/stata` | **Admins Only** | Displays full administrator dashboard (backups, feedbacks, reports, suggestions). |
+| `/block <user_id>` | **Admins Only** | Permanently bans a malicious user and disconnects any active chat partner. |
+| `/unblock <user_id>` | **Admins Only** | Unbans a previously banned user and restores bot access. |
 
 ---
 
