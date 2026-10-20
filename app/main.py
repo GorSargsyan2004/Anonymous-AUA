@@ -56,11 +56,11 @@ async def setup_bot_profile(bot: Bot) -> None:
         (
             bot.set_my_description,
             "Official Anonymous Chat Bot for students of the American University of Armenia (AUA). "
-            "Connect anonymously, make campus friends, and chat safely. 🦅🇦🇲",
+            "Connect anonymously, make campus friends, and chat safely. 🎭🥷",
         ),
         (
             bot.set_my_short_description,
-            "Anonymous Chat Bot exclusively for AUA students. 🦅🇦🇲",
+            "Anonymous Chat Bot exclusively for AUA students. 🎭",
         ),
     ]
     for func, text_value in profile_items:

@@ -228,7 +228,7 @@ async def hourly_backup_worker(bot: Optional[Bot] = None, interval_seconds: int 
                 if bot and settings.ADMIN_IDS:
                     safe_err = html.escape(str(filename_or_err))
                     alert_text = (
-                        "🚨 <b>Database Backup Failure Alert</b> 🦅🇦🇲\n"
+                        "🚨 <b>Database Backup Failure Alert</b> ⚠️\n"
                         "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
                         "The automated hourly database backup failed:\n"
                         f"<code>{safe_err}</code>\n"

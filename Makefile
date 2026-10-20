@@ -14,7 +14,7 @@ all: help
 
 help:
 	@echo "================================================================================"
-	@echo "🇦🇲 Anonymous AUA Telegram Bot — Server Management Commands 🦅"
+	@echo "🎭 Anonymous AUA Telegram Bot — Server Management Commands 🥷"
 	@echo "================================================================================"
 	@echo "  make start (or run)    Build and start containers in the background"
 	@echo "  make autostart         Configure Linux systemd so bot starts automatically on boot"

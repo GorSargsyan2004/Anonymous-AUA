@@ -1,4 +1,4 @@
-# 🦅 Anonymous AUA Telegram Chat Bot 🇦🇲
+# 🎭 Anonymous AUA Telegram Chat Bot 🥷
 
 [![Python](https://img.shields.io/badge/Python-3.12-3776AB?style=for-the-badge&logo=python&logoColor=white)](https://www.python.org/)
 [![aiogram](https://img.shields.io/badge/aiogram-v3.x-2CA5E0?style=for-the-badge&logo=telegram&logoColor=white)](https://docs.aiogram.dev/)
@@ -412,7 +412,7 @@ python3 -m app.main
 ### Real-Time Statistics (`/stata`)
 Admins can send `/stata` to view an aggregated dashboard:
 ```text
-📊 AUA Anonymous Chat — Administrator Dashboard 🦅🇦🇲
+📊 Anonymous AUA — Administrator Dashboard 🎭
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 👥 User Base:
 • Total Registered: 142
@@ -456,7 +456,7 @@ Admins can send `/stata` to view an aggregated dashboard:
 ### On-Demand Database Backup (`/backup`)
 Admins can send `/backup` at any time to immediately export and compress a clean SQL dump of the database:
 ```text
-💾 PostgreSQL Database Backup Created Successfully! 🦅🇦🇲
+💾 PostgreSQL Database Backup Created Successfully! 🛡️
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 📁 Primary: backups/latest.sql.gz
 📦 Archive Snapshot: backup_20261019_144856.sql.gz

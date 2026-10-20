@@ -102,13 +102,13 @@ async def schedule_search_notice(bot: Bot, user_id: int) -> None:
                 await bot.send_message(
                     chat_id=user_id,
                     text=(
-                        "⏳ <b>Still looking for a partner...</b> 🦅🇦🇲\n\n"
-                        "<b>Anonymous AUA</b> was recently released, so there might be fewer students active at this exact minute!\n\n"
+                        "⏳ <b>Still looking for a partner...</b> 🥷\n\n"
+                        "<b>Anonymous AUA</b> matches students by mutual preferences, so there might be fewer active peers in your queue right now.\n\n"
                         "📢 <b>Help grow our campus community!</b>\n"
                         "Share the bot with your AUA classmates and group chats so more people join:\n"
                         "👉 <b>https://t.me/aua_anonymous_bot</b>\n\n"
                         "The more students join, the faster matches happen! You remain in the search queue and will be connected as soon as someone joins.\n\n"
-                        "<i>(Send /stop at any time to cancel)</i>"
+                        "<i>(Send /stop at any time to cancel) ×͜×</i>"
                     ),
                     parse_mode="HTML",
                     disable_web_page_preview=True,
@@ -124,7 +124,7 @@ async def maybe_send_bot_feedback_prompt(bot: Bot, session: AsyncSession, user_i
             await bot.send_message(
                 chat_id=user_id,
                 text=(
-                    "💡 <b>Help Us Improve Anonymous AUA!</b> 🦅🇦🇲\n\n"
+                    "💡 <b>Help Us Improve Anonymous AUA!</b> 🎭\n\n"
                     "You've completed several anonymous conversations! How is your experience so far?\n\n"
                     "We'd love to hear your thoughts, ideas, or suggestions on how to make this bot better for our campus community."
                 ),
@@ -174,8 +174,8 @@ async def perform_search(user_id: int, bot: Bot, message: Message) -> None:
 
     if partner and chat_session:
         match_msg = (
-            "✨ <b>Partner found!</b> 🇦🇲🦅\n\n"
-            "You are now connected anonymously. Say hello!\n\n"
+            "✨ <b>Partner found!</b> 🎭\n\n"
+            "You are now connected anonymously. Say hello! 👾\n\n"
             "⚡ <b>Commands:</b>\n"
             "• /next — Skip to the next partner\n"
             "• /stop — End this chat"
@@ -189,7 +189,7 @@ async def perform_search(user_id: int, bot: Bot, message: Message) -> None:
             logger.warning("Failed to notify matched partner %s: %s", partner.id, e)
     else:
         await message.answer(
-            "🔍 <b>Searching for a compatible AUA partner...</b> 🦅\n\n"
+            "🔍 <b>Searching for a compatible AUA partner...</b> 🥷\n\n"
             "Please wait while we connect you, or send /stop to cancel.",
             parse_mode="HTML",
         )
@@ -253,7 +253,7 @@ async def handle_stop(message: Message, bot: Bot, state: FSMContext) -> None:
             await set_user_searching(session, user_id=user_id, is_searching=False)
             await message.answer(
                 "🛑 <b>Search cancelled.</b>\n\n"
-                "Send /search whenever you are ready to find a partner! 🦅🇦🇲",
+                "Send /search whenever you are ready to find a partner! ×͜×",
                 parse_mode="HTML",
             )
             return
@@ -261,7 +261,7 @@ async def handle_stop(message: Message, bot: Bot, state: FSMContext) -> None:
     # 3. Neither in chat nor searching
     await message.answer(
         "💬 You are not currently in an active chat or search.\n\n"
-        "Send /search to find someone to chat with! 🦅",
+        "Send /search to find someone to chat with! 🎭",
         parse_mode="HTML",
     )
 
@@ -360,7 +360,7 @@ async def relay_anonymous_message(message: Message, bot: Bot, state: FSMContext)
             else:
                 await message.answer(
                     "💬 <b>You are not currently in a chat.</b>\n\n"
-                    "Send /search to find an anonymous partner! 🦅🇦🇲",
+                    "Send /search to find an anonymous partner! 🥷",
                     parse_mode="HTML",
                 )
             return

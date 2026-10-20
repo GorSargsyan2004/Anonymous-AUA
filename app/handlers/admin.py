@@ -51,7 +51,7 @@ async def handle_stata(message: Message) -> None:
         backup_str = "⚠️ No backup snapshot found yet (run /backup)"
 
     dashboard = (
-        "📊 <b>AUA Anonymous Chat — Administrator Dashboard</b> 🦅🇦🇲\n"
+        "📊 <b>Anonymous AUA — Administrator Dashboard</b> 🎭\n"
         "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
         f"👥 <b>User Base:</b>\n"
         f"• Total Registered: <b>{stats['total_users']}</b>\n"
@@ -99,7 +99,7 @@ async def handle_admin_backup(message: Message) -> None:
         size_display = f"{size_kb / 1024:.2f} MB" if size_kb >= 1024 else f"{size_kb:.1f} KB"
         meta = get_backup_metadata()
         report = (
-            "💾 <b>PostgreSQL Database Backup Created Successfully!</b> 🦅🇦🇲\n"
+            "💾 <b>PostgreSQL Database Backup Created Successfully!</b> 🛡️\n"
             "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
             f"📁 <b>Primary:</b> <code>backups/latest.sql.gz</code>\n"
             f"📦 <b>Archive Snapshot:</b> <code>{filename_or_err}</code>\n"
@@ -113,7 +113,7 @@ async def handle_admin_backup(message: Message) -> None:
     else:
         safe_err = html.escape(str(filename_or_err))
         await status_msg.edit_text(
-            "❌ <b>Database Backup Failed</b> 🦅🇦🇲\n"
+            "❌ <b>Database Backup Failed</b> ⚠️\n"
             "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
             f"<b>Error Details:</b>\n<code>{safe_err}</code>\n"
             "━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
@@ -229,7 +229,7 @@ async def handle_admin_block_user(message: Message, bot: Bot) -> None:
                 chat_id=partner_id,
                 text=(
                     "🛑 <b>Your partner has disconnected or left the chat.</b>\n\n"
-                    "Send /search to find a new partner! 🦅🇦🇲"
+                    "Send /search to find a new partner! ×͜×"
                 ),
                 parse_mode="HTML",
             )
@@ -364,7 +364,7 @@ async def handle_admin_reply_text(message: Message, bot: Bot, state: FSMContext)
         "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
         f"<i>\"{safe_reply}\"</i>\n"
         "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        "Thank you for helping us improve Anonymous AUA! 🦅🇦🇲"
+        "Thank you for helping us improve Anonymous AUA! 🎭"
     )
 
     try:

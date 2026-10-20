@@ -126,7 +126,7 @@ async def handle_block_duration(callback: CallbackQuery) -> None:
         f"🛑 <b>Partner Blocked!</b>\n\n"
         f"You will not connect with this anonymous partner for <b>{dur_text}</b>.\n\n"
         "💡 <i>You can view, manage, or unblock partners anytime using /blocklist.</i>\n\n"
-        "Send /search to find a new chat partner! 🦅🇦🇲",
+        "Send /search to find a new chat partner! 🎭",
         parse_mode="HTML",
     )
     await callback.answer("Partner blocked!")
@@ -170,7 +170,7 @@ async def handle_feedback_callback(callback: CallbackQuery, bot: Bot) -> None:
     if feedback_type == "like":
         msg_text = (
             "✅ <b>Feedback submitted: 👍 Great Chat!</b>\n\n"
-            "Thank you for helping keep the AUA community positive, friendly, and authentic! 🦅🇦🇲\n\n"
+            "Thank you for helping keep the AUA community positive, friendly, and authentic! 🎭\n\n"
             "<i>Send /search whenever you want to start a new chat!</i>"
         )
     elif feedback_type == "dislike":
@@ -178,30 +178,30 @@ async def handle_feedback_callback(callback: CallbackQuery, bot: Bot) -> None:
             msg_text = (
                 "✅ <b>Feedback submitted: 👎 Not for me.</b>\n\n"
                 "<i>(Since the conversation was very brief, this was recorded as a neutral skip).</i>\n\n"
-                "Thank you for your feedback! Send /search whenever you want to start a new chat! 🦅"
+                "Thank you for your feedback! Send /search whenever you want to start a new chat! 🥷"
             )
         else:
             msg_text = (
                 "✅ <b>Feedback submitted: 👎 Not for me.</b>\n\n"
                 "Thank you for your feedback. We'll use this to match you with better partners!\n\n"
-                "<i>Send /search whenever you want to start a new chat!</i> 🦅🇦🇲"
+                "<i>Send /search whenever you want to start a new chat!</i> 🎭"
             )
     elif feedback_type == "spam":
         msg_text = (
             "✅ <b>Report recorded: 🚫 Spam / Promotion.</b>\n\n"
             "Thank you for keeping AUA safe and clean. Our automated system tracks repeated reports "
-            "across independent students and penalizes offenders. 🦅🇦🇲\n\n"
+            "across independent students and penalizes offenders. 🛡️\n\n"
             "<i>Send /search to find a new partner!</i>"
         )
     elif feedback_type == "not_aua":
         msg_text = (
             "✅ <b>Report recorded: 🏫 Not from AUA.</b>\n\n"
             "Thank you! Our automated system tracks reports from multiple students to identify "
-            "and filter out non-AUA intruders. 🦅🇦🇲\n\n"
+            "and filter out non-AUA intruders. 🛡️\n\n"
             "<i>Send /search to find a new partner!</i>"
         )
     else:
-        msg_text = "✅ <b>Feedback recorded!</b> Thank you! 🦅🇦🇲"
+        msg_text = "✅ <b>Feedback recorded!</b> Thank you! 🎭"
 
     await callback.message.edit_text(msg_text, parse_mode="HTML")
     await callback.answer("Feedback recorded!")
@@ -242,7 +242,7 @@ async def handle_suggest_start(callback: CallbackQuery, state: FSMContext) -> No
     """Prompt user to write bot improvement suggestions."""
     await state.set_state(SuggestionState.waiting_for_suggestion)
     await callback.message.edit_text(
-        "💡 <b>We'd love your ideas to improve Anonymous AUA!</b> 🦅🇦🇲\n\n"
+        "💡 <b>We'd love your ideas to improve Anonymous AUA!</b> 🎭\n\n"
         "What features would you love to see, what should be improved, or did you encounter any issues?\n\n"
         "✍️ <i>Please type your suggestion below and send it. Our administrative team will read it and reply back to you!</i>\n\n"
         "<i>(Send /stop at any time to cancel)</i>",
@@ -269,7 +269,7 @@ async def handle_suggestion_input(message: Message, bot: Bot, state: FSMContext)
         suggestion = await create_suggestion(session, user_id=user_id, text=suggestion_text)
 
     await message.answer(
-        "🌟 <b>Thank you for your valuable feedback!</b> 🦅🇦🇲\n\n"
+        "🌟 <b>Thank you for your valuable feedback!</b> 🎭\n\n"
         "Your suggestion has been submitted directly to the AUA bot administration. "
         "When an admin reviews and replies to your message, you will receive their response right here!\n\n"
         "⚡ <b>Commands:</b>\n"
@@ -360,7 +360,7 @@ async def handle_report_reason(message: Message, bot: Bot, state: FSMContext) ->
 
     await message.answer(
         "✅ <b>Your report has been submitted to AUA moderators.</b>\n\n"
-        "Thank you for helping keep our university community safe and respectful. 🦅🇦🇲\n\n"
+        "Thank you for helping keep our university community safe and respectful. 🎭\n\n"
         "Send /search whenever you want to find a new chat partner.",
         parse_mode="HTML",
     )

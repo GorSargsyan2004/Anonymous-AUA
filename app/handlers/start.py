@@ -42,8 +42,8 @@ async def handle_start(message: Message, state: FSMContext) -> None:
         if user.current_partner_id is not None:
             await state.clear()
             await message.answer(
-                "💬 <b>You are currently in an active anonymous chat!</b> 🦅🇦🇲\n\n"
-                "Your connection is active. Any message you send here will be delivered to your partner.\n\n"
+                "💬 <b>You are currently in an active anonymous chat!</b> 🎭\n\n"
+                "Your connection is active and private. Any message you send here will be delivered to your partner.\n\n"
                 "⚡ <b>Commands:</b>\n"
                 "• /next — Skip to the next partner\n"
                 "• /stop — End this chat\n"
@@ -57,8 +57,8 @@ async def handle_start(message: Message, state: FSMContext) -> None:
         if user.is_searching:
             await state.clear()
             await message.answer(
-                "🔍 <b>You are currently in the search queue...</b> 🦅🇦🇲\n\n"
-                "Please wait while we connect you with a compatible partner, or send /stop to cancel.",
+                "⏳ <b>You are in the matchmaking queue...</b> 🥷\n\n"
+                "Looking for a compatible campus partner. Please wait a moment, or send /stop to cancel.",
                 parse_mode="HTML",
             )
             return
@@ -72,7 +72,7 @@ async def handle_start(message: Message, state: FSMContext) -> None:
             p_orients = [o.strip().capitalize() for o in (user.target_orientations or "").split(",") if o.strip()] or [o.capitalize() for o in def_orients]
 
             await message.answer(
-                f"👋 <b>Welcome back to Anonymous AUA Chat, {safe_name}!</b> 🇦🇲🦅\n\n"
+                f"👋 <b>Welcome back to Anonymous AUA, {safe_name}!</b> 🎭\n\n"
                 f"👤 <b>Your Profile:</b>\n"
                 f"• Sex: <b>{user.sex.capitalize()}</b>\n"
                 f"• Orientation: <b>{user.orientation.capitalize()}</b>\n\n"
@@ -85,8 +85,9 @@ async def handle_start(message: Message, state: FSMContext) -> None:
                 f"• /stop — End current chat or cancel search\n"
                 f"• /preferences — Adjust who you connect with\n"
                 f"• /profile — Update your sex or orientation\n"
+                f"• /blocklist — View & manage blocked partners\n"
                 f"• /suggestion — Send feedback or ideas to improve the bot\n\n"
-                f"<i>Ready to meet fellow students? Press /search to start!</i>",
+                f"<i>Ready to meet fellow students? Press /search to start! ×͜×</i>",
                 parse_mode="HTML",
             )
             return
@@ -94,7 +95,7 @@ async def handle_start(message: Message, state: FSMContext) -> None:
     # 4. User needs onboarding
     await state.set_state(OnboardingState.waiting_for_sex)
     await message.answer(
-        "🇦🇲 <b>Welcome to Anonymous AUA Chat!</b> 🦅\n\n"
+        "🎭 <b>Welcome to Anonymous AUA!</b> 🥷\n\n"
         "Connect anonymously and chat honestly with students from the "
         "<b>American University of Armenia</b>.\n\n"
         "To get started and match you with compatible students, please select your <b>Sex</b>:",
@@ -194,7 +195,7 @@ async def handle_cancel(message: Message, state: FSMContext) -> None:
         if user.current_partner_id is not None:
             await message.answer(
                 "✅ <b>Action cancelled.</b>\n\n"
-                "You are still connected to your partner. Continue chatting! 🦅🇦🇲",
+                "You are still connected to your partner. Continue chatting! 🎭",
                 parse_mode="HTML",
             )
             return
@@ -410,7 +411,7 @@ async def handle_preference_save(callback: CallbackQuery, state: FSMContext) -> 
 
     if is_onboarding:
         await callback.message.edit_text(
-            "🎉 <b>You're all set! Welcome to the AUA Community!</b> 🦅🇦🇲\n\n"
+            "🎉 <b>You're all set! Welcome to the AUA Community!</b> 🎭\n\n"
             f"👤 <b>Your Profile:</b>\n"
             f"• Sex: <b>{user.sex.capitalize() if user.sex else 'Not set'}</b>\n"
             f"• Orientation: <b>{user.orientation.capitalize() if user.orientation else 'Not set'}</b>\n\n"
@@ -426,7 +427,7 @@ async def handle_preference_save(callback: CallbackQuery, state: FSMContext) -> 
             "• /profile — Update your sex or orientation\n"
             "• /suggestion — Send ideas to bot admins\n\n"
             "✨ <i>Remember to be kind and respectful. Have fun connecting!</i>\n"
-            "Press /search to begin your first anonymous chat!",
+            "Press /search to begin your first anonymous chat! ×͜×",
             parse_mode="HTML",
         )
         await callback.answer("Preferences saved successfully!")
@@ -437,7 +438,7 @@ async def handle_preference_save(callback: CallbackQuery, state: FSMContext) -> 
             f"• Target Orientations: <b>{formatted_orients}</b>\n"
             f"• Typing Indicator: <b>{typing_status_str}</b>\n\n"
             "Matches will only be made when both your preferences and the other student's preferences match.\n\n"
-            "Press /search to find a partner! 🦅🇦🇲",
+            "Press /search to find a partner! 🥷",
             parse_mode="HTML",
         )
         await callback.answer("Preferences saved!")
@@ -475,7 +476,7 @@ async def handle_typing_toggle_command(message: Message) -> None:
 async def handle_help_command(message: Message) -> None:
     """Briefly display all available user commands and how to use the bot."""
     help_text = (
-        "🦅 <b>Anonymous AUA — Help & Commands Guide</b> 🇦🇲\n"
+        "🎭 <b>Anonymous AUA — Help & Commands Guide</b> 🥷\n"
         "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
         "⚡ <b>Core Chat Commands:</b>\n"
         "• /search — Find an anonymous partner matching your preferences\n"
@@ -504,7 +505,7 @@ async def handle_user_stats(message: Message) -> None:
         stats = await get_public_community_stats(session)
 
     stats_text = (
-        "📊 <b>Anonymous AUA Statistics</b> 🦅🇦🇲\n"
+        "📊 <b>Anonymous AUA Statistics</b> 🎭\n"
         "━━━━━━━━━━━━━━━━━━━━\n\n"
         "👥 <b>Community:</b>\n"
         f"• Registered Students: <b>{stats['total_users']}</b>\n"
@@ -518,7 +519,7 @@ async def handle_user_stats(message: Message) -> None:
         f"• Lesbian: <b>{stats['lesbian_count']}</b>\n"
         f"• Gay: <b>{stats['gay_count']}</b>\n"
         "━━━━━━━━━━━━━━━━━━━━\n"
-        "🦅 <i>American University of Armenia</i>"
+        "🎭 <i>American University of Armenia • Anonymous Network</i>"
     )
     await message.answer(stats_text, parse_mode="HTML")
 
@@ -634,7 +635,7 @@ async def handle_unblock_confirm(callback: CallbackQuery) -> None:
     if total_count == 0:
         await callback.message.edit_text(
             "✅ <b>Partner unblocked!</b>\n\n"
-            "Your blocklist is now empty. You can now connect with this partner again in future chats! 🦅🇦🇲",
+            "Your blocklist is now empty. You can now connect with this partner again in future chats! 🎭",
             parse_mode="HTML",
         )
         return
