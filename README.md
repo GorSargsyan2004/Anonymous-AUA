@@ -66,10 +66,14 @@ University life is filled with incredible people, yet meeting compatible peers o
   - **Real-Time URL Unshortener**: Disguised links (`bit.ly`, `tinyurl`, `t.ly`, etc.) are resolved asynchronously in real time to expose hidden IP-trackers before messages are delivered.
   - **Cloudflare Zero-Trust Verification**: Validates unfamiliar domains against Cloudflare's malware and phishing intelligence via DoH (`1.1.1.2`).
   - **In-Chat External Link Advisories**: Prompts recipients with clear safety warnings and exact destination domains whenever an unknown link is shared.
-- **Ghost & Inactive Chat Shield**:
-  - Automatically identifies dead connections where partners did not notice they were matched or stopped responding.
-  - **Stage 1 (Silence Alert)**: After 2 minutes of 0 messages, sends a gentle ping with action buttons (`[💬 I'm Here / Keep Chat]`, `[⏭️ Next Partner]`, `[🛑 End Chat]`).
-  - **Stage 2 (Graceful Auto-Disconnect)**: If no action is taken within the grace period (2 minutes), automatically closes the chat without penalizing users, freeing them to find active partners.
+- **Ghost & Inactive Chat Shield & Overnight Sleep Mode (`/pause`, `/sleep`)**:
+  - **Ghost Connection Cleansing**: Automatically identifies dead connections where neither partner spoke after matching. Prompts both users after 2 minutes of silence, gracefully ending the ghost connection after a 3-minute grace period if neither responds.
+  - **Relaxed Mid-Chat Monitoring**: Ongoing active conversations are given 30 minutes of silence before any inactivity check.
+  - **Overnight Sleep Mode (`/pause`, `/sleep`)**:
+    - Students holding an anonymous chat open overnight or taking a study break can type `/pause` (or `/sleep`) or tap `[🌙 Sleep Mode / Pause]` on the inactivity prompt.
+    - Freezes inactivity auto-disconnections for up to 24 hours so partners never lose each other.
+    - **Seamless Awakening**: As soon as either user sends any message (text, photo, voice, etc.), the bot immediately awakens the session, restores live status, and delivers the message.
+    - **24-Hour Safeguard**: Chats remaining in Sleep Mode for over 24 hours without any message are safely closed to keep queues clean.
 - **Privacy & Anti-Blackmail Protection (`/safety`)**: Provides verifiable technical facts explaining that Telegram bots cannot expose avatars, phone numbers, or IP addresses, actively countering intimidation and extortion bluffs.
 - **Smart Engagement Engine**:
   - Automatically notifies users after 30 seconds of searching, explaining that the bot is new and inviting them to share the bot link with classmates.
@@ -173,6 +177,7 @@ To eliminate malicious retaliation ("spite voting" where an angry user clicks "S
 | `/search` | Public | Enters the matchmaking queue to find an anonymous student partner. |
 | `/next` | Public | Ends the current conversation and immediately queues for a new partner. |
 | `/stop` | Public | Ends an active chat session or cancels a pending search. |
+| `/pause` (or `/sleep`) | Public | Puts active chat into Sleep Mode for the night (freezes inactivity auto-close). |
 | `/report` | Public | Emergency shield: severs chat, auto-blocks partner, and accepts text/screenshot evidence. |
 | `/safety` | Public | Displays privacy facts, anti-blackmail advice, and debunking of IP/avatar leak myths. |
 | `/preferences` | Public | Adjusts target sexes, orientations, and typing indicator via checkbox menu. |

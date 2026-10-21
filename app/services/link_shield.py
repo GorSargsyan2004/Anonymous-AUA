@@ -187,18 +187,20 @@ class LinkShield:
         links: set[str] = set()
 
         # 1. Telegram text entities (formatting links [text](url) and raw URLs)
-        text = message.text or ""
-        if message.entities:
-            for entity in message.entities:
+        text = getattr(message, "text", None) or ""
+        entities = getattr(message, "entities", None)
+        if entities:
+            for entity in entities:
                 if entity.type == "url":
                     links.add(text[entity.offset : entity.offset + entity.length])
                 elif entity.type == "text_link" and entity.url:
                     links.add(entity.url)
 
         # 2. Telegram caption entities
-        caption = message.caption or ""
-        if message.caption_entities:
-            for entity in message.caption_entities:
+        caption = getattr(message, "caption", None) or ""
+        caption_entities = getattr(message, "caption_entities", None)
+        if caption_entities:
+            for entity in caption_entities:
                 if entity.type == "url":
                     links.add(caption[entity.offset : entity.offset + entity.length])
                 elif entity.type == "text_link" and entity.url:

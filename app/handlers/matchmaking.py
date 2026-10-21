@@ -22,10 +22,12 @@ from app.database.crud import (
     get_latest_session_for_user,
     get_or_create_user,
     get_user,
+    pause_chat_session,
     reset_chat_session_inactivity_warning,
     set_user_searching,
     should_prompt_bot_feedback,
     touch_chat_session_activity,
+    unpause_chat_session,
 )
 from app.database.session import get_db_session
 from app.keyboards.inline import (
@@ -366,6 +368,92 @@ async def handle_next(message: Message, bot: Bot, state: FSMContext) -> None:
     await perform_search(user_id, bot, message)
 
 
+@router.message(Command("pause", "sleep"))
+async def handle_pause_command(message: Message, bot: Bot, state: FSMContext) -> None:
+    """Put active anonymous chat session into Sleep Mode / Pause."""
+    await state.clear()
+    user_id = message.from_user.id
+
+    async with get_db_session() as session:
+        user = await get_or_create_user(session, user_id=user_id)
+        if not user.current_partner_id:
+            await message.answer(
+                "💬 <b>You are not currently in an active chat.</b>\n\n"
+                "Send /search to find an anonymous partner first! 🥷",
+                parse_mode="HTML",
+            )
+            return
+
+        active_chat = await get_active_session_by_user_id(session, user_id=user_id)
+        if not active_chat:
+            await message.answer("⚠️ <b>Could not find an active chat session.</b>", parse_mode="HTML")
+            return
+
+        partner_id = user.current_partner_id
+
+        if active_chat.is_paused:
+            await message.answer(
+                "🌙 <b>Your chat is already in Sleep Mode!</b> 💤\n\n"
+                "Inactivity timer is paused. Send any message whenever you want to wake it up! ☀️",
+                parse_mode="HTML",
+            )
+            return
+
+        await pause_chat_session(session, active_chat.id)
+
+    await message.answer(
+        "🌙 <b>Sleep Mode Activated!</b> 💤\n\n"
+        "• Inactivity auto-closure is frozen for up to 24 hours.\n"
+        "• Hold your chat overnight without fear of disconnection.\n"
+        "• <b>To resume:</b> Simply send any message, and chat will instantly awaken! ☀️",
+        parse_mode="HTML",
+    )
+
+    try:
+        await bot.send_message(
+            chat_id=partner_id,
+            text=(
+                "🌙 <b>Your partner put this chat into Sleep Mode!</b> 💤\n\n"
+                "• Inactivity auto-disconnect is frozen for up to 24 hours.\n"
+                "• Send any message whenever you're ready to resume chatting! ☀️\n"
+                "• Or send /stop if you wish to end this chat."
+            ),
+            parse_mode="HTML",
+        )
+    except Exception:
+        pass
+
+
+async def _handle_awakening_if_paused(
+    bot: Bot,
+    session: AsyncSession,
+    session_id: Optional[int],
+    was_paused: bool,
+    user_id: int,
+    partner_id: int,
+) -> None:
+    """If chat was paused in sleep mode, unpause and notify both partners."""
+    if not was_paused or not session_id:
+        return
+    await unpause_chat_session(session, session_id)
+    try:
+        await bot.send_message(
+            chat_id=partner_id,
+            text="☀️ <b>Chat Awakened from Sleep Mode!</b> 🎭\n\n<i>Your partner resumed the conversation:</i>",
+            parse_mode="HTML",
+        )
+    except Exception:
+        pass
+    try:
+        await bot.send_message(
+            chat_id=user_id,
+            text="☀️ <b>Chat Awakened!</b> 🎭\n<i>Sleep mode ended. Normal chatting resumed!</i>",
+            parse_mode="HTML",
+        )
+    except Exception:
+        pass
+
+
 @router.message(F.text | F.photo | F.sticker | F.voice | F.video_note | F.video | F.audio | F.document | F.animation)
 async def relay_anonymous_message(message: Message, bot: Bot, state: FSMContext) -> None:
     """Relay non-command messages anonymously between connected partners."""
@@ -425,6 +513,7 @@ async def relay_anonymous_message(message: Message, bot: Bot, state: FSMContext)
 
         active_chat = await get_active_session_by_user_id(session, user_id=user_id)
         session_id = active_chat.id if active_chat else None
+        was_paused = bool(active_chat and getattr(active_chat, "is_paused", False) is True)
 
         # Check file size limit for single media messages
         max_bytes = settings.MAX_MEDIA_FILE_SIZE_MB * 1024 * 1024
@@ -470,6 +559,10 @@ async def relay_anonymous_message(message: Message, bot: Bot, state: FSMContext)
                         parse_mode="HTML",
                     )
                     return
+
+            if was_paused and session_id:
+                await _handle_awakening_if_paused(bot, session, session_id, was_paused, user_id, partner_id)
+                was_paused = False
 
             async with get_user_relay_lock(user_id):
                 show_typing = getattr(user, "show_typing", True)
@@ -610,6 +703,10 @@ async def relay_anonymous_message(message: Message, bot: Bot, state: FSMContext)
                 scan_res.block_reason,
             )
             return
+
+        if was_paused and session_id:
+            await _handle_awakening_if_paused(bot, session, session_id, was_paused, user_id, partner_id)
+            was_paused = False
 
         # Acquire per-user lock to maintain strict FIFO message ordering during typing emulation
         async with get_user_relay_lock(user_id):
@@ -950,6 +1047,55 @@ async def handle_inactivity_keep(callback: CallbackQuery, bot: Bot) -> None:
         pass
 
     await callback.answer("Presence confirmed! Timer reset. 👍")
+
+
+@router.callback_query(F.data.startswith("inact_pause:"))
+async def handle_inactivity_pause(callback: CallbackQuery, bot: Bot) -> None:
+    """User puts the chat into Sleep Mode / Pause from inactivity prompt."""
+    parts = callback.data.split(":")
+    session_id = int(parts[1])
+    user_id = callback.from_user.id
+
+    async with get_db_session() as session:
+        db_user = await get_user(session, user_id=user_id)
+        if not db_user or not db_user.current_partner_id:
+            await callback.answer("This chat is no longer active.", show_alert=True)
+            try:
+                await callback.message.edit_text("⚠️ <b>This chat is no longer active.</b>", reply_markup=None, parse_mode="HTML")
+            except Exception:
+                pass
+            return
+
+        partner_id = db_user.current_partner_id
+        await pause_chat_session(session, session_id)
+
+    try:
+        await callback.message.edit_text(
+            "🌙 <b>Chat placed in Sleep Mode!</b> 💤\n\n"
+            "• Inactivity auto-closure is frozen for up to 24 hours.\n"
+            "• You won't lose this connection overnight.\n"
+            "• <b>To resume:</b> Simply send any message, and chat will instantly awaken! ☀️",
+            reply_markup=None,
+            parse_mode="HTML",
+        )
+    except Exception:
+        pass
+
+    try:
+        await bot.send_message(
+            chat_id=partner_id,
+            text=(
+                "🌙 <b>Your partner put this chat into Sleep Mode!</b> 💤\n\n"
+                "• Inactivity timer is frozen for up to 24 hours so you won't lose each other.\n"
+                "• Send any message whenever you want to resume chatting! ☀️\n"
+                "• Or send /stop if you want to end this chat."
+            ),
+            parse_mode="HTML",
+        )
+    except Exception:
+        pass
+
+    await callback.answer("Sleep Mode active! 🌙")
 
 
 @router.callback_query(F.data.startswith("inact_next:"))

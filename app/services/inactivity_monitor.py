@@ -15,6 +15,7 @@ from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
 
 from app.database.crud import (
     end_session_by_id,
+    get_expired_paused_sessions,
     get_inactive_sessions_for_closure,
     get_inactive_sessions_for_warning,
     mark_chat_session_inactivity_warned,
@@ -25,10 +26,11 @@ from app.services.reply_manager import reply_manager
 
 logger = logging.getLogger(__name__)
 
-# Configurable timeouts (in seconds)
+# Configurable timeouts
 GHOST_CHAT_TIMEOUT_SECONDS = 120       # 2 minutes of 0 messages since connection
-MID_CHAT_TIMEOUT_SECONDS = 420         # 7 minutes of silence during active chat
-INACTIVITY_GRACE_PERIOD_SECONDS = 120  # 2 minutes to respond to warning before auto-close
+MID_CHAT_TIMEOUT_SECONDS = 1800        # 30 minutes of silence during active chat (relaxing for genuine conversations)
+INACTIVITY_GRACE_PERIOD_SECONDS = 180  # 3 minutes to respond to warning before auto-close
+MAX_PAUSE_HOURS = 24                   # 24 hours maximum duration for Sleep Mode
 INACTIVITY_CHECK_INTERVAL_SECONDS = 25 # Loop sleep interval
 
 
@@ -141,6 +143,35 @@ async def check_and_process_inactivity(bot: Bot) -> None:
                 )
             except Exception as e:
                 logger.error("Error auto-closing inactive session %s: %s", chat_sess.id, e)
+
+        # 3. Process Step 3: Automatically expire paused sessions that exceeded MAX_PAUSE_HOURS (24 hours)
+        expired_paused = await get_expired_paused_sessions(session, max_pause_hours=MAX_PAUSE_HOURS)
+        for chat_sess in expired_paused:
+            try:
+                sess_id = chat_sess.id
+                res = await end_session_by_id(session, sess_id)
+                if not res:
+                    continue
+                ended_session, u1_id, u2_id = res
+                await reply_manager.clear_chat(u1_id, u2_id, session=session, session_id=sess_id)
+
+                closure_text = (
+                    "⚠️ <b>Sleep Mode expired.</b> 🎭\n\n"
+                    "Neither partner resumed the chat within 24 hours. The conversation was ended.\n\n"
+                    "Press /search when you are ready to chat with someone new! ×͜×"
+                )
+                for uid in (u1_id, u2_id):
+                    try:
+                        await bot.send_message(
+                            chat_id=uid,
+                            text=closure_text,
+                            parse_mode="HTML",
+                        )
+                    except Exception:
+                        pass
+                logger.info("Closed 24h expired paused session %s (users: %s, %s)", sess_id, u1_id, u2_id)
+            except Exception as e:
+                logger.error("Error expiring paused session %s: %s", chat_sess.id, e)
 
 
 async def inactivity_monitor_worker(bot: Bot) -> None:

@@ -125,6 +125,16 @@ class ChatSession(Base):
         DateTime(timezone=True),
         nullable=True,
     )
+    is_paused: Mapped[bool] = mapped_column(
+        Boolean,
+        default=False,
+        nullable=False,
+        server_default=func.false(),
+    )
+    paused_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
     ended_at: Mapped[Optional[datetime]] = mapped_column(
         DateTime(timezone=True),
         nullable=True,

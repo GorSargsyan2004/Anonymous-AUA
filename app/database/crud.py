@@ -1062,15 +1062,59 @@ async def mark_chat_session_inactivity_warned(
     await session.commit()
 
 
+async def pause_chat_session(
+    session: AsyncSession,
+    session_id: int,
+) -> bool:
+    """Put an active chat session into sleep mode (pause). Freezes inactivity warnings."""
+    stmt = (
+        update(ChatSession)
+        .where(ChatSession.id == session_id, ChatSession.is_active == True)  # noqa: E712
+        .values(
+            is_paused=True,
+            paused_at=datetime.now(timezone.utc),
+            inactivity_warned=False,
+            inactivity_warned_at=None,
+        )
+    )
+    res = await session.execute(stmt)
+    await session.commit()
+    rowcount = getattr(res, "rowcount", None)
+    return bool(rowcount > 0) if isinstance(rowcount, int) else True
+
+
+async def unpause_chat_session(
+    session: AsyncSession,
+    session_id: int,
+) -> bool:
+    """Awaken a paused chat session. Resets activity timestamp and normal monitoring."""
+    stmt = (
+        update(ChatSession)
+        .where(ChatSession.id == session_id, ChatSession.is_active == True)  # noqa: E712
+        .values(
+            is_paused=False,
+            paused_at=None,
+            last_activity_at=datetime.now(timezone.utc),
+            inactivity_warned=False,
+            inactivity_warned_at=None,
+        )
+    )
+    res = await session.execute(stmt)
+    await session.commit()
+    rowcount = getattr(res, "rowcount", None)
+    return bool(rowcount > 0) if isinstance(rowcount, int) else True
+
+
 async def get_inactive_sessions_for_warning(
     session: AsyncSession,
     ghost_timeout_seconds: int = 120,
-    mid_chat_timeout_seconds: int = 420,
+    mid_chat_timeout_seconds: int = 1800,
 ) -> List[ChatSession]:
     """Fetch active sessions that have exceeded the inactivity threshold and haven't been warned yet.
 
+    - Excludes sessions in Sleep Mode (is_paused == True).
     - Ghost connections: messages_count == 0 and time since started_at >= ghost_timeout_seconds (default 2 min)
-    - Mid-chat silence: messages_count > 0 and time since last_activity_at >= mid_chat_timeout_seconds (default 7 min)
+    - Mid-chat silence: messages_count > 0 and time since last_activity_at >= mid_chat_timeout_seconds (default 30 min)
     """
     now_utc = datetime.now(timezone.utc)
     ghost_cutoff = now_utc - timedelta(seconds=ghost_timeout_seconds)
@@ -1080,6 +1124,7 @@ async def get_inactive_sessions_for_warning(
         select(ChatSession)
         .where(
             ChatSession.is_active == True,  # noqa: E712
+            ChatSession.is_paused == False,  # noqa: E712
             ChatSession.inactivity_warned == False,  # noqa: E712
             or_(
                 and_(
@@ -1099,9 +1144,11 @@ async def get_inactive_sessions_for_warning(
 
 async def get_inactive_sessions_for_closure(
     session: AsyncSession,
-    grace_period_seconds: int = 120,
+    grace_period_seconds: int = 180,
 ) -> List[ChatSession]:
-    """Fetch active sessions that were warned for inactivity and have exceeded the grace period without response."""
+    """Fetch active sessions that were warned for inactivity and have exceeded the grace period without response.
+    Excludes paused sessions.
+    """
     now_utc = datetime.now(timezone.utc)
     closure_cutoff = now_utc - timedelta(seconds=grace_period_seconds)
 
@@ -1109,9 +1156,31 @@ async def get_inactive_sessions_for_closure(
         select(ChatSession)
         .where(
             ChatSession.is_active == True,  # noqa: E712
+            ChatSession.is_paused == False,  # noqa: E712
             ChatSession.inactivity_warned == True,  # noqa: E712
             ChatSession.inactivity_warned_at.is_not(None),
             ChatSession.inactivity_warned_at <= closure_cutoff,
+        )
+    )
+    res = await session.execute(stmt)
+    return list(res.scalars().all())
+
+
+async def get_expired_paused_sessions(
+    session: AsyncSession,
+    max_pause_hours: int = 24,
+) -> List[ChatSession]:
+    """Fetch active sessions in sleep mode that have exceeded max_pause_hours (default 24h) without activity."""
+    now_utc = datetime.now(timezone.utc)
+    cutoff = now_utc - timedelta(hours=max_pause_hours)
+
+    stmt = (
+        select(ChatSession)
+        .where(
+            ChatSession.is_active == True,  # noqa: E712
+            ChatSession.is_paused == True,  # noqa: E712
+            ChatSession.paused_at.is_not(None),
+            ChatSession.paused_at <= cutoff,
         )
     )
     res = await session.execute(stmt)

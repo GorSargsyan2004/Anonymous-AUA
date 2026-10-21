@@ -198,10 +198,11 @@ def get_admin_report_keyboard(report_id: int, reported_id: int) -> InlineKeyboar
 def get_inactivity_warning_keyboard(session_id: int) -> InlineKeyboardMarkup:
     """Return inline keyboard prompting users about inactive/ghost chat."""
     builder = InlineKeyboardBuilder()
-    builder.button(text="💬 I'm Here / Keep Chat", callback_data=f"inact_keep:{session_id}")
+    builder.button(text="💬 I'm Here", callback_data=f"inact_keep:{session_id}")
+    builder.button(text="🌙 Sleep Mode / Pause", callback_data=f"inact_pause:{session_id}")
     builder.button(text="⏭️ Next Partner", callback_data=f"inact_next:{session_id}")
     builder.button(text="🛑 End Chat", callback_data=f"inact_stop:{session_id}")
-    builder.adjust(1, 2)
+    builder.adjust(2, 2)
     return builder.as_markup()
 
 

@@ -482,6 +482,7 @@ async def handle_help_command(message: Message) -> None:
         "• /search — Find an anonymous partner matching your preferences\n"
         "• /next — Skip to the next conversation partner\n"
         "• /stop — End your current chat or leave the search queue\n"
+        "• /pause (or /sleep) — Put chat in Sleep Mode for the night (freezes inactivity)\n"
         "• /report — Emergency report & block partner\n"
         "• /safety — Anti-scam, blackmail protection & privacy facts\n\n"
         "⚙️ <b>Settings & Preferences:</b>\n"
