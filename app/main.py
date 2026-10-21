@@ -44,6 +44,7 @@ async def setup_bot_commands(bot: Bot) -> None:
         BotCommand(command="help", description="Show bot commands & help guide"),
         BotCommand(command="stats", description="View community stats & active chats"),
         BotCommand(command="blocklist", description="View & manage blocked partners"),
+        BotCommand(command="recent", description="View recent partners / review / report"),
         BotCommand(command="preferences", description="Adjust preferences & typing status"),
         BotCommand(command="typing", description="Toggle 'typing...' indicator on/off"),
         BotCommand(command="profile", description="Update sex or orientation"),

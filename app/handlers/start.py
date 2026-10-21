@@ -486,17 +486,18 @@ async def handle_help_command(message: Message) -> None:
         "• /report — Emergency report & block partner\n"
         "• /safety — Anti-scam, blackmail protection & privacy facts\n\n"
         "⚙️ <b>Settings & Preferences:</b>\n"
+        "• /recent (or /history) — View recent partners to update ratings or report\n"
+        "• /blocklist — View and manage blocked partners\n"
         "• /preferences — Customize partner gender and orientation\n"
         "• /typing — Toggle 'typing...' stealth mode on/off\n"
-        "• /profile — Update your own sex or orientation\n"
-        "• /blocklist — View and manage blocked partners\n\n"
+        "• /profile — Update your own sex or orientation\n\n"
         "📊 <b>Campus Info & Feedback:</b>\n"
         "• /stats (or /stata) — View registered users, active chats, and community demographics\n"
         "• /suggestion — Submit ideas or suggestions directly to AUA admins\n"
         "• /help — Show this commands guide\n"
         "• /cancel — Cancel any active input / action\n\n"
         "🔒 <b>Safety & Privacy:</b>\n"
-        "All chats are strictly anonymous. After any chat, you can rate your experience, report issues, or choose not to connect with that partner again (for 1 day, 3 days, 1 week, or permanently)."
+        "All chats are strictly anonymous. After any chat, you can rate your experience, update or reset your feedback anytime, report issues, or choose not to connect with that partner again (for 1 day, 3 days, 1 week, or permanently)."
     )
     await message.answer(help_text, parse_mode="HTML")
 

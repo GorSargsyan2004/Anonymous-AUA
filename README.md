@@ -158,6 +158,16 @@ To eliminate malicious retaliation ("spite voting" where an angry user clicks "S
    - **2nd Report (Consensus Reached)**: When $\ge 2$ independent students report the same user, the system confirms a pattern, applies an additional `-4` penalty (**-5 total penalty**), and broadcasts an automated high-priority alert to all administrators.
    - **Repeat Offenders (3+ Reports)**: Subsequent independent flags apply immediate `-5` penalties and alert admins.
 
+4. **Interactive Feedback Management, Overrides & Undo (`[✏️ Change]` / `[🗑️ Reset]`)**:
+   - **Accidental Click Protection**: After submitting feedback, students are provided an inline management toolbar with `[✏️ Change Rating]` and `[🗑️ Reset / Undo]`.
+   - **Clean Priority & Consensus Rollback**: If a user switches from `👍 Great Chat` to `👎 Not for me`, the previous `+1` bonus is reversed and `-1` is applied. If switching away from `🚫 Spam`, the partner's `spam_flags_count` and consensus penalties are safely rolled back.
+   - **Full Rating Reset**: Tapping `[🗑️ Reset / Undo]` completely removes the feedback record and restores the partner's original priority score, allowing the student to leave the chat unrated or vote again.
+   - **Persistent Scrollback Support**: All buttons in Telegram chat logs encode `session_id` and `partner_id`, remaining active forever even after multiple subsequent conversations.
+
+5. **Recent Partners Selector (`/recent` & Enhanced `/report`)**:
+   - **No Stranded Partners**: When typing `/report` during an active chat or after completing a conversation, students can select whether to report their current active partner or choose among their last 5 recent chat partners.
+   - **Recent Partners Menu (`/recent` or `/history`)**: Allows students to browse their past chat partners with relative timestamps (e.g. `5m ago`, `1h ago`) and message counts, providing instant access to leave/update ratings, submit reports, or apply blocks without needing to scroll through chat logs.
+
 > **Note:** Priority scores and point modifiers remain completely invisible to students. The system operates autonomously in the database, ensuring well-behaved students enjoy faster and better matches.
 
 ### 5. Continuous Feedback & Admin Replies
@@ -183,6 +193,7 @@ To eliminate malicious retaliation ("spite voting" where an angry user clicks "S
 | `/preferences` | Public | Adjusts target sexes, orientations, and typing indicator via checkbox menu. |
 | `/typing` | Public | Quickly toggles typing status indicator on/off (stealth mode). |
 | `/blocklist` | Public | Displays blocked partners as date buttons with `[<] [2/3] [>]` pagination to unblock. |
+| `/recent` (or `/history`) | Public | View recent partners to update ratings, reset feedback, or file reports. |
 | `/stats` (or `/stata`) | Public | Shows community metrics: registered count, active chats, male/female, and orientations. |
 | `/profile` | Public | Resets and reconfigures sex and sexual orientation. |
 | `/suggestion` | Public | Sends feedback, feature requests, or bug reports to admins. |

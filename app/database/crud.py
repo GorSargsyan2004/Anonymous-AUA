@@ -393,71 +393,14 @@ def get_session_duration_seconds(chat_session: Optional[ChatSession]) -> float:
     return max(0.0, (end_time - start_time).total_seconds())
 
 
-async def process_feedback_with_consensus(
-    session: AsyncSession,
-    session_id: int,
-    from_user_id: int,
-    partner_id: int,
+def _calculate_feedback_delta(
+    chat_sess: Optional[ChatSession],
+    partner: User,
     feedback_type: str,
-) -> Dict[str, Any]:
-    """Process feedback with anti-spite chat duration checks and consensus penalty logic.
-
-    Rules:
-      1. Like: +1 priority (always positive reinforcement).
-      2. Dislike:
-         - If chat duration < 15 seconds: delta = 0 (instant skip / rage-quit protected).
-         - If chat duration >= 15 seconds: delta = -1.
-      3. Spam / Not AUA:
-         - Base penalty: 0 if chat duration < 15s, else -1.
-         - Tracks distinct spam flags in user.spam_flags_count.
-         - 1st flag: only base penalty (-1 or 0). Single spiteful hater cannot harm the user!
-         - 2nd flag (Consensus reached!): additional -4 penalty (total -5) + alert admins.
-         - 3+ flags: additional -4 penalty (total -5) + alert admins.
-
-    Returns dict with:
-      - 'created': bool
-      - 'delta': int
-      - 'is_short_chat': bool
-      - 'consensus_reached': bool
-      - 'spam_flags_count': int
-      - 'new_priority': int
-      - 'partner': User
-    """
-    feedback, created = await record_feedback(
-        session=session,
-        session_id=session_id,
-        from_user_id=from_user_id,
-        to_user_id=partner_id,
-        feedback_type=feedback_type,
-    )
-    if not created:
-        return {
-            "created": False,
-            "delta": 0,
-            "is_short_chat": False,
-            "consensus_reached": False,
-            "spam_flags_count": 0,
-            "new_priority": 50,
-            "partner": None,
-        }
-
-    chat_sess = await get_chat_session(session, session_id)
+) -> Tuple[int, bool]:
+    """Calculate the priority delta and consensus status for a feedback type."""
     duration_sec = get_session_duration_seconds(chat_sess)
     is_short_chat = duration_sec < 15.0
-
-    partner_stmt = select(User).where(User.id == partner_id).with_for_update()
-    partner = (await session.execute(partner_stmt)).scalar_one_or_none()
-    if not partner:
-        return {
-            "created": True,
-            "delta": 0,
-            "is_short_chat": is_short_chat,
-            "consensus_reached": False,
-            "spam_flags_count": 0,
-            "new_priority": 50,
-            "partner": None,
-        }
-
     delta = 0
     consensus_reached = False
 
@@ -468,30 +411,225 @@ async def process_feedback_with_consensus(
     elif feedback_type in ("spam", "not_aua"):
         base_delta = 0 if is_short_chat else -1
         partner.spam_flags_count = (partner.spam_flags_count or 0) + 1
-
-        # Consensus check:
-        # Flag 1: only base penalty (-1 or 0), single user cannot cause heavy harm
-        # Flag 2+: consensus confirmed by multiple independent students!
         if partner.spam_flags_count >= 2:
             consensus_reached = True
-            delta = base_delta - 4  # Total -5 penalty (or -4 if short chat)
+            delta = base_delta - 4
         else:
             delta = base_delta
 
-    new_priority = clamp_priority(partner.priority + delta)
-    partner.priority = new_priority
+    return delta, consensus_reached
+
+
+def _revert_feedback_delta(
+    chat_sess: Optional[ChatSession],
+    partner: User,
+    feedback_type: str,
+) -> int:
+    """Calculate the priority delta required to undo/revert a previously applied feedback."""
+    duration_sec = get_session_duration_seconds(chat_sess)
+    is_short_chat = duration_sec < 15.0
+    delta = 0
+
+    if feedback_type == "like":
+        delta = -1
+    elif feedback_type == "dislike":
+        delta = 0 if is_short_chat else 1
+    elif feedback_type in ("spam", "not_aua"):
+        base_revert = 0 if is_short_chat else 1
+        prev_count = partner.spam_flags_count or 0
+        partner.spam_flags_count = max(0, prev_count - 1)
+        if prev_count >= 2:
+            delta = base_revert + 4
+        else:
+            delta = base_revert
+
+    return delta
+
+
+async def get_feedback_by_session_and_user(
+    session: AsyncSession,
+    session_id: int,
+    from_user_id: int,
+) -> Optional[Feedback]:
+    """Retrieve existing feedback submitted by a user for a session."""
+    stmt = select(Feedback).where(
+        Feedback.session_id == session_id,
+        Feedback.from_user_id == from_user_id,
+    )
+    res = await session.execute(stmt)
+    return res.scalar_one_or_none()
+
+
+async def update_or_override_feedback(
+    session: AsyncSession,
+    session_id: int,
+    from_user_id: int,
+    partner_id: int,
+    new_feedback_type: str,
+) -> Dict[str, Any]:
+    """Create or override feedback for a session, cleanly adjusting partner priority and flags."""
+    check_stmt = (
+        select(Feedback)
+        .where(
+            Feedback.session_id == session_id,
+            Feedback.from_user_id == from_user_id,
+        )
+        .with_for_update()
+    )
+    res = await session.execute(check_stmt)
+    existing = res.scalar_one_or_none()
+
+    chat_sess = await get_chat_session(session, session_id)
+    duration_sec = get_session_duration_seconds(chat_sess)
+    is_short_chat = duration_sec < 15.0
+
+    partner_stmt = select(User).where(User.id == partner_id).with_for_update()
+    partner = (await session.execute(partner_stmt)).scalar_one_or_none()
+
+    if not partner:
+        return {
+            "created": False,
+            "updated": False,
+            "delta": 0,
+            "is_short_chat": is_short_chat,
+            "consensus_reached": False,
+            "spam_flags_count": 0,
+            "new_priority": 50,
+            "partner": None,
+            "previous_type": None,
+            "already_set": False,
+        }
+
+    previous_type = existing.feedback_type if existing else None
+
+    # If same feedback type already submitted, no changes needed
+    if existing and existing.feedback_type == new_feedback_type:
+        return {
+            "created": False,
+            "updated": False,
+            "delta": 0,
+            "is_short_chat": is_short_chat,
+            "consensus_reached": False,
+            "spam_flags_count": partner.spam_flags_count,
+            "new_priority": partner.priority,
+            "partner": partner,
+            "previous_type": previous_type,
+            "already_set": True,
+        }
+
+    # 1. If overriding existing, revert the previous feedback first
+    if existing:
+        revert_delta = _revert_feedback_delta(chat_sess, partner, existing.feedback_type)
+        partner.priority = clamp_priority(partner.priority + revert_delta)
+
+    # 2. Apply new feedback delta
+    apply_delta, consensus_reached = _calculate_feedback_delta(chat_sess, partner, new_feedback_type)
+    partner.priority = clamp_priority(partner.priority + apply_delta)
+
+    # 3. Update or create Feedback row
+    if existing:
+        existing.feedback_type = new_feedback_type
+        existing.created_at = datetime.now(timezone.utc)
+        is_created = False
+        is_updated = True
+    else:
+        feedback = Feedback(
+            session_id=session_id,
+            from_user_id=from_user_id,
+            to_user_id=partner_id,
+            feedback_type=new_feedback_type,
+        )
+        session.add(feedback)
+        is_created = True
+        is_updated = False
+
     await session.commit()
     await session.refresh(partner)
 
     return {
-        "created": True,
-        "delta": delta,
+        "created": is_created,
+        "updated": is_updated,
+        "delta": apply_delta,
         "is_short_chat": is_short_chat,
         "consensus_reached": consensus_reached,
         "spam_flags_count": partner.spam_flags_count,
-        "new_priority": new_priority,
+        "new_priority": partner.priority,
         "partner": partner,
+        "previous_type": previous_type,
+        "already_set": False,
     }
+
+
+async def delete_or_reset_feedback(
+    session: AsyncSession,
+    session_id: int,
+    from_user_id: int,
+) -> bool:
+    """Delete feedback for a session and revert its priority/spam impact on the partner."""
+    check_stmt = (
+        select(Feedback)
+        .where(
+            Feedback.session_id == session_id,
+            Feedback.from_user_id == from_user_id,
+        )
+        .with_for_update()
+    )
+    res = await session.execute(check_stmt)
+    feedback = res.scalar_one_or_none()
+    if not feedback:
+        return False
+
+    partner_id = feedback.to_user_id
+    feedback_type = feedback.feedback_type
+
+    chat_sess = await get_chat_session(session, session_id)
+    partner_stmt = select(User).where(User.id == partner_id).with_for_update()
+    partner_res = await session.execute(partner_stmt)
+    partner = partner_res.scalar_one_or_none()
+
+    if partner:
+        revert_delta = _revert_feedback_delta(chat_sess, partner, feedback_type)
+        partner.priority = clamp_priority(partner.priority + revert_delta)
+
+    await session.delete(feedback)
+    await session.commit()
+    return True
+
+
+async def process_feedback_with_consensus(
+    session: AsyncSession,
+    session_id: int,
+    from_user_id: int,
+    partner_id: int,
+    feedback_type: str,
+) -> Dict[str, Any]:
+    """Compatibility wrapper around update_or_override_feedback."""
+    return await update_or_override_feedback(
+        session=session,
+        session_id=session_id,
+        from_user_id=from_user_id,
+        partner_id=partner_id,
+        new_feedback_type=feedback_type,
+    )
+
+
+async def get_recent_sessions_for_user(
+    session: AsyncSession,
+    user_id: int,
+    limit: int = 5,
+) -> List[ChatSession]:
+    """Retrieve the most recent completed chat sessions for a user."""
+    stmt = (
+        select(ChatSession)
+        .where(
+            or_(ChatSession.user1_id == user_id, ChatSession.user2_id == user_id),
+            ChatSession.is_active == False,  # noqa: E712
+        )
+        .order_by(ChatSession.ended_at.desc().nullslast(), ChatSession.id.desc())
+        .limit(limit)
+    )
+    res = await session.execute(stmt)
+    return list(res.scalars().all())
 
 
 async def create_report(

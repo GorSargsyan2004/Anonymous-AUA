@@ -21,6 +21,7 @@ from app.database.crud import (
     get_active_session_by_user_id,
     get_latest_session_for_user,
     get_or_create_user,
+    get_recent_sessions_for_user,
     get_user,
     pause_chat_session,
     reset_chat_session_inactivity_warning,
@@ -34,6 +35,7 @@ from app.keyboards.inline import (
     get_bot_feedback_keyboard,
     get_emergency_report_keyboard,
     get_feedback_keyboard,
+    get_recent_partners_keyboard,
 )
 from app.services.link_shield import link_shield
 from app.services.matcher import match_user_in_queue
@@ -213,14 +215,36 @@ async def perform_search(user_id: int, bot: Bot, message: Message) -> None:
 
 @router.message(Command("report"))
 async def handle_report_command(message: Message, bot: Bot, state: FSMContext) -> None:
-    """Handle /report command during an active chat or after a chat to report partner."""
+    """Handle /report command during an active chat or to select a recent partner to report."""
     user_id = message.from_user.id
     async with get_db_session() as session:
         user = await get_or_create_user(session, user_id=user_id)
         partner_id = user.current_partner_id
         active_chat = await get_active_session_by_user_id(session, user_id=user_id) if partner_id else None
+        recent_sessions = await get_recent_sessions_for_user(session, user_id=user_id, limit=5)
 
+        # 1. If user is in an active chat
         if partner_id and active_chat:
+            if recent_sessions:
+                kb = get_recent_partners_keyboard(
+                    sessions=recent_sessions,
+                    user_id=user_id,
+                    in_active_chat=True,
+                    active_session_id=active_chat.id,
+                    active_partner_id=partner_id,
+                )
+                await message.answer(
+                    "🚨 <b>Emergency Safety & Report Shield</b> 🛡️\n"
+                    "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                    "Select which partner you would like to report:\n\n"
+                    "• <b>Current Active Partner</b>: Disconnect and file report immediately\n"
+                    "• <b>Previous Partners</b>: File a report against a past chat\n\n"
+                    "🔒 <i>Your real identity, phone number, and IP are strictly protected.</i>",
+                    reply_markup=kb,
+                    parse_mode="HTML",
+                )
+                return
+
             await message.answer(
                 "🚨 <b>Emergency Safety & Report Shield</b> 🛡️\n"
                 "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
@@ -234,18 +258,19 @@ async def handle_report_command(message: Message, bot: Bot, state: FSMContext) -
             )
             return
 
-        # User is not in active chat: look up latest session
-        latest_session = await get_latest_session_for_user(session, user_id=user_id)
-        if latest_session:
-            rep_id = latest_session.user2_id if latest_session.user1_id == user_id else latest_session.user1_id
-            await state.set_state(ReportState.waiting_for_reason)
-            await state.update_data(session_id=latest_session.id, reported_id=rep_id)
+        # 2. User is not in active chat: show recent partners list
+        if recent_sessions:
+            kb = get_recent_partners_keyboard(
+                sessions=recent_sessions,
+                user_id=user_id,
+                in_active_chat=False,
+            )
             await message.answer(
-                "🚨 <b>Report Previous Partner</b> 🛡️\n"
+                "🚨 <b>Report a Recent Partner</b> 🛡️\n"
                 "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                "Reporting your last chat partner.\n\n"
-                "Please describe what happened (blackmail, threats, harassment, scam) or <b>attach a screenshot</b> as evidence:\n\n"
-                "🔒 <i>Your identity is 100% private. (Send /cancel to abort)</i>",
+                "Select which recent chat partner you want to report:\n\n"
+                "🔒 <i>Your identity is 100% private and protected.</i>",
+                reply_markup=kb,
                 parse_mode="HTML",
             )
             return
@@ -253,6 +278,41 @@ async def handle_report_command(message: Message, bot: Bot, state: FSMContext) -
     await message.answer(
         "💬 <b>No recent chat found to report.</b>\n\n"
         "You can use /report whenever you are in an active chat or after completing a conversation.",
+        parse_mode="HTML",
+    )
+
+
+@router.message(Command("recent", "history"))
+async def handle_recent_command(message: Message, bot: Bot, state: FSMContext) -> None:
+    """View recent chat partners, review ratings, or report incidents."""
+    await state.clear()
+    user_id = message.from_user.id
+
+    async with get_db_session() as session:
+        user = await get_or_create_user(session, user_id=user_id)
+        partner_id = user.current_partner_id
+        active_chat = await get_active_session_by_user_id(session, user_id=user_id) if partner_id else None
+        recent_sessions = await get_recent_sessions_for_user(session, user_id=user_id, limit=5)
+
+    if not recent_sessions and not active_chat:
+        await message.answer(
+            "💬 <b>No recent chat history found.</b>\n\n"
+            "Send /search to find an anonymous partner and start chatting! 🥷",
+            parse_mode="HTML",
+        )
+        return
+
+    kb = get_recent_partners_keyboard(
+        sessions=recent_sessions,
+        user_id=user_id,
+        in_active_chat=bool(active_chat and partner_id),
+        active_session_id=active_chat.id if active_chat else None,
+        active_partner_id=partner_id,
+    )
+    await message.answer(
+        "📋 <b>Your Recent Chat Partners</b> 🥷\n\n"
+        "Select a partner below to view details, update your rating, or submit a report:",
+        reply_markup=kb,
         parse_mode="HTML",
     )
 

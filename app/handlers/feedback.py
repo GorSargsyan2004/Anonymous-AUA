@@ -11,11 +11,16 @@ from app.database.crud import (
     add_or_update_user_block,
     create_report,
     create_suggestion,
+    delete_or_reset_feedback,
     end_active_session,
+    get_active_session_by_user_id,
+    get_feedback_by_session_and_user,
     get_latest_session_for_user,
+    get_recent_sessions_for_user,
     get_user,
     process_feedback_with_consensus,
     record_feedback,
+    update_or_override_feedback,
     update_user_priority,
 )
 from app.database.session import get_db_session
@@ -25,6 +30,9 @@ from app.keyboards.inline import (
     get_block_duration_keyboard,
     get_emergency_report_keyboard,
     get_feedback_keyboard,
+    get_feedback_manage_keyboard,
+    get_past_partner_action_keyboard,
+    get_recent_partners_keyboard,
     get_report_options_keyboard,
 )
 from app.states.states import ReportState, SuggestionState
@@ -159,60 +167,241 @@ async def handle_feedback_callback(callback: CallbackQuery, bot: Bot) -> None:
         return
 
     async with get_db_session() as session:
-        result = await process_feedback_with_consensus(
+        result = await update_or_override_feedback(
             session=session,
             session_id=session_id,
             from_user_id=from_user_id,
             partner_id=partner_id,
-            feedback_type=feedback_type,
+            new_feedback_type=feedback_type,
         )
 
-    if not result["created"]:
-        await callback.answer(
-            "You have already submitted feedback for this session.",
-            show_alert=True,
-        )
+    if result.get("already_set"):
+        await callback.answer("You have already selected this rating.", show_alert=False)
         return
+
+    is_update = result.get("updated", False)
+    prefix = "Rating updated" if is_update else "Feedback submitted"
 
     # User-facing confirmation message
     if feedback_type == "like":
         msg_text = (
-            "✅ <b>Feedback submitted: 👍 Great Chat!</b>\n\n"
+            f"✅ <b>{prefix}: 👍 Great Chat!</b>\n\n"
             "Thank you for helping keep the AUA community positive, friendly, and authentic! 🎭\n\n"
-            "<i>Send /search whenever you want to start a new chat!</i>"
+            "<i>Changed your mind or clicked by mistake? You can update or reset your rating below:</i>"
         )
     elif feedback_type == "dislike":
         if result["is_short_chat"]:
             msg_text = (
-                "✅ <b>Feedback submitted: 👎 Not for me.</b>\n\n"
+                f"✅ <b>{prefix}: 👎 Not for me.</b>\n\n"
                 "<i>(Since the conversation was very brief, this was recorded as a neutral skip).</i>\n\n"
-                "Thank you for your feedback! Send /search whenever you want to start a new chat! 🥷"
+                "<i>Changed your mind or clicked by mistake? You can update or reset your rating below:</i>"
             )
         else:
             msg_text = (
-                "✅ <b>Feedback submitted: 👎 Not for me.</b>\n\n"
+                f"✅ <b>{prefix}: 👎 Not for me.</b>\n\n"
                 "Thank you for your feedback. We'll use this to match you with better partners!\n\n"
-                "<i>Send /search whenever you want to start a new chat!</i> 🎭"
+                "<i>Changed your mind or clicked by mistake? You can update or reset your rating below:</i>"
             )
     elif feedback_type == "spam":
         msg_text = (
-            "✅ <b>Report recorded: 🚫 Spam / Promotion.</b>\n\n"
+            f"✅ <b>Report recorded: 🚫 Spam / Promotion.</b>\n\n"
             "Thank you for keeping AUA safe and clean. Our automated system tracks repeated reports "
             "across independent students and penalizes offenders. 🛡️\n\n"
-            "<i>Send /search to find a new partner!</i>"
+            "<i>Changed your mind or clicked by mistake? You can update or reset your rating below:</i>"
         )
     elif feedback_type == "not_aua":
         msg_text = (
-            "✅ <b>Report recorded: 🏫 Not from AUA.</b>\n\n"
+            f"✅ <b>Report recorded: 🏫 Not from AUA.</b>\n\n"
             "Thank you! Our automated system tracks reports from multiple students to identify "
             "and filter out non-AUA intruders. 🛡️\n\n"
-            "<i>Send /search to find a new partner!</i>"
+            "<i>Changed your mind or clicked by mistake? You can update or reset your rating below:</i>"
         )
     else:
-        msg_text = "✅ <b>Feedback recorded!</b> Thank you! 🎭"
+        msg_text = f"✅ <b>{prefix}!</b> Thank you! 🎭"
 
-    await callback.message.edit_text(msg_text, parse_mode="HTML")
-    await callback.answer("Feedback recorded!")
+    manage_kb = get_feedback_manage_keyboard(session_id, partner_id, feedback_type)
+    await callback.message.edit_text(msg_text, reply_markup=manage_kb, parse_mode="HTML")
+    await callback.answer(f"{prefix}!")
+
+
+@router.callback_query(F.data.startswith("fb_edit:"))
+async def handle_feedback_edit(callback: CallbackQuery) -> None:
+    """Prompt user to change their rating for this partner."""
+    parts = callback.data.split(":")
+    if len(parts) != 3:
+        await callback.answer()
+        return
+    session_id = int(parts[1])
+    partner_id = int(parts[2])
+    user_id = callback.from_user.id
+
+    async with get_db_session() as session:
+        existing = await get_feedback_by_session_and_user(session, session_id, user_id)
+        current_type = existing.feedback_type if existing else None
+
+    await callback.message.edit_text(
+        "✏️ <b>Change your rating for this partner:</b>\n\n"
+        "<i>Select a new rating below:</i>",
+        reply_markup=get_feedback_keyboard(session_id, partner_id, current_type=current_type),
+        parse_mode="HTML",
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("fb_done:"))
+async def handle_feedback_done(callback: CallbackQuery) -> None:
+    """Return to rating management view."""
+    parts = callback.data.split(":")
+    if len(parts) != 3:
+        await callback.answer()
+        return
+    session_id = int(parts[1])
+    partner_id = int(parts[2])
+    user_id = callback.from_user.id
+
+    async with get_db_session() as session:
+        existing = await get_feedback_by_session_and_user(session, session_id, user_id)
+        current_type = existing.feedback_type if existing else "like"
+
+    type_labels = {
+        "like": "👍 Great Chat",
+        "dislike": "👎 Not for me",
+        "spam": "🚫 Spam / Promo",
+        "not_aua": "🏫 Not from AUA",
+    }
+    label = type_labels.get(current_type, current_type)
+
+    await callback.message.edit_text(
+        f"✅ <b>Current Rating: {label}</b>\n\n"
+        "<i>Changed your mind or clicked by mistake? You can update or reset your rating below:</i>",
+        reply_markup=get_feedback_manage_keyboard(session_id, partner_id, current_type),
+        parse_mode="HTML",
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("fb_reset:"))
+async def handle_feedback_reset(callback: CallbackQuery) -> None:
+    """Reset / cancel previously submitted rating."""
+    parts = callback.data.split(":")
+    if len(parts) != 3:
+        await callback.answer()
+        return
+    session_id = int(parts[1])
+    partner_id = int(parts[2])
+    user_id = callback.from_user.id
+
+    async with get_db_session() as session:
+        success = await delete_or_reset_feedback(session, session_id, user_id)
+
+    if success:
+        await callback.message.edit_text(
+            "🛑 <b>Rating Reset.</b>\n\n"
+            "How was your conversation with this partner? Leave a rating below:",
+            reply_markup=get_feedback_keyboard(session_id, partner_id),
+            parse_mode="HTML",
+        )
+        await callback.answer("Rating reset! You can vote afresh.", show_alert=True)
+    else:
+        await callback.answer("No rating found to reset.", show_alert=True)
+
+
+@router.callback_query(F.data.startswith("past_partner:"))
+async def handle_past_partner_selected(callback: CallbackQuery) -> None:
+    """Display actions for a selected past partner."""
+    parts = callback.data.split(":")
+    if len(parts) != 3:
+        await callback.answer()
+        return
+    session_id = int(parts[1])
+    partner_id = int(parts[2])
+    user_id = callback.from_user.id
+
+    async with get_db_session() as session:
+        existing = await get_feedback_by_session_and_user(session, session_id, user_id)
+        current_type = existing.feedback_type if existing else None
+
+    type_labels = {
+        "like": "👍 Great Chat",
+        "dislike": "👎 Not for me",
+        "spam": "🚫 Spam / Promo",
+        "not_aua": "🏫 Not from AUA",
+    }
+    status_text = f"\n• <b>Your current rating:</b> {type_labels.get(current_type, current_type)}" if current_type else ""
+
+    await callback.message.edit_text(
+        f"👤 <b>Selected Past Partner</b> (Chat #{session_id}){status_text}\n\n"
+        "What would you like to do regarding this partner?\n\n"
+        "• Leave or update your rating\n"
+        "• Report harassment, blackmail, or spam\n"
+        "• Prevent connecting again with this partner",
+        reply_markup=get_past_partner_action_keyboard(session_id, partner_id),
+        parse_mode="HTML",
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data == "recent_list")
+async def handle_recent_list_callback(callback: CallbackQuery) -> None:
+    """Re-display recent partners list."""
+    user_id = callback.from_user.id
+    async with get_db_session() as session:
+        user = await get_user(session, user_id=user_id)
+        partner_id = user.current_partner_id if user else None
+        active_chat = await get_active_session_by_user_id(session, user_id=user_id) if partner_id else None
+        recent_sessions = await get_recent_sessions_for_user(session, user_id=user_id, limit=5)
+
+    if not recent_sessions and not active_chat:
+        await callback.message.edit_text(
+            "💬 <b>No recent chat partners found.</b>\n\n"
+            "Send /search to find an anonymous partner! 🥷",
+            parse_mode="HTML",
+        )
+        await callback.answer()
+        return
+
+    kb = get_recent_partners_keyboard(
+        sessions=recent_sessions,
+        user_id=user_id,
+        in_active_chat=bool(active_chat and partner_id),
+        active_session_id=active_chat.id if active_chat else None,
+        active_partner_id=partner_id,
+    )
+    await callback.message.edit_text(
+        "📋 <b>Your Recent Chat Partners</b> 🥷\n\n"
+        "<i>Select a partner below to rate, report, or block:</i>",
+        reply_markup=kb,
+        parse_mode="HTML",
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data == "past_partner_close")
+async def handle_past_partner_close(callback: CallbackQuery) -> None:
+    """Close the recent partners menu."""
+    await callback.message.delete()
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("emerg_report_prompt:"))
+async def handle_emerg_report_prompt_callback(callback: CallbackQuery) -> None:
+    """Prompt emergency report for current active chat partner."""
+    parts = callback.data.split(":")
+    session_id = int(parts[1])
+    partner_id = int(parts[2])
+
+    await callback.message.edit_text(
+        "🚨 <b>Emergency Safety & Report Shield</b> 🛡️\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        "Reporting your current active chat partner.\n\n"
+        "🔒 <b>You are completely safe:</b>\n"
+        "• Your partner <b>CANNOT</b> see your phone number, real name, @username, or profile picture.\n"
+        "• Telegram does NOT reveal IP addresses.\n\n"
+        "👉 <i>Would you like to immediately disconnect and block this partner while filing the report?</i>",
+        reply_markup=get_emergency_report_keyboard(session_id, partner_id),
+        parse_mode="HTML",
+    )
+    await callback.answer()
 
     # If consensus was reached (e.g. 2+ independent flags), notify admins
     if result.get("consensus_reached"):
