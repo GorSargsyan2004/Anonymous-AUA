@@ -1,8 +1,8 @@
 """Reusable database CRUD queries and operations."""
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
-from sqlalchemy import delete, func, or_, select
+from sqlalchemy import and_, delete, desc, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database.models import (
@@ -14,7 +14,6 @@ from app.database.models import (
     User,
     UserBlock,
 )
-from app.services.matcher import get_default_preferences, normalize_orientation
 
 
 
@@ -74,6 +73,8 @@ async def update_user_profile(
     if not user:
         user = User(id=user_id, priority=50)
         session.add(user)
+
+    from app.services.matcher import get_default_preferences, normalize_orientation
 
     normalized_orient = normalize_orientation(sex, orientation)
     user.sex = sex.lower().strip()
@@ -1005,4 +1006,154 @@ async def get_public_community_stats(session: AsyncSession) -> Dict[str, Any]:
         "lesbian_count": lesbian_count,
         "gay_count": gay_count,
     }
+
+
+async def touch_chat_session_activity(
+    session: AsyncSession,
+    session_id: int,
+) -> None:
+    """Update last_activity_at timestamp, increment messages_count, and reset inactivity_warned flag."""
+    stmt = (
+        update(ChatSession)
+        .where(ChatSession.id == session_id, ChatSession.is_active == True)  # noqa: E712
+        .values(
+            last_activity_at=datetime.now(timezone.utc),
+            messages_count=ChatSession.messages_count + 1,
+            inactivity_warned=False,
+            inactivity_warned_at=None,
+        )
+    )
+    await session.execute(stmt)
+    await session.commit()
+
+
+async def reset_chat_session_inactivity_warning(
+    session: AsyncSession,
+    session_id: int,
+) -> None:
+    """Reset inactivity warning flag and refresh last_activity_at when user clicks 'I'm Here'."""
+    stmt = (
+        update(ChatSession)
+        .where(ChatSession.id == session_id, ChatSession.is_active == True)  # noqa: E712
+        .values(
+            last_activity_at=datetime.now(timezone.utc),
+            inactivity_warned=False,
+            inactivity_warned_at=None,
+        )
+    )
+    await session.execute(stmt)
+    await session.commit()
+
+
+async def mark_chat_session_inactivity_warned(
+    session: AsyncSession,
+    session_id: int,
+) -> None:
+    """Mark an active session as warned for inactivity and record the timestamp."""
+    stmt = (
+        update(ChatSession)
+        .where(ChatSession.id == session_id, ChatSession.is_active == True)  # noqa: E712
+        .values(
+            inactivity_warned=True,
+            inactivity_warned_at=datetime.now(timezone.utc),
+        )
+    )
+    await session.execute(stmt)
+    await session.commit()
+
+
+async def get_inactive_sessions_for_warning(
+    session: AsyncSession,
+    ghost_timeout_seconds: int = 120,
+    mid_chat_timeout_seconds: int = 420,
+) -> List[ChatSession]:
+    """Fetch active sessions that have exceeded the inactivity threshold and haven't been warned yet.
+
+    - Ghost connections: messages_count == 0 and time since started_at >= ghost_timeout_seconds (default 2 min)
+    - Mid-chat silence: messages_count > 0 and time since last_activity_at >= mid_chat_timeout_seconds (default 7 min)
+    """
+    now_utc = datetime.now(timezone.utc)
+    ghost_cutoff = now_utc - timedelta(seconds=ghost_timeout_seconds)
+    mid_chat_cutoff = now_utc - timedelta(seconds=mid_chat_timeout_seconds)
+
+    stmt = (
+        select(ChatSession)
+        .where(
+            ChatSession.is_active == True,  # noqa: E712
+            ChatSession.inactivity_warned == False,  # noqa: E712
+            or_(
+                and_(
+                    ChatSession.messages_count == 0,
+                    ChatSession.started_at <= ghost_cutoff,
+                ),
+                and_(
+                    ChatSession.messages_count > 0,
+                    ChatSession.last_activity_at <= mid_chat_cutoff,
+                ),
+            ),
+        )
+    )
+    res = await session.execute(stmt)
+    return list(res.scalars().all())
+
+
+async def get_inactive_sessions_for_closure(
+    session: AsyncSession,
+    grace_period_seconds: int = 120,
+) -> List[ChatSession]:
+    """Fetch active sessions that were warned for inactivity and have exceeded the grace period without response."""
+    now_utc = datetime.now(timezone.utc)
+    closure_cutoff = now_utc - timedelta(seconds=grace_period_seconds)
+
+    stmt = (
+        select(ChatSession)
+        .where(
+            ChatSession.is_active == True,  # noqa: E712
+            ChatSession.inactivity_warned == True,  # noqa: E712
+            ChatSession.inactivity_warned_at.is_not(None),
+            ChatSession.inactivity_warned_at <= closure_cutoff,
+        )
+    )
+    res = await session.execute(stmt)
+    return list(res.scalars().all())
+
+
+async def end_session_by_id(
+    session: AsyncSession,
+    session_id: int,
+) -> Optional[Tuple[ChatSession, int, int]]:
+    """End an active chat session by its ID, clearing both users' current_partner_id.
+
+    Returns:
+        (ended_chat_session, user1_id, user2_id) if session was active and closed.
+        None if not found or already inactive.
+    """
+    stmt = (
+        select(ChatSession)
+        .where(ChatSession.id == session_id, ChatSession.is_active == True)  # noqa: E712
+        .with_for_update()
+    )
+    res = await session.execute(stmt)
+    chat_session = res.scalar_one_or_none()
+    if not chat_session:
+        return None
+
+    u1_id = chat_session.user1_id
+    u2_id = chat_session.user2_id
+
+    chat_session.is_active = False
+    chat_session.ended_at = datetime.now(timezone.utc)
+
+    users_stmt = select(User).where(User.id.in_([u1_id, u2_id])).with_for_update()
+    users_res = await session.execute(users_stmt)
+    for u in users_res.scalars().all():
+        u.current_partner_id = None
+        u.is_searching = False
+        if (chat_session.messages_count or 0) > 0:
+            u.completed_sessions_count = (u.completed_sessions_count or 0) + 1
+
+    await session.commit()
+    await session.refresh(chat_session)
+    return chat_session, u1_id, u2_id
+
 

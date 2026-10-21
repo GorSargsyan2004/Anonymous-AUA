@@ -12,7 +12,7 @@ from aiogram.exceptions import (
 )
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
-from aiogram.types import Message, MessageReactionUpdated, ReplyParameters
+from aiogram.types import CallbackQuery, Message, MessageReactionUpdated, ReplyParameters
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
@@ -22,8 +22,10 @@ from app.database.crud import (
     get_latest_session_for_user,
     get_or_create_user,
     get_user,
+    reset_chat_session_inactivity_warning,
     set_user_searching,
     should_prompt_bot_feedback,
+    touch_chat_session_activity,
 )
 from app.database.session import get_db_session
 from app.keyboards.inline import (
@@ -502,6 +504,8 @@ async def relay_anonymous_message(message: Message, bot: Bot, state: FSMContext)
                                 session=session,
                                 session_id=session_id,
                             )
+                    if session_id:
+                        await touch_chat_session_activity(session, session_id)
                     logger.info(
                         "Relayed album of %d messages from %s to %s",
                         len(batch),
@@ -659,6 +663,8 @@ async def relay_anonymous_message(message: Message, bot: Bot, state: FSMContext)
                         session=session,
                         session_id=session_id,
                     )
+                if session_id:
+                    await touch_chat_session_activity(session, session_id)
 
                 # Phishing & link safety advisory for recipient
                 if scan_res.has_links and not scan_res.is_all_trusted:
@@ -902,5 +908,159 @@ async def relay_edited_message(message: Message, bot: Bot, state: FSMContext) ->
         )
     except Exception as e:
         logger.exception("Unexpected error relaying edited message: %s", e)
+
+
+@router.callback_query(F.data.startswith("inact_keep:"))
+async def handle_inactivity_keep(callback: CallbackQuery, bot: Bot) -> None:
+    """User acknowledges presence and resets the inactivity timer."""
+    parts = callback.data.split(":")
+    session_id = int(parts[1])
+    user_id = callback.from_user.id
+
+    async with get_db_session() as session:
+        db_user = await get_user(session, user_id=user_id)
+        if not db_user or not db_user.current_partner_id:
+            await callback.answer("This chat is no longer active.", show_alert=True)
+            try:
+                await callback.message.edit_text("⚠️ <b>This chat is no longer active.</b>", reply_markup=None, parse_mode="HTML")
+            except Exception:
+                pass
+            return
+
+        partner_id = db_user.current_partner_id
+        await reset_chat_session_inactivity_warning(session, session_id)
+
+    try:
+        await callback.message.edit_text(
+            "✅ <b>Noted! Timer reset. Happy chatting!</b> 🎭\n\n"
+            "<i>Your partner was notified that you're here.</i>",
+            reply_markup=None,
+            parse_mode="HTML",
+        )
+    except Exception:
+        pass
+
+    try:
+        await bot.send_message(
+            chat_id=partner_id,
+            text="💬 <b>Your partner confirmed they are here! Say hi ×͜×</b>",
+            parse_mode="HTML",
+        )
+    except Exception:
+        pass
+
+    await callback.answer("Presence confirmed! Timer reset. 👍")
+
+
+@router.callback_query(F.data.startswith("inact_next:"))
+async def handle_inactivity_next(callback: CallbackQuery, bot: Bot) -> None:
+    """User skips inactive chat and immediately queues for next partner."""
+    user_id = callback.from_user.id
+
+    async with get_db_session() as session:
+        result = await end_active_session(session, user_id=user_id)
+        if not result:
+            await callback.answer("This chat has already ended.", show_alert=True)
+            try:
+                await callback.message.edit_text("⚠️ <b>This chat is no longer active.</b>", reply_markup=None, parse_mode="HTML")
+            except Exception:
+                pass
+            return
+
+        chat_session, partner_id = result
+        await reply_manager.clear_chat(user_id, partner_id, session=session, session_id=chat_session.id)
+
+        # Notify partner
+        try:
+            await bot.send_message(
+                chat_id=partner_id,
+                text="⚠️ <b>Your partner skipped to the next chat.</b>\n\nPress /search to find someone new! ×͜×",
+                parse_mode="HTML",
+            )
+        except Exception:
+            pass
+
+        try:
+            await callback.message.edit_text(
+                "⏭️ <b>Skipping to next partner...</b> 🥷",
+                reply_markup=None,
+                parse_mode="HTML",
+            )
+        except Exception:
+            pass
+
+        # Enter queue
+        db_user = await get_user(session, user_id=user_id)
+        candidate, new_session = await match_user_in_queue(session, current_user=db_user)
+
+    await callback.answer()
+
+    if candidate and new_session:
+        # Match found! Notify both
+        match_msg = (
+            "🎉 <b>Partner found! Say hi!</b> 🎭\n\n"
+            "🔒 <i>Privacy Shield Active: Your profile, phone number, and IP are strictly hidden.</i>\n\n"
+            "• Use /next to skip\n"
+            "• Use /stop to end\n"
+            "• Use /report for emergency disconnect"
+        )
+        for uid in (user_id, candidate.id):
+            try:
+                await bot.send_message(chat_id=uid, text=match_msg, parse_mode="HTML")
+            except Exception:
+                pass
+    else:
+        try:
+            await bot.send_message(
+                chat_id=user_id,
+                text=(
+                    "🔍 <b>Searching for an active campus partner...</b> 🥷\n\n"
+                    "Please wait a moment. Send /stop to cancel."
+                ),
+                parse_mode="HTML",
+            )
+        except Exception:
+            pass
+
+
+@router.callback_query(F.data.startswith("inact_stop:"))
+async def handle_inactivity_stop(callback: CallbackQuery, bot: Bot) -> None:
+    """User ends inactive chat."""
+    user_id = callback.from_user.id
+
+    async with get_db_session() as session:
+        result = await end_active_session(session, user_id=user_id)
+        if not result:
+            await callback.answer("This chat has already ended.", show_alert=True)
+            try:
+                await callback.message.edit_text("⚠️ <b>This chat is no longer active.</b>", reply_markup=None, parse_mode="HTML")
+            except Exception:
+                pass
+            return
+
+        chat_session, partner_id = result
+        await reply_manager.clear_chat(user_id, partner_id, session=session, session_id=chat_session.id)
+
+    try:
+        await callback.message.edit_text(
+            "🛑 <b>Conversation ended.</b>\n\n"
+            "Press /search when you are ready to chat with someone new! ×͜×",
+            reply_markup=None,
+            parse_mode="HTML",
+        )
+    except Exception:
+        pass
+
+    try:
+        await bot.send_message(
+            chat_id=partner_id,
+            text="⚠️ <b>Your partner ended the conversation.</b>\n\nPress /search to find someone new! ×͜×",
+            parse_mode="HTML",
+        )
+    except Exception:
+        pass
+
+    await callback.answer("Chat ended.")
+
 
 

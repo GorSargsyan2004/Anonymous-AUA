@@ -66,6 +66,10 @@ University life is filled with incredible people, yet meeting compatible peers o
   - **Real-Time URL Unshortener**: Disguised links (`bit.ly`, `tinyurl`, `t.ly`, etc.) are resolved asynchronously in real time to expose hidden IP-trackers before messages are delivered.
   - **Cloudflare Zero-Trust Verification**: Validates unfamiliar domains against Cloudflare's malware and phishing intelligence via DoH (`1.1.1.2`).
   - **In-Chat External Link Advisories**: Prompts recipients with clear safety warnings and exact destination domains whenever an unknown link is shared.
+- **Ghost & Inactive Chat Shield**:
+  - Automatically identifies dead connections where partners did not notice they were matched or stopped responding.
+  - **Stage 1 (Silence Alert)**: After 2 minutes of 0 messages, sends a gentle ping with action buttons (`[💬 I'm Here / Keep Chat]`, `[⏭️ Next Partner]`, `[🛑 End Chat]`).
+  - **Stage 2 (Graceful Auto-Disconnect)**: If no action is taken within the grace period (2 minutes), automatically closes the chat without penalizing users, freeing them to find active partners.
 - **Privacy & Anti-Blackmail Protection (`/safety`)**: Provides verifiable technical facts explaining that Telegram bots cannot expose avatars, phone numbers, or IP addresses, actively countering intimidation and extortion bluffs.
 - **Smart Engagement Engine**:
   - Automatically notifies users after 30 seconds of searching, explaining that the bot is new and inviting them to share the bot link with classmates.
@@ -264,6 +268,10 @@ erDiagram
         bigint user2_id FK "Participant 2"
         boolean is_active "Session status"
         timestamp started_at "Session start"
+        timestamp last_activity_at "Latest message/activity"
+        int messages_count "Exchanged message counter"
+        boolean inactivity_warned "Silence alert status"
+        timestamp inactivity_warned_at "Silence alert timestamp"
         timestamp ended_at "Session end"
     }
 

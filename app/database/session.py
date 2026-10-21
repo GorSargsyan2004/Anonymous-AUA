@@ -66,6 +66,26 @@ async def init_db() -> None:
                 "ALTER TABLE reports ADD COLUMN IF NOT EXISTS evidence_file_id VARCHAR(256);"
             )
         )
+        await conn.execute(
+            text(
+                "ALTER TABLE chat_sessions ADD COLUMN IF NOT EXISTS last_activity_at TIMESTAMP WITH TIME ZONE DEFAULT NOW();"
+            )
+        )
+        await conn.execute(
+            text(
+                "ALTER TABLE chat_sessions ADD COLUMN IF NOT EXISTS messages_count INTEGER NOT NULL DEFAULT 0;"
+            )
+        )
+        await conn.execute(
+            text(
+                "ALTER TABLE chat_sessions ADD COLUMN IF NOT EXISTS inactivity_warned BOOLEAN NOT NULL DEFAULT false;"
+            )
+        )
+        await conn.execute(
+            text(
+                "ALTER TABLE chat_sessions ADD COLUMN IF NOT EXISTS inactivity_warned_at TIMESTAMP WITH TIME ZONE;"
+            )
+        )
         # Backfill default preferences for existing users who do not have them set
         await conn.execute(
             text(

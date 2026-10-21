@@ -1,5 +1,6 @@
 """Compatibility matrix and matchmaking logic for Anonymous AUA Bot."""
 
+from datetime import datetime, timezone
 from typing import List, Optional, Tuple
 from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -218,6 +219,9 @@ async def match_user_in_queue(
             user1_id=current_user.id,
             user2_id=candidate.id,
             is_active=True,
+            last_activity_at=datetime.now(timezone.utc),
+            messages_count=0,
+            inactivity_warned=False,
         )
         session.add(chat_session)
         await session.commit()

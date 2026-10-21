@@ -5,6 +5,10 @@ from app.services.backup import (
     get_backup_metadata,
     hourly_backup_worker,
 )
+from app.services.inactivity_monitor import (
+    check_and_process_inactivity,
+    inactivity_monitor_worker,
+)
 from app.services.link_shield import (
     LinkScanResult,
     LinkScanVerdict,
@@ -37,6 +41,8 @@ __all__ = [
     "link_shield",
     "LinkScanResult",
     "LinkScanVerdict",
+    "check_and_process_inactivity",
+    "inactivity_monitor_worker",
 ]
 
 
