@@ -16,6 +16,7 @@ from app.database.crud import (
     get_active_session_by_user_id,
     get_feedback_by_session_and_user,
     get_latest_session_for_user,
+    get_or_create_user,
     get_recent_sessions_for_user,
     get_user,
     process_feedback_with_consensus,
@@ -216,6 +217,30 @@ async def handle_feedback_callback(callback: CallbackQuery, bot: Bot) -> None:
             "and filter out non-AUA intruders. 🛡️\n\n"
             "<i>Changed your mind or clicked by mistake? You can update or reset your rating below:</i>"
         )
+        # If reported partner is a verified student, send critical alert to administrators
+        partner_obj = result.get("partner")
+        if partner_obj and getattr(partner_obj, "is_verified", False):
+            reporter_name = html.escape(callback.from_user.full_name or "AUA Student")
+            reporter_username = f"@{callback.from_user.username}" if callback.from_user.username else f"ID: {from_user_id}"
+            partner_username = f"@{partner_obj.username}" if partner_obj.username else f"ID: {partner_id}"
+            partner_email = html.escape(partner_obj.email or "N/A")
+
+            alert_text = (
+                "🚨 <b>AUDIT WARNING: VERIFIED STUDENT REPORTED AS 'NOT FROM AUA'!</b> ⚠️\n"
+                "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                "A student reported their partner for not being from AUA, but this partner holds <b>Verified Student Status</b>!\n\n"
+                f"👤 <b>Reported Student:</b> {partner_username}\n"
+                f"🎓 <b>Verified AUA Email:</b> <code>{partner_email}</code>\n"
+                f"⚡ <b>Priority:</b> {partner_obj.priority}\n\n"
+                f"👤 <b>Reporting User:</b> {reporter_username} ({reporter_name})\n"
+                f"🆔 <b>Session ID:</b> #{session_id}\n\n"
+                "⚠️ <i>Please investigate: Either the reporter made a false/malicious report, or the student's email/account is compromised.</i>"
+            )
+            for admin_id in settings.admin_ids:
+                try:
+                    await bot.send_message(chat_id=admin_id, text=alert_text, parse_mode="HTML")
+                except TelegramAPIError as e:
+                    logger.warning("Failed to dispatch verified student report alert to admin %s: %s", admin_id, e)
     else:
         msg_text = f"✅ <b>{prefix}!</b> Thank you! 🎭"
 
@@ -463,6 +488,28 @@ async def handle_suggestion_input(message: Message, bot: Bot, state: FSMContext)
     await state.clear()
 
     async with get_db_session() as session:
+        user = await get_or_create_user(session, user_id=user_id)
+        if user.last_suggestion_date:
+            now = datetime.now(timezone.utc)
+            last_date = (
+                user.last_suggestion_date
+                if user.last_suggestion_date.tzinfo
+                else user.last_suggestion_date.replace(tzinfo=timezone.utc)
+            )
+            elapsed = (now - last_date).total_seconds()
+            cooldown_sec = settings.SUGGESTION_COOLDOWN_MINUTES * 60
+            if elapsed < cooldown_sec:
+                rem = int(cooldown_sec - elapsed)
+                mins, secs = rem // 60, rem % 60
+                time_str = f"{mins}m {secs}s" if mins > 0 else f"{secs}s"
+                await message.answer(
+                    f"⏳ <b>Suggestion Cooldown Active:</b>\n\n"
+                    f"Thank you for sharing your thoughts! To prevent inbox spam, suggestions can be submitted once every {settings.SUGGESTION_COOLDOWN_MINUTES} minutes.\n\n"
+                    f"Please wait <b>{time_str}</b> before submitting another suggestion.",
+                    parse_mode="HTML",
+                )
+                return
+
         suggestion = await create_suggestion(session, user_id=user_id, text=suggestion_text)
 
     await message.answer(

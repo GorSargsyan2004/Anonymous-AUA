@@ -49,6 +49,22 @@ class Settings(BaseSettings):
         default=48,
         description="Hours a user must wait before changing their profile sex again (2 days)",
     )
+    REMATCH_COOLDOWN_MINUTES: int = Field(
+        default=20,
+        description="Minutes before two users who recently chatted can match with each other again",
+    )
+    SUGGESTION_COOLDOWN_MINUTES: int = Field(
+        default=5,
+        description="Minutes a user must wait between submitting suggestions",
+    )
+
+    # University Email Verification & SMTP
+    SMTP_HOST: Optional[str] = Field(default=None, description="SMTP server host for sending verification emails")
+    SMTP_PORT: int = Field(default=587, description="SMTP server port")
+    SMTP_USER: Optional[str] = Field(default=None, description="SMTP username")
+    SMTP_PASSWORD: Optional[str] = Field(default=None, description="SMTP password")
+    SMTP_FROM_EMAIL: Optional[str] = Field(default=None, description="Sender email address")
+    SMTP_USE_TLS: bool = Field(default=True, description="Whether to use STARTTLS for SMTP")
 
     @field_validator("ADMIN_IDS", mode="before")
     @classmethod

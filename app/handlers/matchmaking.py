@@ -193,8 +193,30 @@ async def perform_search(user_id: int, bot: Bot, message: Message) -> None:
         partner, chat_session = await match_user_in_queue(session, user_id=user_id)
 
     if partner and chat_session:
-        match_msg = (
+        partner_verified_badge = (
+            "🎓 <b>Partner Status:</b> Verified AUA Student (@edu.aua.am) ✅\n\n"
+            if getattr(partner, "is_verified", False)
+            else ""
+        )
+        current_verified_badge = (
+            "🎓 <b>Partner Status:</b> Verified AUA Student (@edu.aua.am) ✅\n\n"
+            if getattr(user, "is_verified", False)
+            else ""
+        )
+
+        user_match_msg = (
             "✨ <b>Partner found!</b> 🎭\n\n"
+            f"{partner_verified_badge}"
+            "You are now connected anonymously. Say hello! 👾\n\n"
+            "⚡ <b>Commands:</b>\n"
+            "• /report — Emergency report & block partner\n"
+            "• /next — Skip to the next partner\n"
+            "• /stop — End this chat\n\n"
+            "🔒 <i>Privacy Shield Active: Your profile, phone number, and IP are strictly hidden.</i>"
+        )
+        partner_match_msg = (
+            "✨ <b>Partner found!</b> 🎭\n\n"
+            f"{current_verified_badge}"
             "You are now connected anonymously. Say hello! 👾\n\n"
             "⚡ <b>Commands:</b>\n"
             "• /report — Emergency report & block partner\n"
@@ -203,10 +225,10 @@ async def perform_search(user_id: int, bot: Bot, message: Message) -> None:
             "🔒 <i>Privacy Shield Active: Your profile, phone number, and IP are strictly hidden.</i>"
         )
         # Notify initiating user
-        await message.answer(match_msg, parse_mode="HTML")
+        await message.answer(user_match_msg, parse_mode="HTML")
         # Notify matched partner
         try:
-            await bot.send_message(chat_id=partner.id, text=match_msg, parse_mode="HTML")
+            await bot.send_message(chat_id=partner.id, text=partner_match_msg, parse_mode="HTML")
         except TelegramAPIError as e:
             logger.warning("Failed to notify matched partner %s: %s", partner.id, e)
     else:

@@ -72,6 +72,17 @@ class User(Base):
         DateTime(timezone=True),
         nullable=True,
     )
+    email: Mapped[Optional[str]] = mapped_column(String(128), nullable=True, index=True)
+    is_verified: Mapped[bool] = mapped_column(
+        Boolean, default=False, nullable=False, server_default=func.false(), index=True
+    )
+    verification_code: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)
+    verification_code_expires_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    verification_attempts: Mapped[int] = mapped_column(
+        Integer, default=0, nullable=False, server_default=text("0")
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         server_default=func.now(),

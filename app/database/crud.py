@@ -1470,3 +1470,97 @@ async def end_session_by_id(
     return chat_session, u1_id, u2_id
 
 
+async def set_user_verification_code(
+    session: AsyncSession,
+    user_id: int,
+    email: str,
+    code: str,
+    expires_at: datetime,
+) -> User:
+    """Store pending verification code and target email for a user."""
+    stmt = select(User).where(User.id == user_id).with_for_update()
+    user = (await session.execute(stmt)).scalar_one_or_none()
+    if not user:
+        user = User(id=user_id)
+        session.add(user)
+
+    user.email = email.strip().lower()
+    user.verification_code = str(code).strip()
+    user.verification_code_expires_at = expires_at
+    user.verification_attempts = 0
+    await session.commit()
+    await session.refresh(user)
+    return user
+
+
+async def check_and_verify_user_code(
+    session: AsyncSession,
+    user_id: int,
+    entered_code: str,
+) -> Tuple[bool, str]:
+    """Verify an entered OTP code against user's stored code.
+    
+    Returns:
+        (success: bool, message: str)
+    """
+    stmt = select(User).where(User.id == user_id).with_for_update()
+    user = (await session.execute(stmt)).scalar_one_or_none()
+    if not user:
+        return False, "User not found."
+
+    if user.is_verified:
+        return True, "Already verified."
+
+    if not user.verification_code or not user.verification_code_expires_at:
+        return False, "No pending verification code found. Please run /verify to request a new code."
+
+    now = datetime.now(timezone.utc)
+    exp = user.verification_code_expires_at
+    if exp.tzinfo is None:
+        exp = exp.replace(tzinfo=timezone.utc)
+
+    if now > exp:
+        user.verification_code = None
+        user.verification_code_expires_at = None
+        await session.commit()
+        return False, "Verification code has expired. Please run /verify again."
+
+    user.verification_attempts = (user.verification_attempts or 0) + 1
+    if user.verification_attempts > 5:
+        user.verification_code = None
+        user.verification_code_expires_at = None
+        user.verification_attempts = 0
+        await session.commit()
+        return False, "Too many incorrect attempts. Please run /verify to request a new code."
+
+    if user.verification_code.strip() != entered_code.strip():
+        rem = max(0, 5 - user.verification_attempts)
+        await session.commit()
+        return False, f"Incorrect verification code. ({rem} attempts remaining)"
+
+    # Success!
+    user.is_verified = True
+    user.verification_code = None
+    user.verification_code_expires_at = None
+    user.verification_attempts = 0
+    await session.commit()
+    await session.refresh(user)
+    return True, "Verification successful!"
+
+
+async def is_email_already_verified(
+    session: AsyncSession,
+    email: str,
+    exclude_user_id: int,
+) -> bool:
+    """Check if an email address is already verified by another user."""
+    stmt = select(User.id).where(
+        User.email == email.strip().lower(),
+        User.is_verified == True,  # noqa: E712
+        User.id != exclude_user_id,
+    ).limit(1)
+    res = await session.execute(stmt)
+    return res.scalar_one_or_none() is not None
+
+
+

@@ -106,6 +106,31 @@ async def init_db() -> None:
                 "ALTER TABLE feedbacks ADD COLUMN IF NOT EXISTS priority_delta_applied INTEGER NOT NULL DEFAULT 0;"
             )
         )
+        await conn.execute(
+            text(
+                "ALTER TABLE users ADD COLUMN IF NOT EXISTS email VARCHAR(128);"
+            )
+        )
+        await conn.execute(
+            text(
+                "ALTER TABLE users ADD COLUMN IF NOT EXISTS is_verified BOOLEAN NOT NULL DEFAULT false;"
+            )
+        )
+        await conn.execute(
+            text(
+                "ALTER TABLE users ADD COLUMN IF NOT EXISTS verification_code VARCHAR(16);"
+            )
+        )
+        await conn.execute(
+            text(
+                "ALTER TABLE users ADD COLUMN IF NOT EXISTS verification_code_expires_at TIMESTAMP WITH TIME ZONE;"
+            )
+        )
+        await conn.execute(
+            text(
+                "ALTER TABLE users ADD COLUMN IF NOT EXISTS verification_attempts INTEGER NOT NULL DEFAULT 0;"
+            )
+        )
         # Backfill default preferences for existing users who do not have them set
         await conn.execute(
             text(

@@ -1,10 +1,11 @@
 """Compatibility matrix and matchmaking logic for Anonymous AUA Bot."""
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import List, Optional, Tuple
 from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import settings
 from app.database.models import ChatSession, User, UserBlock
 
 
@@ -107,6 +108,7 @@ async def match_user_in_queue(
     session: AsyncSession,
     user_id: int,
     allowed_candidate_ids: Optional[List[int]] = None,
+    ignore_rematch_cooldown: bool = False,
 ) -> Tuple[Optional[User], Optional[ChatSession]]:
     """Attempt to pair the given user with a compatible searching candidate based on preferences.
 
@@ -169,6 +171,36 @@ async def match_user_in_queue(
         )
     )
 
+    # Rematch cooldown subqueries (prevent win-trading and immediate rematching)
+    recent_partners_subqs = []
+    if not ignore_rematch_cooldown and settings.REMATCH_COOLDOWN_MINUTES > 0:
+        cooldown_cutoff = datetime.now(timezone.utc) - timedelta(
+            minutes=settings.REMATCH_COOLDOWN_MINUTES
+        )
+        recent_partners_subq1 = (
+            select(ChatSession.user2_id)
+            .where(
+                ChatSession.user1_id == current_user.id,
+                or_(
+                    ChatSession.ended_at >= cooldown_cutoff,
+                    ChatSession.started_at >= cooldown_cutoff,
+                    ChatSession.last_activity_at >= cooldown_cutoff,
+                ),
+            )
+        )
+        recent_partners_subq2 = (
+            select(ChatSession.user1_id)
+            .where(
+                ChatSession.user2_id == current_user.id,
+                or_(
+                    ChatSession.ended_at >= cooldown_cutoff,
+                    ChatSession.started_at >= cooldown_cutoff,
+                    ChatSession.last_activity_at >= cooldown_cutoff,
+                ),
+            )
+        )
+        recent_partners_subqs = [recent_partners_subq1, recent_partners_subq2]
+
     # Search for the best candidate whose preferences match mutually
     conditions = [
         User.id != current_user.id,
@@ -188,6 +220,9 @@ async def match_user_in_queue(
             f"%,{current_user.orientation},%"
         ),
     ]
+
+    for subq in recent_partners_subqs:
+        conditions.append(User.id.not_in(subq))
 
     if allowed_candidate_ids is not None:
         conditions.append(User.id.in_(allowed_candidate_ids))

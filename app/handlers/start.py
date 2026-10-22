@@ -90,6 +90,7 @@ async def handle_start(message: Message, state: FSMContext) -> None:
                 f"• /recent — View recent partners to rate or report\n"
                 f"• /preferences — Adjust who you connect with\n"
                 f"• /profile — Update your sex or orientation\n"
+                f"• /verify — Verify your AUA student email (@edu.aua.am) 🎓\n"
                 f"• /blocklist — View & manage blocked partners\n"
                 f"• /safety — Anti-scam & blackmail protection guide\n"
                 f"• /help — Show full commands & features guide\n"
@@ -235,6 +236,30 @@ async def handle_cancel(message: Message, state: FSMContext) -> None:
 @router.message(Command("suggestion"))
 async def handle_suggestion_command(message: Message, state: FSMContext) -> None:
     """Allow user to submit feedback, ideas, or feature requests to administrators."""
+    user_id = message.from_user.id
+    async with get_db_session() as session:
+        user = await get_or_create_user(session, user_id=user_id)
+        if user.last_suggestion_date:
+            now = datetime.now(timezone.utc)
+            last_date = (
+                user.last_suggestion_date
+                if user.last_suggestion_date.tzinfo
+                else user.last_suggestion_date.replace(tzinfo=timezone.utc)
+            )
+            elapsed = (now - last_date).total_seconds()
+            cooldown_sec = settings.SUGGESTION_COOLDOWN_MINUTES * 60
+            if elapsed < cooldown_sec:
+                rem = int(cooldown_sec - elapsed)
+                mins, secs = rem // 60, rem % 60
+                time_str = f"{mins}m {secs}s" if mins > 0 else f"{secs}s"
+                await message.answer(
+                    f"⏳ <b>Suggestion Cooldown Active:</b>\n\n"
+                    f"Thank you for sharing your thoughts! To prevent inbox spam, suggestions can be submitted once every {settings.SUGGESTION_COOLDOWN_MINUTES} minutes.\n\n"
+                    f"Please wait <b>{time_str}</b> before submitting another suggestion.",
+                    parse_mode="HTML",
+                )
+                return
+
     await state.set_state(SuggestionState.waiting_for_suggestion)
     await message.answer(
         "💡 <b>Send Us Your Suggestions & Feedback</b>\n\n"
@@ -549,6 +574,7 @@ async def handle_help_command(message: Message) -> None:
         "• <b>Live Message Edits:</b> Editing text or captions automatically updates the partner's message in real time.\n"
         "• <b>Feedback Toolbar:</b> After any chat, use <code>[✏️ Change Rating]</code> to update or <code>[🗑️ Reset / Undo]</code> to completely clear feedback.\n\n"
         "📊 <b>Campus Info & Feedback:</b>\n"
+        "• /verify — Verify your AUA student email (@edu.aua.am) for a verified student badge 🎓\n"
         "• /stats (or /stata) — View registered users, active chats, and community demographics\n"
         "• /suggestion — Submit ideas or suggestions directly to AUA admins\n"
         "• /help — Show this commands guide\n"

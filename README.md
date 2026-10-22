@@ -159,36 +159,46 @@ To eliminate malicious retaliation, queue manipulation, and griefing (e.g. users
    - If an account attempts to switch sex before the cooldown expires, the action is rejected with an informative countdown alert. Re-selecting the same sex (e.g. to adjust orientation) remains permitted.
    - Matchmaking criteria (target sexes and target orientations) remain freely customizable anytime via `/preferences`.
 
-2. **Minimum Two-Way Message Engagement Filter**:
+2. **Recent Partner Rematch Cooldown (Anti-Win-Trading & Upvote Farming Shield)**:
+   - To eliminate priority score manipulation through colluding partners repeatedly entering, chatting for 15s, and boosting each other's score ("win-trading"), the matchmaking engine enforces a **20-minute rematch cooldown**.
+   - Two users who just finished a conversation cannot be rematched with each other until 20 minutes have elapsed, eliminating rapid score-farming loops and preventing awkward instant re-pairings after skipping.
+
+3. **Minimum Two-Way Message Engagement Filter**:
    - To prevent rapid "join-and-downvote" griefing, negative feedback (`Dislike`, `Spam`, `Not AUA`) requires **both**:
      - Chat duration $\ge 15$ seconds
      - Total messages exchanged in the session $\ge 4$
    - If a conversation was unengaged ($< 15$s or $< 4$ messages), any dislike or base spam penalty is neutralized (**0 penalty delta applied**), and the rating is cleanly recorded as a neutral skip.
 
-3. **Serial Downvoter Neutralization & Stealth Damping**:
+4. **Serial Downvoter Neutralization & Stealth Damping**:
    - The system tracks each user's recent voting history across independent sessions.
    - If an account exhibits serial downvoting behavior ($\ge 2$ consecutive negative ratings prior to the current chat, or $\ge 75\%$ negative ratings across their last 4 chats), all negative score penalties from that user are **dampened to 0 delta**.
    - Furthermore, serial downvoters are prevented from manufacturing false consensus: spam flags from flagged accounts do not increment partner report counts.
    - Neutralization is applied in **stealth mode**: the voter is not tipped off, preventing bad-faith actors from gaming or evading the detection thresholds.
 
-4. **Exact Priority Delta Recording & Clean Reversion**:
+5. **AUA Student Email Verification & Verified Badges (`/verify`)**:
+   - Students can optionally verify their student status using their official AUA email ending with **`@edu.aua.am`**.
+   - **6-Digit OTP Delivery**: The bot sends a cryptographically generated one-time code valid for 15 minutes.
+   - **In-Chat Verified Badge**: When connected, both partners receive a verified status indicator (`🎓 Partner Status: Verified AUA Student (@edu.aua.am) ✅`), giving students complete confidence they are chatting with an authentic classmate.
+   - **False-Report Admin Audit Shield**: If any user reports an officially verified student as "Not from AUA" (`not_aua`), the bot immediately alerts administrators with a high-priority audit warning to investigate potential malicious reports or compromised student accounts.
+
+6. **Exact Priority Delta Recording & Clean Reversion**:
    - Every `Feedback` record stores the exact score delta applied (`priority_delta_applied`), seamlessly accounting for neutralized ratings, engagement filters, and consensus bonuses.
    - When a student updates or resets a rating via `[✏️ Change Rating]` or `[🗑️ Reset / Undo]`, the exact delta is reversed without risk of artificial point inflation.
 
-5. **Streamlined 2-Tier UI**:
+7. **Streamlined 2-Tier UI**:
    - **Tier 1 (Primary Prompt)**: Clean binary feedback `[👍 Great Chat]` and `[👎 Not for me]`, plus a discreet `[⚠️ Report Issue...]` button. 95% of casual users who simply didn't vibe with a partner click `👎 Not for me`.
    - **Tier 2 (Issue Categories)**: Tapping `[⚠️ Report Issue...]` opens specific moderation categories: `[🚫 Spam / Promo]`, `[🏫 Not from AUA]`, `[🚨 Harassment / Other]`, and `[🔙 Back]`.
 
-6. **Consensus-Based Penalties (Corroboration Required)**:
+8. **Consensus-Based Penalties (Corroboration Required)**:
    - **1st Report**: Only applies a base `-1` penalty (or 0 if unengaged). A single hater **cannot** heavily harm an innocent user.
    - **2nd Report (Consensus Reached)**: When $\ge 2$ independent students report the same user, the system confirms a pattern, applies an additional `-4` penalty (**-5 total penalty**), and broadcasts an automated high-priority alert to all administrators.
    - **Repeat Offenders (3+ Reports)**: Subsequent independent flags apply immediate `-5` penalties and alert admins.
 
-7. **Interactive Feedback Management, Overrides & Undo (`[✏️ Change]` / `[🗑️ Reset]`)**:
+9. **Interactive Feedback Management, Overrides & Undo (`[✏️ Change]` / `[🗑️ Reset]`)**:
    - **Accidental Click Protection**: After submitting feedback, students are provided an inline management toolbar with `[✏️ Change Rating]` and `[🗑️ Reset / Undo]`.
    - **Persistent Scrollback Support**: All buttons in Telegram chat logs encode `session_id` and `partner_id`, remaining active forever even after multiple subsequent conversations.
 
-8. **Recent Partners Selector (`/recent` & Enhanced `/report`)**:
+10. **Recent Partners Selector (`/recent` & Enhanced `/report`)**:
    - **No Stranded Partners**: When typing `/report` during an active chat or after completing a conversation, students can select whether to report their current active partner or choose among their last 5 recent chat partners.
    - **Recent Partners Menu (`/recent` or `/history`)**: Allows students to browse their past chat partners with relative timestamps (e.g. `5m ago`, `1h ago`) and message counts, providing instant access to leave/update ratings, submit reports, or apply blocks without needing to scroll through chat logs.
 
@@ -197,7 +207,7 @@ To eliminate malicious retaliation, queue manipulation, and griefing (e.g. users
 ### 5. Continuous Feedback & Admin Replies
 1. **Periodic Prompts:** Every 2 completed sessions, students receive an optional prompt with `[💡 Give suggestions]` and `[✖️ Dismiss]`.
 2. **One-Per-Day Throttling:** Once a student sends a suggestion, they won't be prompted again for the rest of the calendar day.
-3. **On-Demand:** Any user can type `/suggestion` at any time.
+3. **On-Demand with Anti-Spam Protection:** Any user can type `/suggestion` at any time, protected by a **5-minute cooldown** to prevent admin inbox flooding.
 4. **Two-Way Thread:** Admins receive the student's idea with an `[✍️ Reply to Student]` button. When pressed, the admin types a reply, and the bot delivers it directly back to the student.
 
 ---
@@ -220,9 +230,14 @@ To eliminate malicious retaliation, queue manipulation, and griefing (e.g. users
 | `/blocklist` | Public | Displays blocked partners as date buttons with `[<] [2/3] [>]` pagination to unblock. |
 | `/recent` (or `/history`) | Public | View recent partners to update ratings, reset feedback, or file reports. |
 | `/stats` (or `/stata`) | Public | Shows community metrics: registered count, active chats, male/female, and orientations. |
-| `/profile` | Public | Resets and reconfigures sex and sexual orientation. |
-| `/suggestion` | Public | Sends feedback, feature requests, or bug reports to admins. |
+| `/profile` | Public | Updates sex and orientation (sex changes have a 48h fair-play cooldown). |
+| `/verify` | Public | Verifies official AUA student status via OTP sent to `@edu.aua.am`. |
+| `/suggestion` | Public | Sends feedback, feature requests, or bug reports to admins (5m cooldown). |
 | `/cancel` | Public | Aborts any active prompt or input without ending active chat. |
+| `/stata` | **Admins Only** | Displays full administrator dashboard (backups, feedbacks, reports, suggestions). |
+| `/backup` | **Admins Only** | Triggers an immediate on-demand database backup and gzipped SQL snapshot. |
+| `/block <user_id>` | **Admins Only** | Permanently bans a malicious user and disconnects any active chat partner. |
+| `/unblock <user_id>` | **Admins Only** | Unbans a previously banned user and restores bot access. |
 | `/stata` | **Admins Only** | Displays full administrator dashboard (backups, feedbacks, reports, suggestions). |
 | `/backup` | **Admins Only** | Triggers an immediate on-demand database backup and gzipped SQL snapshot. |
 | `/block <user_id>` | **Admins Only** | Permanently bans a malicious user and disconnects any active chat partner. |

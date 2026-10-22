@@ -33,3 +33,10 @@ class AdminReplyState(StatesGroup):
     """Admin reply to user suggestion state machine."""
     waiting_for_reply_text = State()
 
+
+class VerificationState(StatesGroup):
+    """Student AUA email verification state machine."""
+    waiting_for_email = State()
+    waiting_for_code = State()
+
+
