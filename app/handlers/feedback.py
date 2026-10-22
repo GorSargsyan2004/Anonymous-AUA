@@ -545,9 +545,11 @@ async def handle_emergency_report_callback(callback: CallbackQuery, bot: Bot, st
         if is_block:
             await add_or_update_user_block(session, user_id=user_id, blocked_user_id=partner_id, expires_at=None)
 
-    # Clear reply cache
+    # Clear reply cache and one-time media session
     from app.handlers.matchmaking import reply_manager
     await reply_manager.clear_chat(user_id, partner_id)
+    from app.services.one_time_media import one_time_media_manager
+    one_time_media_manager.clear_session(session_id)
 
     # Notify partner they were disconnected
     try:

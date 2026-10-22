@@ -58,6 +58,12 @@ University life is filled with incredible people, yet meeting compatible peers o
   - Emulates realistic human typing on the bot's header bar via Telegram's `sendChatAction` API (`typing`, `upload_photo`, `record_voice`, `upload_video`, `upload_document`), scaled naturally to message length.
   - Features strict per-user FIFO concurrency locking to guarantee in-order message delivery.
   - **Privacy Toggle**: Enabled by default, but users who prefer stealth can toggle it off anytime via `/preferences` or the `/typing` command.
+- **One-Time (View-Once) Ephemeral Media (`/onetime`)**:
+  - Simulates true 15-second self-destructing media inside bot chats (where Telegram disables native `(1)` view-once icons).
+  - **Protected Delivery**: Recipient receives an interactive placeholder with a `[👁️ Tap to Reveal (15s)]` button instead of raw media.
+  - **Screenshot & Forwarding Shield**: When revealed, media is copied with `protect_content=True`, strictly preventing forwarding, downloading, saving to gallery, and screenshots (on Android and Desktop).
+  - **Auto-Destruction**: A 15-second countdown runs; once expired, the media is deleted permanently via `delete_message`, the placeholder is marked `💥 One-Time Media Expired`, and the sender is notified.
+  - **3 Easy Triggers**: Toggle `/onetime` mode, add `#once` or `/once` to captions, or use Telegram's native "Hide with Spoiler" option.
 - **Emergency In-Chat Reporting & Evidence Review (`/report`)**:
   - In-chat `/report` command providing a 1-click panic button (`🚨 Emergency Disconnect & Report`) that severs uncomfortable chats, auto-blocks the abuser, and accepts text or photo/screenshot evidence.
   - Fail-safe reporting: captures user feedback immediately upon clicking Report, with automatic session recovery and auto-forwarding of screenshot evidence to administrators.
@@ -192,6 +198,7 @@ To eliminate malicious retaliation ("spite voting" where an angry user clicks "S
 | `/safety` | Public | Displays privacy facts, anti-blackmail advice, and debunking of IP/avatar leak myths. |
 | `/preferences` | Public | Adjusts target sexes, orientations, and typing indicator via checkbox menu. |
 | `/typing` | Public | Quickly toggles typing status indicator on/off (stealth mode). |
+| `/onetime` (or `/once`) | Public | Toggles 15-second View-Once self-destructing mode for outgoing media (blocks screenshots). |
 | `/blocklist` | Public | Displays blocked partners as date buttons with `[<] [2/3] [>]` pagination to unblock. |
 | `/recent` (or `/history`) | Public | View recent partners to update ratings, reset feedback, or file reports. |
 | `/stats` (or `/stata`) | Public | Shows community metrics: registered count, active chats, male/female, and orientations. |

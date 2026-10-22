@@ -47,6 +47,7 @@ async def setup_bot_commands(bot: Bot) -> None:
         BotCommand(command="recent", description="View recent partners / review / report"),
         BotCommand(command="preferences", description="Adjust preferences & typing status"),
         BotCommand(command="typing", description="Toggle 'typing...' indicator on/off"),
+        BotCommand(command="onetime", description="Toggle 15s View-Once mode for media 🔒"),
         BotCommand(command="profile", description="Update sex or orientation"),
         BotCommand(command="suggestion", description="Send suggestions to improve the bot"),
         BotCommand(command="cancel", description="Cancel current input / action"),

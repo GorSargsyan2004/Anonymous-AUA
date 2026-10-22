@@ -486,6 +486,7 @@ async def handle_help_command(message: Message) -> None:
         "• /report — Emergency report & block partner\n"
         "• /safety — Anti-scam, blackmail protection & privacy facts\n\n"
         "⚙️ <b>Settings & Preferences:</b>\n"
+        "• /onetime (or /once) — Toggle 15s View-Once mode for photos/videos (no screenshots) 🔒\n"
         "• /recent (or /history) — View recent partners to update ratings or report\n"
         "• /blocklist — View and manage blocked partners\n"
         "• /preferences — Customize partner gender and orientation\n"

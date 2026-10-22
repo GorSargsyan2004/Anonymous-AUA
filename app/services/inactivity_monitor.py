@@ -22,6 +22,7 @@ from app.database.crud import (
 )
 from app.database.session import get_db_session
 from app.keyboards.inline import get_feedback_keyboard, get_inactivity_warning_keyboard
+from app.services.one_time_media import one_time_media_manager
 from app.services.reply_manager import reply_manager
 
 logger = logging.getLogger(__name__)
@@ -101,6 +102,7 @@ async def check_and_process_inactivity(bot: Bot) -> None:
                 ended_session, u1_id, u2_id = res
 
                 await reply_manager.clear_chat(u1_id, u2_id, session=session, session_id=sess_id)
+                one_time_media_manager.clear_session(sess_id)
 
                 # If 0 messages were sent, exit neutrally with no feedback rating prompt
                 if msg_count == 0:
@@ -154,6 +156,7 @@ async def check_and_process_inactivity(bot: Bot) -> None:
                     continue
                 ended_session, u1_id, u2_id = res
                 await reply_manager.clear_chat(u1_id, u2_id, session=session, session_id=sess_id)
+                one_time_media_manager.clear_session(sess_id)
 
                 closure_text = (
                     "⚠️ <b>Sleep Mode expired.</b> 🎭\n\n"

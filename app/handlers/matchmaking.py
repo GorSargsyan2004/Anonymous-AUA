@@ -40,6 +40,12 @@ from app.keyboards.inline import (
 from app.services.link_shield import link_shield
 from app.services.matcher import match_user_in_queue
 from app.services.media_batcher import media_batcher
+from app.services.one_time_media import (
+    OTM_DURATION_SECONDS,
+    get_otm_prompt_keyboard,
+    get_otm_viewing_keyboard,
+    one_time_media_manager,
+)
 from app.services.rate_limiter import rate_limiter
 from app.services.reply_manager import reply_manager
 from app.states.states import ReportState
@@ -339,6 +345,7 @@ async def handle_stop(message: Message, bot: Bot, state: FSMContext) -> None:
             if result:
                 chat_session, partner_id = result
                 await reply_manager.clear_chat(user_id, partner_id, session=session, session_id=chat_session.id)
+                one_time_media_manager.clear_session(chat_session.id)
 
                 # Notify initiating user
                 await message.answer(
@@ -401,6 +408,7 @@ async def handle_next(message: Message, bot: Bot, state: FSMContext) -> None:
             if result:
                 chat_session, partner_id = result
                 await reply_manager.clear_chat(user_id, partner_id, session=session, session_id=chat_session.id)
+                one_time_media_manager.clear_session(chat_session.id)
 
                 await message.answer(
                     "⏭️ <b>Skipping to next partner...</b>\n\n"
@@ -624,6 +632,71 @@ async def relay_anonymous_message(message: Message, bot: Bot, state: FSMContext)
                 await _handle_awakening_if_paused(bot, session, session_id, was_paused, user_id, partner_id)
                 was_paused = False
 
+            # Check if album is designated as One-Time Media
+            if any(one_time_media_manager.is_one_time_media(m, user_id) for m in batch):
+                clean_cap = one_time_media_manager.clean_caption(batch[0].caption)
+                token = one_time_media_manager.register(
+                    sender_id=user_id,
+                    receiver_id=partner_id,
+                    session_id=session_id,
+                    message=batch[0],
+                    batch=batch,
+                    caption=clean_cap,
+                )
+                try:
+                    await batch[0].reply(
+                        "🔒 <b>One-Time Album Sent!</b>\n\n"
+                        f"Your partner received a protected placeholder for {len(batch)} items.\n"
+                        f"Once revealed, it will self-destruct in {OTM_DURATION_SECONDS} seconds, and screenshots/saving are blocked.",
+                        parse_mode="HTML",
+                    )
+                except Exception:
+                    pass
+
+                placeholder_text = (
+                    f"🔒 <b>One-Time Media Album ({len(batch)} items)</b>\n\n"
+                    "Your partner sent a self-destructing view-once album.\n"
+                    f"Tap the button below to reveal it. Once revealed, you have <b>{OTM_DURATION_SECONDS} seconds</b> before it permanently self-destructs.\n\n"
+                    "<i>🛡️ Screenshots, forwarding, and saving are strictly disabled.</i>"
+                )
+                try:
+                    placeholder_msg = await bot.send_message(
+                        chat_id=partner_id,
+                        text=placeholder_text,
+                        reply_markup=get_otm_prompt_keyboard(token),
+                        parse_mode="HTML",
+                    )
+                    one_time_media_manager.set_placeholder_msg_id(token, placeholder_msg.message_id)
+                    for item in batch:
+                        await reply_manager.register_message(
+                            sender_id=user_id,
+                            sender_msg_id=item.message_id,
+                            receiver_id=partner_id,
+                            receiver_msg_id=placeholder_msg.message_id,
+                            session=session,
+                            session_id=session_id,
+                        )
+                except TelegramForbiddenError as e:
+                    logger.warning("Partner %s blocked bot during OTM album relay: %s", partner_id, e)
+                    result = await end_active_session(session, user_id=user_id)
+                    if result:
+                        chat_session, _ = result
+                        await reply_manager.clear_chat(user_id, partner_id, session=session, session_id=chat_session.id)
+                        one_time_media_manager.clear_session(chat_session.id)
+                        await message.answer(
+                            "⚠️ <b>Your partner has disconnected or left the chat.</b>\n\n"
+                            "How was your conversation?",
+                            reply_markup=get_feedback_keyboard(chat_session.id, partner_id),
+                            parse_mode="HTML",
+                        )
+                        await maybe_send_bot_feedback_prompt(bot, session, user_id)
+                except Exception as e:
+                    logger.error("Failed to send OTM album placeholder to %s: %s", partner_id, e)
+
+                if session_id:
+                    await touch_chat_session_activity(session, session_id)
+                return
+
             async with get_user_relay_lock(user_id):
                 show_typing = getattr(user, "show_typing", True)
                 if show_typing is None:
@@ -671,6 +744,7 @@ async def relay_anonymous_message(message: Message, bot: Bot, state: FSMContext)
                     if result:
                         chat_session, _ = result
                         await reply_manager.clear_chat(user_id, partner_id, session=session, session_id=chat_session.id)
+                        one_time_media_manager.clear_session(chat_session.id)
                         await message.answer(
                             "⚠️ <b>Your partner has disconnected or left the chat.</b>\n\n"
                             "How was your conversation?",
@@ -686,6 +760,7 @@ async def relay_anonymous_message(message: Message, bot: Bot, state: FSMContext)
                         if result:
                             chat_session, _ = result
                             await reply_manager.clear_chat(user_id, partner_id, session=session, session_id=chat_session.id)
+                            one_time_media_manager.clear_session(chat_session.id)
                             await message.answer(
                                 "⚠️ <b>Your partner has disconnected or left the chat.</b>\n\n"
                                 "How was your conversation?",
@@ -767,6 +842,88 @@ async def relay_anonymous_message(message: Message, bot: Bot, state: FSMContext)
         if was_paused and session_id:
             await _handle_awakening_if_paused(bot, session, session_id, was_paused, user_id, partner_id)
             was_paused = False
+
+        # Check if single media message is designated as One-Time Media
+        if one_time_media_manager.is_one_time_media(message, user_id):
+            clean_cap = one_time_media_manager.clean_caption(message.caption)
+            token = one_time_media_manager.register(
+                sender_id=user_id,
+                receiver_id=partner_id,
+                session_id=session_id,
+                message=message,
+                caption=clean_cap,
+            )
+
+            # Confirm to sender
+            try:
+                await message.reply(
+                    "🔒 <b>One-Time Media Sent!</b>\n\n"
+                    "Your partner received a protected placeholder with a 15s reveal button.\n"
+                    f"It will self-destruct {OTM_DURATION_SECONDS} seconds after they tap to reveal it, and screenshots/saving are blocked.",
+                    parse_mode="HTML",
+                )
+            except Exception:
+                pass
+
+            media_type_label = "Media"
+            if message.photo:
+                media_type_label = "Photo"
+            elif message.video:
+                media_type_label = "Video"
+            elif message.video_note:
+                media_type_label = "Video Note"
+            elif message.voice:
+                media_type_label = "Voice Message"
+            elif message.animation:
+                media_type_label = "GIF / Animation"
+            elif message.document:
+                media_type_label = "File / Document"
+
+            placeholder_text = (
+                f"🔒 <b>One-Time {media_type_label}</b>\n\n"
+                "Your partner sent a self-destructing view-once item.\n"
+                f"Tap the button below to reveal it. Once revealed, you have <b>{OTM_DURATION_SECONDS} seconds</b> before it permanently self-destructs.\n\n"
+                "<i>🛡️ Screenshots, forwarding, and saving are strictly disabled.</i>"
+            )
+
+            try:
+                placeholder_msg = await bot.send_message(
+                    chat_id=partner_id,
+                    text=placeholder_text,
+                    reply_markup=get_otm_prompt_keyboard(token),
+                    reply_parameters=reply_params,
+                    parse_mode="HTML",
+                )
+                one_time_media_manager.set_placeholder_msg_id(token, placeholder_msg.message_id)
+
+                await reply_manager.register_message(
+                    sender_id=user_id,
+                    sender_msg_id=message.message_id,
+                    receiver_id=partner_id,
+                    receiver_msg_id=placeholder_msg.message_id,
+                    session=session,
+                    session_id=session_id,
+                )
+            except TelegramForbiddenError as e:
+                logger.warning("Partner %s blocked bot during OTM relay: %s", partner_id, e)
+                result = await end_active_session(session, user_id=user_id)
+                if result:
+                    chat_session, _ = result
+                    await reply_manager.clear_chat(user_id, partner_id, session=session, session_id=chat_session.id)
+                    one_time_media_manager.clear_session(chat_session.id)
+                    await message.answer(
+                        "⚠️ <b>Your partner has disconnected or left the chat.</b>\n\n"
+                        "How was your conversation?",
+                        reply_markup=get_feedback_keyboard(chat_session.id, partner_id),
+                        parse_mode="HTML",
+                    )
+                    await maybe_send_bot_feedback_prompt(bot, session, user_id)
+            except Exception as e:
+                logger.error("Failed to send OTM placeholder to %s: %s", partner_id, e)
+
+            if session_id:
+                await touch_chat_session_activity(session, session_id)
+            return
 
         # Acquire per-user lock to maintain strict FIFO message ordering during typing emulation
         async with get_user_relay_lock(user_id):
@@ -854,6 +1011,7 @@ async def relay_anonymous_message(message: Message, bot: Bot, state: FSMContext)
                 if result:
                     chat_session, _ = result
                     await reply_manager.clear_chat(user_id, partner_id, session=session, session_id=chat_session.id)
+                    one_time_media_manager.clear_session(chat_session.id)
                     await message.answer(
                         "⚠️ <b>Your partner has disconnected or left the chat.</b>\n\n"
                         "How was your conversation?",
@@ -869,6 +1027,7 @@ async def relay_anonymous_message(message: Message, bot: Bot, state: FSMContext)
                     if result:
                         chat_session, _ = result
                         await reply_manager.clear_chat(user_id, partner_id, session=session, session_id=chat_session.id)
+                        one_time_media_manager.clear_session(chat_session.id)
                         await message.answer(
                             "⚠️ <b>Your partner has disconnected or left the chat.</b>\n\n"
                             "How was your conversation?",
@@ -1175,6 +1334,7 @@ async def handle_inactivity_next(callback: CallbackQuery, bot: Bot) -> None:
 
         chat_session, partner_id = result
         await reply_manager.clear_chat(user_id, partner_id, session=session, session_id=chat_session.id)
+        one_time_media_manager.clear_session(chat_session.id)
 
         # Notify partner
         try:
@@ -1246,6 +1406,7 @@ async def handle_inactivity_stop(callback: CallbackQuery, bot: Bot) -> None:
 
         chat_session, partner_id = result
         await reply_manager.clear_chat(user_id, partner_id, session=session, session_id=chat_session.id)
+        one_time_media_manager.clear_session(chat_session.id)
 
     try:
         await callback.message.edit_text(
@@ -1267,6 +1428,213 @@ async def handle_inactivity_stop(callback: CallbackQuery, bot: Bot) -> None:
         pass
 
     await callback.answer("Chat ended.")
+
+
+# ---------------------------------------------------------
+# Ephemeral One-Time (View-Once) Media Handlers
+# ---------------------------------------------------------
+
+
+@router.message(Command("onetime", "once", "viewonce"))
+async def handle_toggle_onetime_mode(message: Message) -> None:
+    """Toggle ephemeral View-Once mode for outgoing media."""
+    user_id = message.from_user.id
+    is_enabled = one_time_media_manager.toggle_user_mode(user_id)
+    if is_enabled:
+        await message.answer(
+            "🔒 <b>View-Once Mode: ON</b>\n\n"
+            f"Every photo, video, voice, and video note you send will automatically be delivered as a <b>{OTM_DURATION_SECONDS}s self-destructing</b> item!\n\n"
+            "• Partners must tap to reveal\n"
+            "• Protected against screenshots, saving, and forwarding\n"
+            f"• Auto-destructs after {OTM_DURATION_SECONDS} seconds\n\n"
+            "<i>Type /onetime again to disable.</i>",
+            parse_mode="HTML",
+        )
+    else:
+        await message.answer(
+            "🔓 <b>View-Once Mode: OFF</b>\n\n"
+            "Media will now be sent normally.\n\n"
+            "<i>Tip: You can still send individual view-once items anytime by adding <code>#once</code> to the caption or using Telegram's 'Hide with Spoiler' option.</i>",
+            parse_mode="HTML",
+        )
+
+
+@router.callback_query(F.data.startswith("otm_rev:"))
+async def handle_otm_reveal(callback: CallbackQuery, bot: Bot) -> None:
+    """Handle recipient tapping 'Tap to Reveal (15s)' on one-time media placeholder."""
+    token = callback.data.split(":", 1)[1]
+    user_id = callback.from_user.id
+
+    data = one_time_media_manager.get(token)
+    if not data:
+        await callback.answer("⚠️ This one-time media has expired or is no longer available.", show_alert=True)
+        if callback.message:
+            try:
+                await callback.message.edit_text(
+                    "💥 <b>One-Time Media Expired</b>\n\n<i>This media has already expired.</i>",
+                    reply_markup=None,
+                    parse_mode="HTML",
+                )
+            except Exception:
+                pass
+        return
+
+    if data["receiver_id"] != user_id:
+        await callback.answer("⚠️ Only the designated recipient can view this media.", show_alert=True)
+        return
+
+    if data["viewed"]:
+        await callback.answer("⚠️ This media is already being viewed or has expired.", show_alert=True)
+        return
+
+    # Check that partner is still connected in an active chat
+    async with get_db_session() as session:
+        db_user = await get_user(session, user_id=user_id)
+        if not db_user or db_user.current_partner_id != data["sender_id"]:
+            await callback.answer("⚠️ Chat has ended. Cannot view media.", show_alert=True)
+            if callback.message:
+                try:
+                    await callback.message.edit_text(
+                        "💥 <b>One-Time Media Expired</b>\n\n<i>This chat has already ended.</i>",
+                        reply_markup=None,
+                        parse_mode="HTML",
+                    )
+                except Exception:
+                    pass
+            one_time_media_manager.clear_token(token)
+            return
+
+    # Mark as viewed
+    one_time_media_manager.mark_viewed(token)
+
+    # Update placeholder status in recipient's chat
+    if callback.message:
+        try:
+            await callback.message.edit_text(
+                "👁️ <b>Viewing One-Time Media...</b>\n\n"
+                f"⏳ <b>Self-destructing in {OTM_DURATION_SECONDS} seconds...</b>\n"
+                "<i>Screenshots, forwarding, and saving are blocked.</i>",
+                reply_markup=get_otm_viewing_keyboard(),
+                parse_mode="HTML",
+            )
+        except Exception as e:
+            logger.debug("Failed to edit OTM placeholder during reveal: %s", e)
+
+    await callback.answer(f"Media revealed! Self-destructing in {OTM_DURATION_SECONDS} seconds.", show_alert=False)
+
+    # Deliver media with protect_content=True
+    revealed_msg_ids = []
+    batch = data.get("batch")
+    clean_cap = data.get("caption")
+
+    if batch:
+        for idx, item in enumerate(batch):
+            cap = clean_cap if idx == 0 else None
+            try:
+                sent = await item.copy_to(
+                    chat_id=user_id,
+                    caption=cap,
+                    protect_content=True,
+                )
+                if sent and getattr(sent, "message_id", None):
+                    revealed_msg_ids.append(sent.message_id)
+            except Exception as e:
+                logger.error("Failed to copy one-time album item %s to %s: %s", item.message_id, user_id, e)
+    else:
+        orig_msg = data["message"]
+        try:
+            sent = await orig_msg.copy_to(
+                chat_id=user_id,
+                caption=clean_cap,
+                protect_content=True,
+            )
+            if sent and getattr(sent, "message_id", None):
+                revealed_msg_ids.append(sent.message_id)
+        except Exception as e:
+            logger.error("Failed to copy one-time media message to %s: %s", user_id, e)
+
+    # Notify sender that media was opened
+    try:
+        await bot.send_message(
+            chat_id=data["sender_id"],
+            text=(
+                "👁️ <b>Your one-time media was opened!</b>\n\n"
+                f"It is currently being viewed and will self-destruct in {OTM_DURATION_SECONDS} seconds."
+            ),
+            parse_mode="HTML",
+        )
+    except Exception:
+        pass
+
+    # Launch background auto-destruct task
+    placeholder_msg_id = callback.message.message_id if callback.message else data.get("placeholder_msg_id")
+    asyncio.create_task(
+        _auto_destruct_one_time_media(
+            bot=bot,
+            token=token,
+            receiver_id=user_id,
+            sender_id=data["sender_id"],
+            revealed_msg_ids=revealed_msg_ids,
+            placeholder_msg_id=placeholder_msg_id,
+        )
+    )
+
+
+async def _auto_destruct_one_time_media(
+    bot: Bot,
+    token: str,
+    receiver_id: int,
+    sender_id: int,
+    revealed_msg_ids: list[int],
+    placeholder_msg_id: Optional[int],
+) -> None:
+    """Wait OTM_DURATION_SECONDS (15s), delete revealed media, edit placeholder to expired, and clean up token."""
+    try:
+        await asyncio.sleep(OTM_DURATION_SECONDS)
+    except asyncio.CancelledError:
+        pass
+    finally:
+        # 1. Delete revealed media messages from recipient's chat
+        for msg_id in revealed_msg_ids:
+            try:
+                await bot.delete_message(chat_id=receiver_id, message_id=msg_id)
+            except Exception as e:
+                logger.debug("Failed to delete revealed OTM message %s for user %s: %s", msg_id, receiver_id, e)
+
+        # 2. Update placeholder message to expired state
+        if placeholder_msg_id:
+            try:
+                await bot.edit_message_text(
+                    chat_id=receiver_id,
+                    message_id=placeholder_msg_id,
+                    text=(
+                        "💥 <b>One-Time Media Expired</b>\n\n"
+                        "<i>This media was viewed and has permanently self-destructed.</i>"
+                    ),
+                    reply_markup=None,
+                    parse_mode="HTML",
+                )
+            except Exception as e:
+                logger.debug("Failed to edit placeholder message %s: %s", placeholder_msg_id, e)
+
+        # 3. Notify sender that media self-destructed
+        try:
+            await bot.send_message(
+                chat_id=sender_id,
+                text="💥 <b>One-time media destroyed.</b>\n\nThe 15-second viewing window expired and the media was permanently deleted.",
+                parse_mode="HTML",
+            )
+        except Exception:
+            pass
+
+        # 4. Clean up token
+        one_time_media_manager.clear_token(token)
+
+
+@router.callback_query(F.data == "otm_noop")
+async def handle_otm_noop(callback: CallbackQuery) -> None:
+    """No-op callback while media is in viewing countdown."""
+    await callback.answer(f"⏳ Media is self-destructing in {OTM_DURATION_SECONDS} seconds...", show_alert=False)
 
 
 
