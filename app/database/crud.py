@@ -77,7 +77,10 @@ async def update_user_profile(
     from app.services.matcher import get_default_preferences, normalize_orientation
 
     normalized_orient = normalize_orientation(sex, orientation)
-    user.sex = sex.lower().strip()
+    new_sex = sex.lower().strip()
+    if user.sex != new_sex or user.sex_updated_at is None:
+        user.sex_updated_at = datetime.now(timezone.utc)
+    user.sex = new_sex
     user.orientation = normalized_orient
     user.priority = clamp_priority(user.priority or 50)
 
@@ -393,29 +396,89 @@ def get_session_duration_seconds(chat_session: Optional[ChatSession]) -> float:
     return max(0.0, (end_time - start_time).total_seconds())
 
 
+async def check_is_serial_downvoter(
+    session: AsyncSession,
+    user_id: int,
+    current_session_id: Optional[int] = None,
+) -> bool:
+    """Check if a user is exhibiting serial downvoting behavior.
+    
+    Returns True if:
+    1. The user's last 2 prior feedbacks were both negative (making this vote their 3rd+ consecutive downvote).
+    2. OR out of their last 4 prior feedbacks, 3 or more (>=75%) were negative.
+    """
+    stmt = select(Feedback.feedback_type).where(
+        Feedback.from_user_id == user_id,
+    )
+    if current_session_id is not None:
+        stmt = stmt.where(Feedback.session_id != current_session_id)
+
+    stmt = stmt.order_by(Feedback.created_at.desc(), Feedback.id.desc()).limit(4)
+    result = await session.execute(stmt)
+    recent_types = list(result.scalars().all())
+
+    if not recent_types:
+        return False
+
+    negative_types = {"dislike", "spam", "not_aua"}
+
+    # Check 1: Last 2 are consecutive negative (this next negative would be >= 3 consecutive)
+    if len(recent_types) >= 2 and all(t in negative_types for t in recent_types[:2]):
+        return True
+
+    # Check 2: >= 75% negative in recent window (e.g. 3 of 4)
+    if len(recent_types) >= 4:
+        neg_count = sum(1 for t in recent_types if t in negative_types)
+        if neg_count / len(recent_types) >= 0.75:
+            return True
+
+    return False
+
+
 def _calculate_feedback_delta(
     chat_sess: Optional[ChatSession],
     partner: User,
     feedback_type: str,
+    is_serial_downvoter: bool = False,
 ) -> Tuple[int, bool]:
-    """Calculate the priority delta and consensus status for a feedback type."""
+    """Calculate the priority delta and consensus status for a feedback type.
+    
+    Protections:
+    - Serial downvoter neutralization: negative deltas forced to 0, spam flags suppressed.
+    - Engagement threshold: unengaged chats (<15s duration or <4 messages) force dislike
+      and base spam deltas to 0.
+    """
     duration_sec = get_session_duration_seconds(chat_sess)
+    messages_count = getattr(chat_sess, "messages_count", 0) or 0
     is_short_chat = duration_sec < 15.0
+    is_unengaged = is_short_chat or (messages_count < 4)
     delta = 0
     consensus_reached = False
 
     if feedback_type == "like":
         delta = 1
     elif feedback_type == "dislike":
-        delta = 0 if is_short_chat else -1
-    elif feedback_type in ("spam", "not_aua"):
-        base_delta = 0 if is_short_chat else -1
-        partner.spam_flags_count = (partner.spam_flags_count or 0) + 1
-        if partner.spam_flags_count >= 2:
-            consensus_reached = True
-            delta = base_delta - 4
+        if is_serial_downvoter or is_unengaged:
+            delta = 0
         else:
-            delta = base_delta
+            delta = -1
+    elif feedback_type in ("spam", "not_aua"):
+        if is_serial_downvoter:
+            delta = 0
+        elif is_unengaged:
+            delta = 0
+            partner.spam_flags_count = (partner.spam_flags_count or 0) + 1
+            if partner.spam_flags_count >= 2:
+                consensus_reached = True
+                delta = -4
+        else:
+            base_delta = -1
+            partner.spam_flags_count = (partner.spam_flags_count or 0) + 1
+            if partner.spam_flags_count >= 2:
+                consensus_reached = True
+                delta = base_delta - 4
+            else:
+                delta = base_delta
 
     return delta, consensus_reached
 
@@ -424,18 +487,31 @@ def _revert_feedback_delta(
     chat_sess: Optional[ChatSession],
     partner: User,
     feedback_type: str,
+    priority_delta_applied: Optional[int] = None,
 ) -> int:
     """Calculate the priority delta required to undo/revert a previously applied feedback."""
     duration_sec = get_session_duration_seconds(chat_sess)
+    messages_count = getattr(chat_sess, "messages_count", 0) or 0
     is_short_chat = duration_sec < 15.0
-    delta = 0
+    is_unengaged = is_short_chat or (messages_count < 4)
 
+    if priority_delta_applied is not None:
+        delta = -priority_delta_applied
+        if feedback_type in ("spam", "not_aua"):
+            if priority_delta_applied != 0:
+                partner.spam_flags_count = max(0, (partner.spam_flags_count or 0) - 1)
+            elif is_unengaged and (partner.spam_flags_count or 0) > 0:
+                partner.spam_flags_count = max(0, (partner.spam_flags_count or 0) - 1)
+        return delta
+
+    # Fallback if priority_delta_applied was not recorded (legacy records)
+    delta = 0
     if feedback_type == "like":
         delta = -1
     elif feedback_type == "dislike":
-        delta = 0 if is_short_chat else 1
+        delta = 0 if is_unengaged else 1
     elif feedback_type in ("spam", "not_aua"):
-        base_revert = 0 if is_short_chat else 1
+        base_revert = 0 if is_unengaged else 1
         prev_count = partner.spam_flags_count or 0
         partner.spam_flags_count = max(0, prev_count - 1)
         if prev_count >= 2:
@@ -481,7 +557,13 @@ async def update_or_override_feedback(
 
     chat_sess = await get_chat_session(session, session_id)
     duration_sec = get_session_duration_seconds(chat_sess)
+    messages_count = getattr(chat_sess, "messages_count", 0) or 0
     is_short_chat = duration_sec < 15.0
+    is_unengaged = is_short_chat or (messages_count < 4)
+
+    is_serial_downvoter = await check_is_serial_downvoter(
+        session, from_user_id, current_session_id=session_id
+    )
 
     partner_stmt = select(User).where(User.id == partner_id).with_for_update()
     partner = (await session.execute(partner_stmt)).scalar_one_or_none()
@@ -492,6 +574,8 @@ async def update_or_override_feedback(
             "updated": False,
             "delta": 0,
             "is_short_chat": is_short_chat,
+            "is_unengaged": is_unengaged,
+            "is_serial_downvoter": is_serial_downvoter,
             "consensus_reached": False,
             "spam_flags_count": 0,
             "new_priority": 50,
@@ -509,6 +593,8 @@ async def update_or_override_feedback(
             "updated": False,
             "delta": 0,
             "is_short_chat": is_short_chat,
+            "is_unengaged": is_unengaged,
+            "is_serial_downvoter": is_serial_downvoter,
             "consensus_reached": False,
             "spam_flags_count": partner.spam_flags_count,
             "new_priority": partner.priority,
@@ -519,16 +605,27 @@ async def update_or_override_feedback(
 
     # 1. If overriding existing, revert the previous feedback first
     if existing:
-        revert_delta = _revert_feedback_delta(chat_sess, partner, existing.feedback_type)
+        revert_delta = _revert_feedback_delta(
+            chat_sess,
+            partner,
+            existing.feedback_type,
+            priority_delta_applied=getattr(existing, "priority_delta_applied", None),
+        )
         partner.priority = clamp_priority(partner.priority + revert_delta)
 
     # 2. Apply new feedback delta
-    apply_delta, consensus_reached = _calculate_feedback_delta(chat_sess, partner, new_feedback_type)
+    apply_delta, consensus_reached = _calculate_feedback_delta(
+        chat_sess,
+        partner,
+        new_feedback_type,
+        is_serial_downvoter=is_serial_downvoter,
+    )
     partner.priority = clamp_priority(partner.priority + apply_delta)
 
     # 3. Update or create Feedback row
     if existing:
         existing.feedback_type = new_feedback_type
+        existing.priority_delta_applied = apply_delta
         existing.created_at = datetime.now(timezone.utc)
         is_created = False
         is_updated = True
@@ -538,6 +635,7 @@ async def update_or_override_feedback(
             from_user_id=from_user_id,
             to_user_id=partner_id,
             feedback_type=new_feedback_type,
+            priority_delta_applied=apply_delta,
         )
         session.add(feedback)
         is_created = True
@@ -551,6 +649,8 @@ async def update_or_override_feedback(
         "updated": is_updated,
         "delta": apply_delta,
         "is_short_chat": is_short_chat,
+        "is_unengaged": is_unengaged,
+        "is_serial_downvoter": is_serial_downvoter,
         "consensus_reached": consensus_reached,
         "spam_flags_count": partner.spam_flags_count,
         "new_priority": partner.priority,
@@ -581,6 +681,7 @@ async def delete_or_reset_feedback(
 
     partner_id = feedback.to_user_id
     feedback_type = feedback.feedback_type
+    priority_delta_applied = getattr(feedback, "priority_delta_applied", None)
 
     chat_sess = await get_chat_session(session, session_id)
     partner_stmt = select(User).where(User.id == partner_id).with_for_update()
@@ -588,7 +689,12 @@ async def delete_or_reset_feedback(
     partner = partner_res.scalar_one_or_none()
 
     if partner:
-        revert_delta = _revert_feedback_delta(chat_sess, partner, feedback_type)
+        revert_delta = _revert_feedback_delta(
+            chat_sess,
+            partner,
+            feedback_type,
+            priority_delta_applied=priority_delta_applied,
+        )
         partner.priority = clamp_priority(partner.priority + revert_delta)
 
     await session.delete(feedback)

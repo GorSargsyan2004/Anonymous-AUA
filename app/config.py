@@ -44,6 +44,12 @@ class Settings(BaseSettings):
     POSTGRES_HOST: str = Field(default="postgres", description="PostgreSQL host name or IP")
     POSTGRES_PORT: int = Field(default=5432, description="PostgreSQL port")
 
+    # Anti-Cheat / Anti-Exploit Safeguards
+    SEX_CHANGE_COOLDOWN_HOURS: int = Field(
+        default=48,
+        description="Hours a user must wait before changing their profile sex again (2 days)",
+    )
+
     @field_validator("ADMIN_IDS", mode="before")
     @classmethod
     def parse_admin_ids(cls, v: Any) -> List[int]:

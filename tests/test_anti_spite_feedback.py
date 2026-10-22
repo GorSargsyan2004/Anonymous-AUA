@@ -123,7 +123,7 @@ async def test_anti_spite_system():
         assert res1["new_priority"] == 50, f"Priority should remain 50, got {res1['new_priority']}"
         logger.info("Scenario A Passed: Short chat (< 15s) dislike protected target (0 delta).")
 
-    # Scenario B: Normal chat (>= 15s) with 'dislike' -> delta MUST BE -1
+    # Scenario B: Normal chat (>= 15s, messages >= 4) with 'dislike' -> delta MUST BE -1
     async with get_db_session() as session:
         normal_session = ChatSession(
             user1_id=TEST_RATER_2,
@@ -131,6 +131,7 @@ async def test_anti_spite_system():
             is_active=False,
             started_at=now - timedelta(seconds=45),
             ended_at=now,
+            messages_count=6,
         )
         session.add(normal_session)
         await session.commit()
@@ -169,6 +170,7 @@ async def test_anti_spite_system():
             is_active=False,
             started_at=now - timedelta(seconds=60),
             ended_at=now,
+            messages_count=6,
         )
         session.add(sess_spam_1)
         await session.commit()
@@ -198,6 +200,7 @@ async def test_anti_spite_system():
             is_active=False,
             started_at=now - timedelta(seconds=60),
             ended_at=now,
+            messages_count=6,
         )
         session.add(sess_spam_2)
         await session.commit()

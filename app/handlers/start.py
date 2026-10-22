@@ -1,3 +1,4 @@
+from datetime import datetime, timezone
 import html
 import math
 from aiogram import F, Router
@@ -5,6 +6,7 @@ from aiogram.filters import Command, CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 
+from app.config import settings
 from app.database.crud import (
     delete_user_block,
     get_or_create_user,
@@ -113,6 +115,7 @@ async def handle_start(message: Message, state: FSMContext) -> None:
 async def handle_profile_reset(message: Message, state: FSMContext) -> None:
     """Allow user to update their sex and orientation."""
     user_id = message.from_user.id
+    cooldown_note = ""
     async with get_db_session() as session:
         user = await get_or_create_user(session, user_id=user_id)
         if user.current_partner_id is not None:
@@ -123,10 +126,28 @@ async def handle_profile_reset(message: Message, state: FSMContext) -> None:
             )
             return
 
+        if user.sex and user.sex_updated_at:
+            now = datetime.now(timezone.utc)
+            updated_at = (
+                user.sex_updated_at
+                if user.sex_updated_at.tzinfo
+                else user.sex_updated_at.replace(tzinfo=timezone.utc)
+            )
+            elapsed = (now - updated_at).total_seconds()
+            cooldown_sec = settings.SEX_CHANGE_COOLDOWN_HOURS * 3600
+            if elapsed < cooldown_sec:
+                rem = int(cooldown_sec - elapsed)
+                hours, mins = rem // 3600, (rem % 3600) // 60
+                time_str = f"{hours}h {mins}m" if hours > 0 else f"{mins}m"
+                cooldown_note = (
+                    f"\n\n⏳ <b>Sex Change Cooldown Active:</b> Profile sex can only be changed once every 2 days "
+                    f"(<b>{time_str}</b> remaining). You may re-select <b>{user.sex.capitalize()}</b> if you only want to change your orientation."
+                )
+
     await state.set_state(OnboardingState.waiting_for_sex)
     await message.answer(
         "⚙️ <b>Profile Settings</b>\n\n"
-        "Please select your <b>Sex</b> to update your matching preferences:",
+        f"Please select your <b>Sex</b> to update your matching preferences:{cooldown_note}",
         reply_markup=get_sex_keyboard(),
         parse_mode="HTML",
     )
@@ -227,7 +248,30 @@ async def handle_suggestion_command(message: Message, state: FSMContext) -> None
 @router.callback_query(OnboardingState.waiting_for_sex, F.data.startswith("onboarding_sex:"))
 async def handle_sex_selected(callback: CallbackQuery, state: FSMContext) -> None:
     """Handle sex selection and transition to orientation selection."""
+    user_id = callback.from_user.id
     sex = callback.data.split(":")[1]
+
+    async with get_db_session() as session:
+        user = await get_or_create_user(session, user_id=user_id)
+        if user.sex and user.sex_updated_at and user.sex.lower().strip() != sex.lower().strip():
+            now = datetime.now(timezone.utc)
+            updated_at = (
+                user.sex_updated_at
+                if user.sex_updated_at.tzinfo
+                else user.sex_updated_at.replace(tzinfo=timezone.utc)
+            )
+            elapsed = (now - updated_at).total_seconds()
+            cooldown_sec = settings.SEX_CHANGE_COOLDOWN_HOURS * 3600
+            if elapsed < cooldown_sec:
+                rem = int(cooldown_sec - elapsed)
+                hours, mins = rem // 3600, (rem % 3600) // 60
+                time_str = f"{hours}h {mins}m" if hours > 0 else f"{mins}m"
+                await callback.answer(
+                    f"⏳ Profile sex can only be changed once every 2 days.\nPlease wait {time_str}.",
+                    show_alert=True,
+                )
+                return
+
     await state.update_data(sex=sex)
     await state.set_state(OnboardingState.waiting_for_orientation)
 

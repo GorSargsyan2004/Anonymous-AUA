@@ -64,6 +64,10 @@ class User(Base):
     is_banned: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False, server_default=func.false(), index=True)
     completed_sessions_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     spam_flags_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    sex_updated_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
     last_suggestion_date: Mapped[Optional[datetime]] = mapped_column(
         DateTime(timezone=True),
         nullable=True,
@@ -163,6 +167,12 @@ class Feedback(Base):
         BigInteger, ForeignKey("users.id", ondelete="CASCADE"), nullable=False
     )
     feedback_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    priority_delta_applied: Mapped[int] = mapped_column(
+        Integer,
+        default=0,
+        nullable=False,
+        server_default=text("0"),
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         server_default=func.now(),

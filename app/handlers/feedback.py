@@ -190,10 +190,10 @@ async def handle_feedback_callback(callback: CallbackQuery, bot: Bot) -> None:
             "<i>Changed your mind or clicked by mistake? You can update or reset your rating below:</i>"
         )
     elif feedback_type == "dislike":
-        if result["is_short_chat"]:
+        if result.get("is_unengaged", False) or result.get("is_short_chat", False):
             msg_text = (
                 f"✅ <b>{prefix}: 👎 Not for me.</b>\n\n"
-                "<i>(Since the conversation was very brief, this was recorded as a neutral skip).</i>\n\n"
+                "<i>(Since the conversation was very brief or had minimal interaction, this was recorded as a neutral skip).</i>\n\n"
                 "<i>Changed your mind or clicked by mistake? You can update or reset your rating below:</i>"
             )
         else:

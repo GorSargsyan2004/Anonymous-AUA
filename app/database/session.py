@@ -96,6 +96,16 @@ async def init_db() -> None:
                 "ALTER TABLE chat_sessions ADD COLUMN IF NOT EXISTS paused_at TIMESTAMP WITH TIME ZONE;"
             )
         )
+        await conn.execute(
+            text(
+                "ALTER TABLE users ADD COLUMN IF NOT EXISTS sex_updated_at TIMESTAMP WITH TIME ZONE;"
+            )
+        )
+        await conn.execute(
+            text(
+                "ALTER TABLE feedbacks ADD COLUMN IF NOT EXISTS priority_delta_applied INTEGER NOT NULL DEFAULT 0;"
+            )
+        )
         # Backfill default preferences for existing users who do not have them set
         await conn.execute(
             text(

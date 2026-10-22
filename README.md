@@ -151,26 +151,44 @@ Once connected, any message sent by either student (text, photo, voice note, rou
 
 If either user blocks the bot or leaves, the session automatically terminates, and both participants receive a prompt to rate the conversation.
 
-### 4. Anti-Spite Reputation & Feedback System (Under the Hood)
-To eliminate malicious retaliation ("spite voting" where an angry user clicks "Spam" just because they disliked the chat), the platform enforces a 3-layer protection system:
+### 4. Anti-Spite & Anti-Cheat Reputation System (Under the Hood)
+To eliminate malicious retaliation, queue manipulation, and griefing (e.g. users temporarily switching their profile to Female to enter chats with male competitors and immediately spamming downvotes to artificially suppress their matchmaking priority), the platform enforces multi-layered anti-cheat safeguards:
 
-1. **Streamlined 2-Tier UI**:
+1. **Profile Sex Update Cooldown (2 Days / 48 Hours)**:
+   - Once a student configures their sex during onboarding or updates it, their profile sex cannot be changed again for **48 hours (2 days)**.
+   - If an account attempts to switch sex before the cooldown expires, the action is rejected with an informative countdown alert. Re-selecting the same sex (e.g. to adjust orientation) remains permitted.
+   - Matchmaking criteria (target sexes and target orientations) remain freely customizable anytime via `/preferences`.
+
+2. **Minimum Two-Way Message Engagement Filter**:
+   - To prevent rapid "join-and-downvote" griefing, negative feedback (`Dislike`, `Spam`, `Not AUA`) requires **both**:
+     - Chat duration $\ge 15$ seconds
+     - Total messages exchanged in the session $\ge 4$
+   - If a conversation was unengaged ($< 15$s or $< 4$ messages), any dislike or base spam penalty is neutralized (**0 penalty delta applied**), and the rating is cleanly recorded as a neutral skip.
+
+3. **Serial Downvoter Neutralization & Stealth Damping**:
+   - The system tracks each user's recent voting history across independent sessions.
+   - If an account exhibits serial downvoting behavior ($\ge 2$ consecutive negative ratings prior to the current chat, or $\ge 75\%$ negative ratings across their last 4 chats), all negative score penalties from that user are **dampened to 0 delta**.
+   - Furthermore, serial downvoters are prevented from manufacturing false consensus: spam flags from flagged accounts do not increment partner report counts.
+   - Neutralization is applied in **stealth mode**: the voter is not tipped off, preventing bad-faith actors from gaming or evading the detection thresholds.
+
+4. **Exact Priority Delta Recording & Clean Reversion**:
+   - Every `Feedback` record stores the exact score delta applied (`priority_delta_applied`), seamlessly accounting for neutralized ratings, engagement filters, and consensus bonuses.
+   - When a student updates or resets a rating via `[✏️ Change Rating]` or `[🗑️ Reset / Undo]`, the exact delta is reversed without risk of artificial point inflation.
+
+5. **Streamlined 2-Tier UI**:
    - **Tier 1 (Primary Prompt)**: Clean binary feedback `[👍 Great Chat]` and `[👎 Not for me]`, plus a discreet `[⚠️ Report Issue...]` button. 95% of casual users who simply didn't vibe with a partner click `👎 Not for me`.
    - **Tier 2 (Issue Categories)**: Tapping `[⚠️ Report Issue...]` opens specific moderation categories: `[🚫 Spam / Promo]`, `[🏫 Not from AUA]`, `[🚨 Harassment / Other]`, and `[🔙 Back]`.
-2. **Chat Duration Filter (< 15 seconds)**:
-   - If a conversation ends in **under 15 seconds**, any negative rating (`Dislike`, `Spam`, `Not AUA`) is treated as a neutral quick skip (**0 penalty delta applied**), preventing users who rage-quit after 3 seconds from docking peer reputation points.
-3. **Consensus-Based Penalties (Corroboration Required)**:
-   - **1st Report**: Only applies a base `-1` penalty (or 0 if < 15s). A single hater **cannot** heavily harm an innocent user.
+
+6. **Consensus-Based Penalties (Corroboration Required)**:
+   - **1st Report**: Only applies a base `-1` penalty (or 0 if unengaged). A single hater **cannot** heavily harm an innocent user.
    - **2nd Report (Consensus Reached)**: When $\ge 2$ independent students report the same user, the system confirms a pattern, applies an additional `-4` penalty (**-5 total penalty**), and broadcasts an automated high-priority alert to all administrators.
    - **Repeat Offenders (3+ Reports)**: Subsequent independent flags apply immediate `-5` penalties and alert admins.
 
-4. **Interactive Feedback Management, Overrides & Undo (`[✏️ Change]` / `[🗑️ Reset]`)**:
+7. **Interactive Feedback Management, Overrides & Undo (`[✏️ Change]` / `[🗑️ Reset]`)**:
    - **Accidental Click Protection**: After submitting feedback, students are provided an inline management toolbar with `[✏️ Change Rating]` and `[🗑️ Reset / Undo]`.
-   - **Clean Priority & Consensus Rollback**: If a user switches from `👍 Great Chat` to `👎 Not for me`, the previous `+1` bonus is reversed and `-1` is applied. If switching away from `🚫 Spam`, the partner's `spam_flags_count` and consensus penalties are safely rolled back.
-   - **Full Rating Reset**: Tapping `[🗑️ Reset / Undo]` completely removes the feedback record and restores the partner's original priority score, allowing the student to leave the chat unrated or vote again.
    - **Persistent Scrollback Support**: All buttons in Telegram chat logs encode `session_id` and `partner_id`, remaining active forever even after multiple subsequent conversations.
 
-5. **Recent Partners Selector (`/recent` & Enhanced `/report`)**:
+8. **Recent Partners Selector (`/recent` & Enhanced `/report`)**:
    - **No Stranded Partners**: When typing `/report` during an active chat or after completing a conversation, students can select whether to report their current active partner or choose among their last 5 recent chat partners.
    - **Recent Partners Menu (`/recent` or `/history`)**: Allows students to browse their past chat partners with relative timestamps (e.g. `5m ago`, `1h ago`) and message counts, providing instant access to leave/update ratings, submit reports, or apply blocks without needing to scroll through chat logs.
 
