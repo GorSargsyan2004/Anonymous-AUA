@@ -65,6 +65,18 @@ class Settings(BaseSettings):
     SMTP_PASSWORD: Optional[str] = Field(default=None, description="SMTP password")
     SMTP_FROM_EMAIL: Optional[str] = Field(default=None, description="Sender email address")
     SMTP_USE_TLS: bool = Field(default=True, description="Whether to use STARTTLS for SMTP")
+    VERIFICATION_EMAIL_COOLDOWN_MINUTES: int = Field(
+        default=3,
+        description="Minutes a user must wait before requesting another OTP verification email",
+    )
+    VERIFICATION_DAILY_LIMIT: int = Field(
+        default=5,
+        description="Maximum verification emails a user can request in a 24-hour period",
+    )
+    VERIFICATION_GLOBAL_RATE_LIMIT: int = Field(
+        default=20,
+        description="Maximum outbound verification emails allowed across the bot within 5 minutes",
+    )
 
     @field_validator("ADMIN_IDS", mode="before")
     @classmethod

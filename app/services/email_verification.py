@@ -1,4 +1,4 @@
-"""Service for AUA student email verification via OTP codes."""
+"""Service for AUA student email verification via OTP codes with anti-bounce & flood shields."""
 
 import asyncio
 from datetime import datetime, timedelta, timezone
@@ -8,7 +8,7 @@ import logging
 import re
 import secrets
 import smtplib
-from typing import Optional, Tuple
+from typing import List, Optional, Set, Tuple
 
 from app.config import settings
 
@@ -17,6 +17,16 @@ logger = logging.getLogger(__name__)
 # Validates standard email format and ensures domain ends with @edu.aua.am
 AUA_EMAIL_REGEX = re.compile(r"^[a-zA-Z0-9_.+-]+@edu\.aua\.am$", re.IGNORECASE)
 
+# Blocked dummy, generic, test, and role prefixes that cause bounce loops
+BLOCKED_LOCAL_TERMS: Set[str] = {
+    "test", "testing", "student_test", "test_student", "fake", "dummy",
+    "sample", "example", "admin", "administrator", "moderator", "mod", "temp",
+    "asdf", "qwerty", "aua", "anonymous", "null", "undefined",
+}
+
+# Global sliding window for outbound emails across all users
+_outbound_timestamps: List[float] = []
+
 
 def is_valid_aua_email(email: Optional[str]) -> bool:
     """Validate whether an email is a syntactically valid AUA student email ending with @edu.aua.am."""
@@ -24,6 +34,97 @@ def is_valid_aua_email(email: Optional[str]) -> bool:
         return False
     clean = email.strip().lower()
     return bool(AUA_EMAIL_REGEX.match(clean))
+
+
+def validate_aua_email_format(email: Optional[str]) -> Tuple[bool, Optional[str]]:
+    """Validate student email syntax and block non-existent/dummy test patterns.
+    
+    AUA student emails follow firstname_lastname@edu.aua.am or firstname.lastname@edu.aua.am.
+    Generic, single-word, or dummy email handles are strictly rejected to prevent bounce loops.
+    
+    Returns:
+        (is_valid: bool, error_message: Optional[str])
+    """
+    if not email:
+        return False, "Email address cannot be empty."
+
+    clean = email.strip().lower()
+    if not clean.endswith("@edu.aua.am"):
+        return False, "The email address must be an official student address ending with <b>@edu.aua.am</b>."
+
+    if not AUA_EMAIL_REGEX.match(clean):
+        return False, "Email contains invalid characters."
+
+    local_part = clean[:-len("@edu.aua.am")]
+
+    # Must contain separator between firstname and lastname (underscore, dot, or hyphen)
+    parts = [p for p in re.split(r"[._\-]", local_part) if p]
+    if len(parts) < 2:
+        return (
+            False,
+            "AUA student emails must include both your first name and last name "
+            "(e.g. <code>firstname_lastname@edu.aua.am</code>).",
+        )
+
+    # Check for blocked dummy terms
+    for term in BLOCKED_LOCAL_TERMS:
+        if term == local_part or term in parts:
+            return (
+                False,
+                "Generic or test email addresses are not permitted. "
+                "Please enter your real university email (e.g. <code>firstname_lastname@edu.aua.am</code>).",
+            )
+
+    # Must contain separator between firstname and lastname (underscore, dot, or hyphen)
+    parts = [p for p in re.split(r"[._\-]", local_part) if p]
+    if len(parts) < 2:
+        return (
+            False,
+            "AUA student emails must include both your first name and last name "
+            "(e.g. <code>firstname_lastname@edu.aua.am</code>).",
+        )
+
+    # Firstname and lastname parts must each have at least 2 alphabetic characters
+    for p in parts[:2]:
+        alpha_chars = re.sub(r"[^a-z]", "", p)
+        if len(alpha_chars) < 2:
+            return (
+                False,
+                "Invalid name format. Each part of your name must have at least 2 letters.",
+            )
+
+    return True, None
+
+
+def check_global_email_rate_limit() -> Tuple[bool, Optional[str]]:
+    """Check if outbound email rate limit across all bot users is within safe limits."""
+    now = datetime.now(timezone.utc).timestamp()
+    window_seconds = 300.0  # 5 minutes
+    cutoff = now - window_seconds
+
+    # Prune timestamps older than 5 minutes
+    while _outbound_timestamps and _outbound_timestamps[0] < cutoff:
+        _outbound_timestamps.pop(0)
+
+    max_limit = getattr(settings, "VERIFICATION_GLOBAL_RATE_LIMIT", 20)
+    if len(_outbound_timestamps) >= max_limit:
+        return (
+            False,
+            "Verification email traffic is temporarily high across campus. "
+            "Please wait 3-5 minutes and try again.",
+        )
+    return True, None
+
+
+def record_global_email_sent() -> None:
+    """Record an outbound email dispatch in the global sliding window."""
+    now = datetime.now(timezone.utc).timestamp()
+    _outbound_timestamps.append(now)
+
+
+def reset_global_email_rate_limit() -> None:
+    """Reset the global outbound sliding window (useful for unit testing)."""
+    _outbound_timestamps.clear()
 
 
 def generate_otp_code() -> str:
@@ -106,6 +207,7 @@ async def send_verification_email(to_email: str, code: str) -> Tuple[bool, Optio
             clean_email,
             code,
         )
+        record_global_email_sent()
         return True, "simulated"
 
     from_addr = settings.SMTP_FROM_EMAIL or f"verification@{settings.SMTP_HOST}"
@@ -121,6 +223,7 @@ async def send_verification_email(to_email: str, code: str) -> Tuple[bool, Optio
             code=code,
             use_tls=settings.SMTP_USE_TLS,
         )
+        record_global_email_sent()
         logger.info("Successfully sent AUA verification OTP email to %s", clean_email)
         return True, None
     except Exception as e:

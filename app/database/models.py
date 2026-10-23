@@ -83,6 +83,15 @@ class User(Base):
     verification_attempts: Mapped[int] = mapped_column(
         Integer, default=0, nullable=False, server_default=text("0")
     )
+    verification_email_sent_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    verification_emails_sent_today: Mapped[int] = mapped_column(
+        Integer, default=0, nullable=False, server_default=text("0")
+    )
+    verification_emails_reset_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     is_gender_verified: Mapped[bool] = mapped_column(
         Boolean, default=False, nullable=False, server_default=func.false(), index=True
     )

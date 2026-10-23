@@ -5,6 +5,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from sqlalchemy import and_, delete, desc, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import settings
 from app.database.models import (
     ChatMessageMap,
     ChatSession,
@@ -1627,6 +1628,73 @@ async def admin_override_gender(
     await session.commit()
     await session.refresh(user)
     return user
+
+
+async def can_request_verification_email(
+    session: AsyncSession,
+    user_id: int,
+) -> Tuple[bool, Optional[str]]:
+    """Check if a user is allowed to request a verification email based on cooldown and daily limit."""
+    user = await get_or_create_user(session, user_id=user_id)
+    now = datetime.now(timezone.utc)
+
+    # 1. Reset daily count if 24 hours have elapsed
+    if user.verification_emails_reset_at:
+        reset_at = user.verification_emails_reset_at
+        if reset_at.tzinfo is None:
+            reset_at = reset_at.replace(tzinfo=timezone.utc)
+        if (now - reset_at).total_seconds() >= 86400:
+            user.verification_emails_sent_today = 0
+            user.verification_emails_reset_at = now
+            await session.commit()
+    else:
+        user.verification_emails_reset_at = now
+        user.verification_emails_sent_today = 0
+        await session.commit()
+
+    # 2. Daily limit check
+    daily_limit = getattr(settings, "VERIFICATION_DAILY_LIMIT", 5)
+    if (user.verification_emails_sent_today or 0) >= daily_limit:
+        return (
+            False,
+            f"You have reached the maximum daily limit ({daily_limit}) of verification emails. "
+            "Please try again tomorrow.",
+        )
+
+    # 3. Cooldown check
+    cooldown_mins = getattr(settings, "VERIFICATION_EMAIL_COOLDOWN_MINUTES", 3)
+    if user.verification_email_sent_at:
+        sent_at = user.verification_email_sent_at
+        if sent_at.tzinfo is None:
+            sent_at = sent_at.replace(tzinfo=timezone.utc)
+        elapsed = (now - sent_at).total_seconds()
+        required = cooldown_mins * 60
+        if elapsed < required:
+            remaining = int(required - elapsed)
+            mins = remaining // 60
+            secs = remaining % 60
+            time_str = f"{mins}m {secs}s" if mins > 0 else f"{secs}s"
+            return (
+                False,
+                f"Please wait {time_str} before requesting another verification code.",
+            )
+
+    return True, None
+
+
+async def record_verification_email_sent(
+    session: AsyncSession,
+    user_id: int,
+) -> None:
+    """Record that a verification email was successfully dispatched to a user."""
+    user = await get_or_create_user(session, user_id=user_id)
+    now = datetime.now(timezone.utc)
+    user.verification_email_sent_at = now
+    user.verification_emails_sent_today = (user.verification_emails_sent_today or 0) + 1
+    if not user.verification_emails_reset_at:
+        user.verification_emails_reset_at = now
+    await session.commit()
+
 
 
 

@@ -151,6 +151,21 @@ async def init_db() -> None:
                 "ALTER TABLE users ADD COLUMN IF NOT EXISTS gender_appeal_pending BOOLEAN NOT NULL DEFAULT false;"
             )
         )
+        await conn.execute(
+            text(
+                "ALTER TABLE users ADD COLUMN IF NOT EXISTS verification_email_sent_at TIMESTAMP WITH TIME ZONE;"
+            )
+        )
+        await conn.execute(
+            text(
+                "ALTER TABLE users ADD COLUMN IF NOT EXISTS verification_emails_sent_today INTEGER NOT NULL DEFAULT 0;"
+            )
+        )
+        await conn.execute(
+            text(
+                "ALTER TABLE users ADD COLUMN IF NOT EXISTS verification_emails_reset_at TIMESTAMP WITH TIME ZONE;"
+            )
+        )
         # Backfill default preferences for existing users who do not have them set
         await conn.execute(
             text(

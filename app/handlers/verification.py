@@ -11,9 +11,11 @@ from aiogram.types import CallbackQuery, Message
 from app.config import settings
 from app.database.crud import (
     admin_override_gender,
+    can_request_verification_email,
     check_and_verify_user_code,
     get_or_create_user,
     is_email_already_verified,
+    record_verification_email_sent,
     resolve_gender_mismatch,
     set_gender_appeal_status,
     set_user_verification_code,
@@ -25,9 +27,11 @@ from app.keyboards.inline import (
     get_gender_mismatch_keyboard,
 )
 from app.services.email_verification import (
+    check_global_email_rate_limit,
     generate_otp_code,
     is_valid_aua_email,
     send_verification_email,
+    validate_aua_email_format,
 )
 from app.services.gender_detector import infer_gender_from_email
 from app.states.states import VerificationState
@@ -74,6 +78,16 @@ async def handle_verify_command(message: Message, state: FSMContext) -> None:
             )
             return
 
+        # Check rate limits before starting a new verification flow
+        allowed, limit_err = await can_request_verification_email(session, user_id=user_id)
+        if not allowed:
+            await message.answer(
+                f"⏳ <b>Verification Limit Active</b>\n\n{limit_err}\n\n"
+                "Please wait before requesting another verification code.",
+                parse_mode="HTML",
+            )
+            return
+
     await state.set_state(VerificationState.waiting_for_email)
     await message.answer(
         "🎓 <b>AUA Student Verification</b> 🛡️\n"
@@ -84,7 +98,7 @@ async def handle_verify_command(message: Message, state: FSMContext) -> None:
         "• 🛡️ <b>Anti-Catfish Shield</b>: Verified gender badge protects students from fake profiles\n"
         "• 🤝 <b>Higher Trust</b>: Students feel safer connecting and chatting with you\n"
         "• ⚖️ <b>Shielded Reputation</b>: Immunity from false 'Not from AUA' reports\n\n"
-        "✍️ <i>Please enter your AUA student email address below (must end with <b>@edu.aua.am</b>):</i>\n\n"
+        "✍️ <i>Please enter your AUA student email address below (e.g. <code>firstname_lastname@edu.aua.am</code>):</i>\n\n"
         "<i>(Send /cancel at any time to abort)</i>",
         parse_mode="HTML",
     )
@@ -99,17 +113,35 @@ async def handle_email_input(message: Message, state: FSMContext) -> None:
     email = message.text.strip().lower()
     user_id = message.from_user.id
 
-    if not is_valid_aua_email(email):
+    # 1. Syntax, name structure, and dummy term validation
+    is_valid, format_err = validate_aua_email_format(email)
+    if not is_valid:
         await message.answer(
-            "⚠️ <b>Invalid Email Address</b>\n\n"
-            "The email address must be an official student address ending with <b>@edu.aua.am</b>.\n\n"
-            "<i>Example: <code>john_smith@edu.aua.am</code></i>\n\n"
+            f"⚠️ <b>Invalid Email Address</b>\n\n{format_err}\n\n"
             "Please try entering your email again, or send /cancel to abort:",
             parse_mode="HTML",
         )
         return
 
+    # 2. Global outbound rate limit check (protects SMTP reputation)
+    global_allowed, global_err = check_global_email_rate_limit()
+    if not global_allowed:
+        await message.answer(
+            f"⚠️ <b>High Traffic</b>\n\n{global_err}",
+            parse_mode="HTML",
+        )
+        return
+
+    # 3. Per-user cooldown and daily cap check
     async with get_db_session() as session:
+        user_allowed, user_limit_err = await can_request_verification_email(session, user_id=user_id)
+        if not user_allowed:
+            await message.answer(
+                f"⏳ <b>Verification Limit Active</b>\n\n{user_limit_err}",
+                parse_mode="HTML",
+            )
+            return
+
         if await is_email_already_verified(session, email=email, exclude_user_id=user_id):
             await message.answer(
                 "⚠️ <b>Email Already Verified</b>\n\n"
@@ -140,6 +172,10 @@ async def handle_email_input(message: Message, state: FSMContext) -> None:
             parse_mode="HTML",
         )
         return
+
+    # Record successful email dispatch for cooldown tracking
+    async with get_db_session() as session:
+        await record_verification_email_sent(session, user_id=user_id)
 
     await state.set_state(VerificationState.waiting_for_code)
     await message.answer(
