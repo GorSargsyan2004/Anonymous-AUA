@@ -175,10 +175,14 @@ To eliminate malicious retaliation, queue manipulation, and griefing (e.g. users
    - Furthermore, serial downvoters are prevented from manufacturing false consensus: spam flags from flagged accounts do not increment partner report counts.
    - Neutralization is applied in **stealth mode**: the voter is not tipped off, preventing bad-faith actors from gaming or evading the detection thresholds.
 
-5. **AUA Student Email Verification & Verified Badges (`/verify`)**:
-   - Students can optionally verify their student status using their official AUA email ending with **`@edu.aua.am`**.
+5. **AUA Student Email & Gender Verification (`/verify`)**:
+   - Students can verify their student status using their official AUA email ending with **`@edu.aua.am`**.
    - **6-Digit OTP Delivery**: The bot sends a cryptographically generated one-time code valid for 15 minutes.
-   - **In-Chat Verified Badge**: When connected, both partners receive a verified status indicator (`🎓 Partner Status: Verified AUA Student (@edu.aua.am) ✅`), giving students complete confidence they are chatting with an authentic classmate.
+   - **Anti-Catfish Gender Verification**: Automatically extracts first names from the university email (`firstname_lastname@edu.aua.am`) and cross-references an extensive Armenian and international names dictionary to verify gender.
+   - **Gender Conflict Shield**: If a student's verified email name (e.g. `davit`) conflicts with their profile gender (e.g. `female`), matchmaking is immediately paused. Users can self-correct their profile with 1 tap (bypassing cooldown) or submit an appeal for manual administrator review.
+   - **In-Chat Verified Badge**: When connected, both partners receive a verified status indicator:
+     - Verified with confirmed gender: `🎓 Partner Status: Verified AUA Student (Male/Female ✅)`
+     - Verified with unconfirmed/ambiguous name: `🎓 Partner Status: Verified AUA Student (@edu.aua.am) ✅`
    - **False-Report Admin Audit Shield**: If any user reports an officially verified student as "Not from AUA" (`not_aua`), the bot immediately alerts administrators with a high-priority audit warning to investigate potential malicious reports or compromised student accounts.
 
 6. **Exact Priority Delta Recording & Clean Reversion**:

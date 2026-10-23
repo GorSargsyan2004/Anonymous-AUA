@@ -295,3 +295,39 @@ def get_inactivity_warning_keyboard(session_id: int) -> InlineKeyboardMarkup:
     return builder.as_markup()
 
 
+def get_gender_mismatch_keyboard(inferred_gender: str) -> InlineKeyboardMarkup:
+    """Return inline keyboard for student to resolve gender conflict or appeal."""
+    builder = InlineKeyboardBuilder()
+    label = "👨 Switch Profile to Male" if inferred_gender.lower() == "male" else "👩 Switch Profile to Female"
+    builder.button(
+        text=label,
+        callback_data=f"resolve_gender_switch:{inferred_gender.lower()}",
+    )
+    builder.button(
+        text="📩 Appeal to Admin",
+        callback_data="gender_appeal_start",
+    )
+    builder.adjust(1, 1)
+    return builder.as_markup()
+
+
+def get_admin_gender_appeal_keyboard(user_id: int) -> InlineKeyboardMarkup:
+    """Return inline keyboard for administrator to review gender appeal."""
+    builder = InlineKeyboardBuilder()
+    builder.button(
+        text="👨 Approve Male",
+        callback_data=f"admin_gender_appr:{user_id}:male",
+    )
+    builder.button(
+        text="👩 Approve Female",
+        callback_data=f"admin_gender_appr:{user_id}:female",
+    )
+    builder.button(
+        text="❌ Reject Appeal",
+        callback_data=f"admin_gender_rej:{user_id}",
+    )
+    builder.adjust(2, 1)
+    return builder.as_markup()
+
+
+

@@ -1563,4 +1563,71 @@ async def is_email_already_verified(
     return res.scalar_one_or_none() is not None
 
 
+async def update_user_gender_verification(
+    session: AsyncSession,
+    user_id: int,
+    inferred_gender: Optional[str],
+    is_gender_verified: bool,
+    gender_mismatch: bool,
+    gender_appeal_pending: bool = False,
+) -> Optional[User]:
+    """Update gender verification and mismatch states for a user."""
+    user = await get_or_create_user(session, user_id=user_id)
+    user.inferred_gender = inferred_gender
+    user.is_gender_verified = is_gender_verified
+    user.gender_mismatch = gender_mismatch
+    user.gender_appeal_pending = gender_appeal_pending
+    await session.commit()
+    await session.refresh(user)
+    return user
+
+
+async def resolve_gender_mismatch(
+    session: AsyncSession,
+    user_id: int,
+    new_sex: str,
+) -> Optional[User]:
+    """Correct user profile sex to match verified email name, resolving conflict and bypassing cooldown."""
+    user = await get_or_create_user(session, user_id=user_id)
+    user.sex = new_sex.lower().strip()
+    user.is_gender_verified = True
+    user.gender_mismatch = False
+    user.gender_appeal_pending = False
+    user.sex_updated_at = datetime.now(timezone.utc)
+    await session.commit()
+    await session.refresh(user)
+    return user
+
+
+async def set_gender_appeal_status(
+    session: AsyncSession,
+    user_id: int,
+    pending: bool,
+) -> Optional[User]:
+    """Update gender conflict appeal status for a user."""
+    user = await get_or_create_user(session, user_id=user_id)
+    user.gender_appeal_pending = pending
+    await session.commit()
+    await session.refresh(user)
+    return user
+
+
+async def admin_override_gender(
+    session: AsyncSession,
+    user_id: int,
+    approved_gender: str,
+) -> Optional[User]:
+    """Administrator manual approval/override of student gender."""
+    user = await get_or_create_user(session, user_id=user_id)
+    user.sex = approved_gender.lower().strip()
+    user.inferred_gender = approved_gender.lower().strip()
+    user.is_gender_verified = True
+    user.gender_mismatch = False
+    user.gender_appeal_pending = False
+    await session.commit()
+    await session.refresh(user)
+    return user
+
+
+
 

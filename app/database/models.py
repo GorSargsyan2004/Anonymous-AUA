@@ -83,6 +83,16 @@ class User(Base):
     verification_attempts: Mapped[int] = mapped_column(
         Integer, default=0, nullable=False, server_default=text("0")
     )
+    is_gender_verified: Mapped[bool] = mapped_column(
+        Boolean, default=False, nullable=False, server_default=func.false(), index=True
+    )
+    inferred_gender: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)
+    gender_mismatch: Mapped[bool] = mapped_column(
+        Boolean, default=False, nullable=False, server_default=func.false(), index=True
+    )
+    gender_appeal_pending: Mapped[bool] = mapped_column(
+        Boolean, default=False, nullable=False, server_default=func.false()
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         server_default=func.now(),

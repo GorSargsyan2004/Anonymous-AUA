@@ -35,6 +35,7 @@ from app.keyboards.inline import (
     get_bot_feedback_keyboard,
     get_emergency_report_keyboard,
     get_feedback_keyboard,
+    get_gender_mismatch_keyboard,
     get_recent_partners_keyboard,
 )
 from app.services.link_shield import link_shield
@@ -170,6 +171,24 @@ async def perform_search(user_id: int, bot: Bot, message: Message) -> None:
             )
             return
 
+        # Check gender conflict for verified users
+        if getattr(user, "gender_mismatch", False):
+            inferred = (user.inferred_gender or "other").capitalize()
+            current = (user.sex or "other").capitalize()
+            kb = get_gender_mismatch_keyboard(inferred_gender=user.inferred_gender or "other")
+            await message.answer(
+                f"⚠️ <b>Matchmaking Paused: Gender Verification Conflict</b>\n\n"
+                f"Your verified university email name indicates <b>{inferred}</b>, but your profile is currently set to <b>{current}</b>.\n\n"
+                f"To protect our student community from catfishing and false identity claims, "
+                f"you cannot enter the matchmaking queue until this conflict is resolved.\n\n"
+                f"<b>Options:</b>\n"
+                f"• Tap <b>Switch Profile to {inferred}</b> to instantly correct your profile.\n"
+                f"• If your name is unisex, rare, or the system misclassified it, tap <b>Appeal to Admin</b>.",
+                reply_markup=kb,
+                parse_mode="HTML",
+            )
+            return
+
         # Check if already in active chat
         if user.current_partner_id is not None:
             await message.answer(
@@ -193,16 +212,21 @@ async def perform_search(user_id: int, bot: Bot, message: Message) -> None:
         partner, chat_session = await match_user_in_queue(session, user_id=user_id)
 
     if partner and chat_session:
-        partner_verified_badge = (
-            "🎓 <b>Partner Status:</b> Verified AUA Student (@edu.aua.am) ✅\n\n"
-            if getattr(partner, "is_verified", False)
-            else ""
-        )
-        current_verified_badge = (
-            "🎓 <b>Partner Status:</b> Verified AUA Student (@edu.aua.am) ✅\n\n"
-            if getattr(user, "is_verified", False)
-            else ""
-        )
+        if getattr(partner, "is_verified", False):
+            if getattr(partner, "is_gender_verified", False) and partner.sex:
+                partner_verified_badge = f"🎓 <b>Partner Status:</b> Verified AUA Student ({partner.sex.capitalize()} ✅)\n\n"
+            else:
+                partner_verified_badge = "🎓 <b>Partner Status:</b> Verified AUA Student (@edu.aua.am) ✅\n\n"
+        else:
+            partner_verified_badge = ""
+
+        if getattr(user, "is_verified", False):
+            if getattr(user, "is_gender_verified", False) and user.sex:
+                current_verified_badge = f"🎓 <b>Partner Status:</b> Verified AUA Student ({user.sex.capitalize()} ✅)\n\n"
+            else:
+                current_verified_badge = "🎓 <b>Partner Status:</b> Verified AUA Student (@edu.aua.am) ✅\n\n"
+        else:
+            current_verified_badge = ""
 
         user_match_msg = (
             "✨ <b>Partner found!</b> 🎭\n\n"
