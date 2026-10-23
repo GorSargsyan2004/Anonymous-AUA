@@ -62,12 +62,18 @@ async def setup_bot_profile(bot: Bot) -> None:
         (bot.set_my_name, "AUA Anonymous Chat"),
         (
             bot.set_my_description,
-            "Official Anonymous Chat Bot for students of the American University of Armenia (AUA). "
-            "Connect anonymously, make campus friends, and chat safely. 🎭🥷",
+            "Welcome to the Anonymous AUA Chat Bot! 🏛💬\n\n"
+            "Make friends, chat honestly, or find a campus crush at the American University of Armenia.\n\n"
+            "✨ How it works:\n"
+            "1. Press /start to set your gender & preferences.\n"
+            "2. Use /search to match with a compatible AUA student.\n"
+            "3. Chat 100% anonymously & safely.\n\n"
+            "🔒 Your identity remains hidden unless revealed. Data privacy is verifiable via the project repo:\n"
+            "https://github.com/GorSargsyan2004/Anonymous-AUA",
         ),
         (
             bot.set_my_short_description,
-            "Anonymous Chat Bot exclusively for AUA students. 🎭",
+            "Anonymous chat for AUA students. Make friends, chat honestly, or find a campus crush! 🏛💬",
         ),
     ]
     for func, text_value in profile_items:
