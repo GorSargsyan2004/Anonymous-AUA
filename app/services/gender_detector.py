@@ -20,11 +20,12 @@ MALE_NAMES: Set[str] = {
     "giorgi", "gor", "grigor", "grigori", "grikor", "gurgen", "hachik", "hacob",
     "hakob", "hagop", "hamlet", "harout", "harutyun", "harut", "hartun", "hasan",
     "hayk", "haik", "haykaz", "henrik", "henry", "hovhannes", "hovo", "hovsep",
-    "hrach", "hrachya", "hrayr", "hrazdan", "ishkhan", "jivan", "kamo", "karapet",
-    "karen", "karo", "khachatur", "khachik", "kirakos", "knyaz", "koryun", "leo",
+    "hrach", "hrachya", "hrayr", "hrazdan", "ishkhan", "ishxan", "jivan", "kamo", "karapet",
+    "karen", "karo", "khachatur", "xachatur", "khachik", "xachik", "khachig", "xachig",
+    "khoren", "xoren", "khosrov", "xosrov", "kirakos", "knyaz", "koryun", "leo",
     "leon", "levik", "levon", "lev", "loris", "lucas", "luka", "manvel",
     "marat", "mark", "martik", "martin", "matevos", "meruzhan", "mher", "mikael",
-    "michael", "mikayel", "misha", "mkhitar", "movses", "murad", "mushegh", "narek",
+    "michael", "mikayel", "misha", "mkhitar", "mxitar", "movses", "murad", "mushegh", "narek",
     "nareg", "nelson", "nerses", "norayr", "norik", "paruyr", "pavel", "petros",
     "petur", "peter", "rafayel", "rafael", "rafik", "razmik", "robert", "roman",
     "ruben", "rouben", "rustam", "sahak", "samson", "samvel", "sargis", "sarkis",
@@ -49,14 +50,14 @@ FEMALE_NAMES: Set[str] = {
     "angelina", "ani", "anichka", "anita", "anna", "ann", "anush", "anushik",
     "araqs", "araqsya", "araks", "araksya", "arev", "arevik", "armin", "armine",
     "armina", "arpenik", "arpen", "arpi", "arpik", "arpine", "arsine", "arshaluys",
-    "artemisa", "ashkhen", "aspram", "astgh", "astghik", "astrid", "avrora", "bella",
+    "artemisa", "ashkhen", "ashxen", "aspram", "astgh", "astghik", "astrid", "avrora", "bella",
     "camilla", "daria", "darya", "diana", "dina", "dzovinar", "elena", "elenoire",
     "eleonora", "elen", "elina", "eliza", "elizabeth", "ella", "elmira", "elsa",
     "elvira", "emma", "ester", "eva", "evgenia", "evelina", "flora", "galina",
     "gauhar", "gayane", "gayan", "gohar", "hameshik", "hasmik", "heghine", "helen",
     "helena", "hermine", "hripsime", "hrush", "inga", "inessa", "inna", "ira",
     "irina", "irine", "irma", "izabella", "jaklin", "jana", "janna", "juliet",
-    "julieta", "karina", "karine", "katarina", "kristina", "kristine", "lara",
+    "julieta", "karina", "karine", "katarina", "khatun", "xatun", "khatunik", "xatunik", "kristina", "kristine", "lara",
     "larisa", "laura", "lia", "liana", "lida", "lidiya", "lilit", "lilith",
     "lily", "liya", "liza", "louisa", "luiza", "lusine", "lusik", "madlen",
     "mane", "maneh", "margarit", "margarita", "mari", "maria", "mariam", "maryam",
@@ -71,7 +72,7 @@ FEMALE_NAMES: Set[str] = {
     "sirush", "sirusho", "sofia", "sofi", "sofya", "sona", "stell", "stella",
     "svetlana", "syuzi", "syuzanna", "suzanna", "talia", "tamara", "taguhi",
     "tanya", "tatev", "tatevik", "tatiana", "tsovinar", "valeria", "valida",
-    "varditer", "varduhi", "varsik", "vartiter", "vartuhi", "vera", "veronika",
+    "varditer", "varduhi", "varsik", "vartiter", "vartuhi", "varinka", "vera", "veronika",
     "viktoria", "victoria", "violeta", "violetta", "yeva", "yana", "yulia",
     "yuliya", "zabel", "zarine", "zaruhi", "zepur", "zhanna", "zhanna", "alina",
     "amalia", "anahit", "catherine", "chloe", "clara", "elena", "emily", "grace",
@@ -113,6 +114,18 @@ def normalize_name(name: str) -> str:
     n = name.lower().strip()
     # Normalize common digraphs
     n = n.replace("ou", "u")
+
+    # Armenian 'kh' (letter Խ) is frequently written with Russian/informal 'x'
+    # (e.g. xachatur -> khachatur, xoren -> khoren, xosrov -> khosrov, ishxan -> ishkhan, mxitar -> mkhitar)
+    if n.startswith("x"):
+        n = "kh" + n[1:]
+    n = n.replace("shx", "shkh")
+    n = n.replace("mx", "mkh")
+    n = n.replace("rx", "rkh")
+    n = n.replace("lx", "lkh")
+    n = n.replace("nx", "nkh")
+    if n.endswith("xan"):
+        n = n[:-3] + "khan"
     return n
 
 
