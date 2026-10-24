@@ -568,7 +568,41 @@ async def _handle_awakening_if_paused(
         pass
 
 
-@router.message(F.text | F.photo | F.sticker | F.voice | F.video_note | F.video | F.audio | F.document | F.animation)
+@router.message(Command("onetime", "once", "viewonce"))
+async def handle_toggle_onetime_mode(message: Message) -> None:
+    """Toggle ephemeral View-Once mode for outgoing media."""
+    user_id = message.from_user.id
+    is_enabled = one_time_media_manager.toggle_user_mode(user_id)
+    if is_enabled:
+        await message.answer(
+            "🔒 <b>View-Once Mode: ON</b>\n\n"
+            f"Every photo, video, voice, and video note you send will automatically be delivered as a <b>{OTM_DURATION_SECONDS}s self-destructing</b> item!\n\n"
+            "• Partners must tap to reveal\n"
+            "• Protected against screenshots, saving, and forwarding\n"
+            f"• Auto-destructs after {OTM_DURATION_SECONDS} seconds\n\n"
+            "<i>Type /onetime again to disable.</i>",
+            parse_mode="HTML",
+        )
+    else:
+        await message.answer(
+            "🔓 <b>View-Once Mode: OFF</b>\n\n"
+            "Media will now be sent normally.\n\n"
+            "<i>Tip: You can still send individual view-once items anytime by adding <code>#once</code> to the caption or using Telegram's 'Hide with Spoiler' option.</i>",
+            parse_mode="HTML",
+        )
+
+
+@router.message(
+    (F.text & ~F.text.startswith("/"))
+    | F.photo
+    | F.sticker
+    | F.voice
+    | F.video_note
+    | F.video
+    | F.audio
+    | F.document
+    | F.animation
+)
 async def relay_anonymous_message(message: Message, bot: Bot, state: FSMContext) -> None:
     """Relay non-command messages anonymously between connected partners."""
     # If user is in an active FSM state (like reporting reason or admin penalty), do not relay
@@ -1479,30 +1513,6 @@ async def handle_inactivity_stop(callback: CallbackQuery, bot: Bot) -> None:
 # ---------------------------------------------------------
 # Ephemeral One-Time (View-Once) Media Handlers
 # ---------------------------------------------------------
-
-
-@router.message(Command("onetime", "once", "viewonce"))
-async def handle_toggle_onetime_mode(message: Message) -> None:
-    """Toggle ephemeral View-Once mode for outgoing media."""
-    user_id = message.from_user.id
-    is_enabled = one_time_media_manager.toggle_user_mode(user_id)
-    if is_enabled:
-        await message.answer(
-            "🔒 <b>View-Once Mode: ON</b>\n\n"
-            f"Every photo, video, voice, and video note you send will automatically be delivered as a <b>{OTM_DURATION_SECONDS}s self-destructing</b> item!\n\n"
-            "• Partners must tap to reveal\n"
-            "• Protected against screenshots, saving, and forwarding\n"
-            f"• Auto-destructs after {OTM_DURATION_SECONDS} seconds\n\n"
-            "<i>Type /onetime again to disable.</i>",
-            parse_mode="HTML",
-        )
-    else:
-        await message.answer(
-            "🔓 <b>View-Once Mode: OFF</b>\n\n"
-            "Media will now be sent normally.\n\n"
-            "<i>Tip: You can still send individual view-once items anytime by adding <code>#once</code> to the caption or using Telegram's 'Hide with Spoiler' option.</i>",
-            parse_mode="HTML",
-        )
 
 
 @router.callback_query(F.data.startswith("otm_rev:"))

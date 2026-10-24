@@ -47,6 +47,12 @@ class TestOneTimeMediaService(unittest.TestCase):
         msg_tag2 = MagicMock(spec=Message, video=MagicMock(), photo=None, video_note=None, voice=None, animation=None, document=None, has_media_spoiler=False, caption="/once secret video")
         self.assertTrue(self.mgr.is_one_time_media(msg_tag2, 101))
 
+        # Trigger 1c: /onetime or #onetime in caption
+        msg_tag3 = MagicMock(spec=Message, photo=[MagicMock()], video=None, video_note=None, voice=None, animation=None, document=None, has_media_spoiler=False, caption="/onetime photo")
+        self.assertTrue(self.mgr.is_one_time_media(msg_tag3, 101))
+        msg_tag4 = MagicMock(spec=Message, photo=[MagicMock()], video=None, video_note=None, voice=None, animation=None, document=None, has_media_spoiler=False, caption="Check #onetime")
+        self.assertTrue(self.mgr.is_one_time_media(msg_tag4, 101))
+
         # Trigger 2: native Telegram media spoiler
         msg_spoiler = MagicMock(spec=Message, photo=[MagicMock()], video=None, video_note=None, voice=None, animation=None, document=None, has_media_spoiler=True, caption=None)
         self.assertTrue(self.mgr.is_one_time_media(msg_spoiler, 101))
@@ -60,8 +66,11 @@ class TestOneTimeMediaService(unittest.TestCase):
         self.assertIsNone(self.mgr.clean_caption(None))
         self.assertIsNone(self.mgr.clean_caption("#once"))
         self.assertIsNone(self.mgr.clean_caption("/ONCE"))
+        self.assertIsNone(self.mgr.clean_caption("/onetime"))
+        self.assertIsNone(self.mgr.clean_caption("#onetime"))
         self.assertEqual(self.mgr.clean_caption("Check this #once please"), "Check this  please")
         self.assertEqual(self.mgr.clean_caption("Look here /once!"), "Look here !")
+        self.assertEqual(self.mgr.clean_caption("Secret /onetime here"), "Secret  here")
 
     def test_token_lifecycle(self) -> None:
         msg = MagicMock(spec=Message)

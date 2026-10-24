@@ -61,20 +61,20 @@ class OneTimeMediaManager:
         if getattr(message, "has_media_spoiler", False) is True:
             return True
 
-        # Trigger 3: Caption contains #once or /once tag
+        # Trigger 3: Caption contains view-once tag
         caption = getattr(message, "caption", None) or ""
         caption_lower = caption.lower()
-        if "#once" in caption_lower or "/once" in caption_lower:
+        if any(tag in caption_lower for tag in ("#once", "/once", "#onetime", "/onetime", "#viewonce", "/viewonce")):
             return True
 
         return False
 
     def clean_caption(self, caption: Optional[str]) -> Optional[str]:
-        """Strip #once and /once tags from visible caption."""
+        """Strip view-once tags from visible caption."""
         if not caption:
             return None
         import re
-        text = re.sub(r"(?i)(#once|/once)", "", caption).strip()
+        text = re.sub(r"(?i)(#onetime|/onetime|#viewonce|/viewonce|#once|/once)", "", caption).strip()
         return text if text else None
 
     def register(
