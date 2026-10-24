@@ -42,6 +42,7 @@ from app.services.link_shield import link_shield
 from app.services.matcher import match_user_in_queue
 from app.services.media_batcher import media_batcher
 from app.services.one_time_media import (
+    DEFAULT_OTM_DURATION_SECONDS,
     OTM_DURATION_SECONDS,
     get_otm_prompt_keyboard,
     get_otm_viewing_keyboard,
@@ -576,10 +577,11 @@ async def handle_toggle_onetime_mode(message: Message) -> None:
     if is_enabled:
         await message.answer(
             "🔒 <b>View-Once Mode: ON</b>\n\n"
-            f"Every photo, video, voice, and video note you send will automatically be delivered as a <b>{OTM_DURATION_SECONDS}s self-destructing</b> item!\n\n"
-            "• Partners must tap to reveal\n"
+            "Every photo, video, voice, and video note you send will automatically be delivered as a <b>self-destructing</b> item!\n\n"
+            "• Photos / Gifs / Documents: 15s viewing window\n"
+            "• Videos / Voice notes: full clip duration + 5s buffer\n"
             "• Protected against screenshots, saving, and forwarding\n"
-            f"• Auto-destructs after {OTM_DURATION_SECONDS} seconds\n\n"
+            "• Auto-destructs after viewing window expires\n\n"
             "<i>Type /onetime again to disable.</i>",
             parse_mode="HTML",
         )
@@ -715,6 +717,7 @@ async def relay_anonymous_message(message: Message, bot: Bot, state: FSMContext)
             # Check if album is designated as One-Time Media
             if any(one_time_media_manager.is_one_time_media(m, user_id) for m in batch):
                 clean_cap = one_time_media_manager.clean_caption(batch[0].caption)
+                duration = one_time_media_manager.calculate_duration(batch[0], batch)
                 token = one_time_media_manager.register(
                     sender_id=user_id,
                     receiver_id=partner_id,
@@ -722,12 +725,13 @@ async def relay_anonymous_message(message: Message, bot: Bot, state: FSMContext)
                     message=batch[0],
                     batch=batch,
                     caption=clean_cap,
+                    duration_seconds=duration,
                 )
                 try:
                     await batch[0].reply(
                         "🔒 <b>One-Time Album Sent!</b>\n\n"
                         f"Your partner received a protected placeholder for {len(batch)} items.\n"
-                        f"Once revealed, it will self-destruct in {OTM_DURATION_SECONDS} seconds, and screenshots/saving are blocked.",
+                        f"Once revealed, it will self-destruct in {duration} seconds, and screenshots/saving are blocked.",
                         parse_mode="HTML",
                     )
                 except Exception:
@@ -736,14 +740,14 @@ async def relay_anonymous_message(message: Message, bot: Bot, state: FSMContext)
                 placeholder_text = (
                     f"🔒 <b>One-Time Media Album ({len(batch)} items)</b>\n\n"
                     "Your partner sent a self-destructing view-once album.\n"
-                    f"Tap the button below to reveal it. Once revealed, you have <b>{OTM_DURATION_SECONDS} seconds</b> before it permanently self-destructs.\n\n"
+                    f"Tap the button below to reveal it. Once revealed, you have <b>{duration} seconds</b> before it permanently self-destructs.\n\n"
                     "<i>🛡️ Screenshots, forwarding, and saving are strictly disabled.</i>"
                 )
                 try:
                     placeholder_msg = await bot.send_message(
                         chat_id=partner_id,
                         text=placeholder_text,
-                        reply_markup=get_otm_prompt_keyboard(token),
+                        reply_markup=get_otm_prompt_keyboard(token, duration=duration),
                         parse_mode="HTML",
                     )
                     one_time_media_manager.set_placeholder_msg_id(token, placeholder_msg.message_id)
@@ -926,20 +930,22 @@ async def relay_anonymous_message(message: Message, bot: Bot, state: FSMContext)
         # Check if single media message is designated as One-Time Media
         if one_time_media_manager.is_one_time_media(message, user_id):
             clean_cap = one_time_media_manager.clean_caption(message.caption)
+            duration = one_time_media_manager.calculate_duration(message)
             token = one_time_media_manager.register(
                 sender_id=user_id,
                 receiver_id=partner_id,
                 session_id=session_id,
                 message=message,
                 caption=clean_cap,
+                duration_seconds=duration,
             )
 
             # Confirm to sender
             try:
                 await message.reply(
                     "🔒 <b>One-Time Media Sent!</b>\n\n"
-                    "Your partner received a protected placeholder with a 15s reveal button.\n"
-                    f"It will self-destruct {OTM_DURATION_SECONDS} seconds after they tap to reveal it, and screenshots/saving are blocked.",
+                    f"Your partner received a protected placeholder with a {duration}s reveal button.\n"
+                    f"It will self-destruct {duration} seconds after they tap to reveal it, and screenshots/saving are blocked.",
                     parse_mode="HTML",
                 )
             except Exception:
@@ -962,7 +968,7 @@ async def relay_anonymous_message(message: Message, bot: Bot, state: FSMContext)
             placeholder_text = (
                 f"🔒 <b>One-Time {media_type_label}</b>\n\n"
                 "Your partner sent a self-destructing view-once item.\n"
-                f"Tap the button below to reveal it. Once revealed, you have <b>{OTM_DURATION_SECONDS} seconds</b> before it permanently self-destructs.\n\n"
+                f"Tap the button below to reveal it. Once revealed, you have <b>{duration} seconds</b> before it permanently self-destructs.\n\n"
                 "<i>🛡️ Screenshots, forwarding, and saving are strictly disabled.</i>"
             )
 
@@ -970,7 +976,7 @@ async def relay_anonymous_message(message: Message, bot: Bot, state: FSMContext)
                 placeholder_msg = await bot.send_message(
                     chat_id=partner_id,
                     text=placeholder_text,
-                    reply_markup=get_otm_prompt_keyboard(token),
+                    reply_markup=get_otm_prompt_keyboard(token, duration=duration),
                     reply_parameters=reply_params,
                     parse_mode="HTML",
                 )
@@ -1563,20 +1569,22 @@ async def handle_otm_reveal(callback: CallbackQuery, bot: Bot) -> None:
     # Mark as viewed
     one_time_media_manager.mark_viewed(token)
 
+    duration = data.get("duration_seconds", DEFAULT_OTM_DURATION_SECONDS)
+
     # Update placeholder status in recipient's chat
     if callback.message:
         try:
             await callback.message.edit_text(
                 "👁️ <b>Viewing One-Time Media...</b>\n\n"
-                f"⏳ <b>Self-destructing in {OTM_DURATION_SECONDS} seconds...</b>\n"
+                f"⏳ <b>Self-destructing in {duration} seconds...</b>\n"
                 "<i>Screenshots, forwarding, and saving are blocked.</i>",
-                reply_markup=get_otm_viewing_keyboard(),
+                reply_markup=get_otm_viewing_keyboard(duration=duration),
                 parse_mode="HTML",
             )
         except Exception as e:
             logger.debug("Failed to edit OTM placeholder during reveal: %s", e)
 
-    await callback.answer(f"Media revealed! Self-destructing in {OTM_DURATION_SECONDS} seconds.", show_alert=False)
+    await callback.answer(f"Media revealed! Self-destructing in {duration} seconds.", show_alert=False)
 
     # Deliver media with protect_content=True
     revealed_msg_ids = []
@@ -1615,7 +1623,7 @@ async def handle_otm_reveal(callback: CallbackQuery, bot: Bot) -> None:
             chat_id=data["sender_id"],
             text=(
                 "👁️ <b>Your one-time media was opened!</b>\n\n"
-                f"It is currently being viewed and will self-destruct in {OTM_DURATION_SECONDS} seconds."
+                f"It is currently being viewed and will self-destruct in {duration} seconds."
             ),
             parse_mode="HTML",
         )
@@ -1632,6 +1640,7 @@ async def handle_otm_reveal(callback: CallbackQuery, bot: Bot) -> None:
             sender_id=data["sender_id"],
             revealed_msg_ids=revealed_msg_ids,
             placeholder_msg_id=placeholder_msg_id,
+            duration_seconds=duration,
         )
     )
 
@@ -1643,10 +1652,11 @@ async def _auto_destruct_one_time_media(
     sender_id: int,
     revealed_msg_ids: list[int],
     placeholder_msg_id: Optional[int],
+    duration_seconds: int = DEFAULT_OTM_DURATION_SECONDS,
 ) -> None:
-    """Wait OTM_DURATION_SECONDS (15s), delete revealed media, edit placeholder to expired, and clean up token."""
+    """Wait duration_seconds, delete revealed media, edit placeholder to expired, and clean up token."""
     try:
-        await asyncio.sleep(OTM_DURATION_SECONDS)
+        await asyncio.sleep(duration_seconds)
     except asyncio.CancelledError:
         pass
     finally:
@@ -1677,7 +1687,7 @@ async def _auto_destruct_one_time_media(
         try:
             await bot.send_message(
                 chat_id=sender_id,
-                text="💥 <b>One-time media destroyed.</b>\n\nThe 15-second viewing window expired and the media was permanently deleted.",
+                text=f"💥 <b>One-time media destroyed.</b>\n\nThe {duration_seconds}-second viewing window expired and the media was permanently deleted.",
                 parse_mode="HTML",
             )
         except Exception:
@@ -1690,7 +1700,7 @@ async def _auto_destruct_one_time_media(
 @router.callback_query(F.data == "otm_noop")
 async def handle_otm_noop(callback: CallbackQuery) -> None:
     """No-op callback while media is in viewing countdown."""
-    await callback.answer(f"⏳ Media is self-destructing in {OTM_DURATION_SECONDS} seconds...", show_alert=False)
+    await callback.answer("⏳ Media is currently in self-destruct countdown...", show_alert=False)
 
 
 

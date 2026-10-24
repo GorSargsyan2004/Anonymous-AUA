@@ -12,7 +12,8 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 logger = logging.getLogger(__name__)
 
-OTM_DURATION_SECONDS = 15
+DEFAULT_OTM_DURATION_SECONDS = 15
+OTM_DURATION_SECONDS = DEFAULT_OTM_DURATION_SECONDS  # backward-compatible default
 
 
 class OneTimeMediaManager:
@@ -21,6 +22,39 @@ class OneTimeMediaManager:
     def __init__(self) -> None:
         self._tokens: Dict[str, dict] = {}
         self._user_modes: Set[int] = set()
+
+    @staticmethod
+    def calculate_duration(message: Optional[Message], batch: Optional[List[Message]] = None) -> int:
+        """Calculate dynamic reveal duration in seconds based on media length + buffer.
+        
+        - Photos / documents / gifs: defaults to 15s.
+        - Videos / video notes / voice / audio: duration of the longest clip + 5s buffer (minimum 15s).
+        """
+        items = batch if batch else ([message] if message else [])
+        durations: List[int] = []
+
+        for item in items:
+            if not item:
+                continue
+            video = getattr(item, "video", None)
+            if video and getattr(video, "duration", None):
+                durations.append(int(video.duration))
+            vnote = getattr(item, "video_note", None)
+            if vnote and getattr(vnote, "duration", None):
+                durations.append(int(vnote.duration))
+            voice = getattr(item, "voice", None)
+            if voice and getattr(voice, "duration", None):
+                durations.append(int(voice.duration))
+            audio = getattr(item, "audio", None)
+            if audio and getattr(audio, "duration", None):
+                durations.append(int(audio.duration))
+
+        if durations:
+            max_dur = max(durations)
+            # Give media length + 5 seconds buffer so recipient can comfortably view the full video
+            return max(DEFAULT_OTM_DURATION_SECONDS, max_dur + 5)
+
+        return DEFAULT_OTM_DURATION_SECONDS
 
     def is_user_mode_enabled(self, user_id: int) -> bool:
         """Check if user has /onetime mode toggled ON."""
@@ -85,8 +119,12 @@ class OneTimeMediaManager:
         message: Message,
         caption: Optional[str] = None,
         batch: Optional[List[Message]] = None,
+        duration_seconds: Optional[int] = None,
     ) -> str:
         """Register a pending one-time media item and return a unique token."""
+        if duration_seconds is None:
+            duration_seconds = self.calculate_duration(message, batch)
+
         token = uuid.uuid4().hex[:12]
         self._tokens[token] = {
             "token": token,
@@ -96,6 +134,7 @@ class OneTimeMediaManager:
             "message": message,
             "batch": batch,
             "caption": caption,
+            "duration_seconds": duration_seconds,
             "placeholder_msg_id": None,
             "viewed": False,
             "created_at": datetime.now(timezone.utc),
@@ -136,15 +175,15 @@ class OneTimeMediaManager:
 one_time_media_manager = OneTimeMediaManager()
 
 
-def get_otm_prompt_keyboard(token: str) -> InlineKeyboardMarkup:
+def get_otm_prompt_keyboard(token: str, duration: int = DEFAULT_OTM_DURATION_SECONDS) -> InlineKeyboardMarkup:
     """Return inline keyboard prompting partner to reveal one-time media."""
     builder = InlineKeyboardBuilder()
-    builder.button(text="👁️ Tap to Reveal (15s)", callback_data=f"otm_rev:{token}")
+    builder.button(text=f"👁️ Tap to Reveal ({duration}s)", callback_data=f"otm_rev:{token}")
     return builder.as_markup()
 
 
-def get_otm_viewing_keyboard() -> InlineKeyboardMarkup:
+def get_otm_viewing_keyboard(duration: int = DEFAULT_OTM_DURATION_SECONDS) -> InlineKeyboardMarkup:
     """Return disabled status keyboard while media is being viewed."""
     builder = InlineKeyboardBuilder()
-    builder.button(text="⏳ Self-destructing in 15s...", callback_data="otm_noop")
+    builder.button(text=f"⏳ Self-destructing in {duration}s...", callback_data="otm_noop")
     return builder.as_markup()

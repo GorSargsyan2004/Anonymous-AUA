@@ -101,14 +101,32 @@ class TestOneTimeMediaService(unittest.TestCase):
         self.mgr.clear_session(10)
         self.assertIsNone(self.mgr.get(token))
 
-    def test_keyboards(self) -> None:
-        kb_prompt = get_otm_prompt_keyboard("test_token")
-        self.assertEqual(kb_prompt.inline_keyboard[0][0].callback_data, "otm_rev:test_token")
-        self.assertIn("15s", kb_prompt.inline_keyboard[0][0].text)
+    def test_calculate_duration(self) -> None:
+        # Photo -> 15s default
+        msg_photo = MagicMock(spec=Message, photo=[MagicMock()], video=None, video_note=None, voice=None, audio=None)
+        self.assertEqual(self.mgr.calculate_duration(msg_photo), 15)
 
-        kb_viewing = get_otm_viewing_keyboard()
+        # 30s video -> 35s (duration + 5s buffer)
+        msg_video = MagicMock(spec=Message, photo=None, video=MagicMock(duration=30), video_note=None, voice=None, audio=None)
+        self.assertEqual(self.mgr.calculate_duration(msg_video), 35)
+
+        # 6s voice note -> 15s (min 15s)
+        msg_voice = MagicMock(spec=Message, photo=None, video=None, video_note=None, voice=MagicMock(duration=6), audio=None)
+        self.assertEqual(self.mgr.calculate_duration(msg_voice), 15)
+
+        # Album with 10s clip and 45s clip -> 50s
+        item1 = MagicMock(spec=Message, video=MagicMock(duration=10), video_note=None, voice=None, audio=None)
+        item2 = MagicMock(spec=Message, video=MagicMock(duration=45), video_note=None, voice=None, audio=None)
+        self.assertEqual(self.mgr.calculate_duration(None, batch=[item1, item2]), 50)
+
+    def test_keyboards(self) -> None:
+        kb_prompt = get_otm_prompt_keyboard("test_token", duration=35)
+        self.assertEqual(kb_prompt.inline_keyboard[0][0].callback_data, "otm_rev:test_token")
+        self.assertIn("35s", kb_prompt.inline_keyboard[0][0].text)
+
+        kb_viewing = get_otm_viewing_keyboard(duration=35)
         self.assertEqual(kb_viewing.inline_keyboard[0][0].callback_data, "otm_noop")
-        self.assertIn("Self-destructing", kb_viewing.inline_keyboard[0][0].text)
+        self.assertIn("35s", kb_viewing.inline_keyboard[0][0].text)
 
 
 class TestOneTimeMediaHandlers(unittest.IsolatedAsyncioTestCase):
@@ -231,8 +249,9 @@ class TestOneTimeMediaHandlers(unittest.IsolatedAsyncioTestCase):
                 sender_id=3002,
                 revealed_msg_ids=[4001, 4002],
                 placeholder_msg_id=5001,
+                duration_seconds=45,
             )
-            mock_sleep.assert_called_once_with(OTM_DURATION_SECONDS)
+            mock_sleep.assert_called_once_with(45)
 
         # Verify messages deleted
         self.assertEqual(bot.delete_message.call_count, 2)
