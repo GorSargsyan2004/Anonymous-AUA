@@ -38,6 +38,7 @@ from app.keyboards.inline import (
     get_gender_mismatch_keyboard,
     get_recent_partners_keyboard,
 )
+from app.services.email_verification import get_partner_verification_badge
 from app.services.link_shield import link_shield
 from app.services.matcher import match_user_in_queue
 from app.services.media_batcher import media_batcher
@@ -213,21 +214,8 @@ async def perform_search(user_id: int, bot: Bot, message: Message) -> None:
         partner, chat_session = await match_user_in_queue(session, user_id=user_id)
 
     if partner and chat_session:
-        if getattr(partner, "is_verified", False):
-            if getattr(partner, "is_gender_verified", False) and partner.sex:
-                partner_verified_badge = f"🎓 <b>Partner Status:</b> Verified AUA Student ({partner.sex.capitalize()} ✅)\n\n"
-            else:
-                partner_verified_badge = "🎓 <b>Partner Status:</b> Verified AUA Student (@edu.aua.am) ✅\n\n"
-        else:
-            partner_verified_badge = ""
-
-        if getattr(user, "is_verified", False):
-            if getattr(user, "is_gender_verified", False) and user.sex:
-                current_verified_badge = f"🎓 <b>Partner Status:</b> Verified AUA Student ({user.sex.capitalize()} ✅)\n\n"
-            else:
-                current_verified_badge = "🎓 <b>Partner Status:</b> Verified AUA Student (@edu.aua.am) ✅\n\n"
-        else:
-            current_verified_badge = ""
+        partner_verified_badge = get_partner_verification_badge(partner)
+        current_verified_badge = get_partner_verification_badge(user)
 
         user_match_msg = (
             "✨ <b>Partner found!</b> 🎭\n\n"

@@ -26,7 +26,13 @@ from app.database.session import engine, get_db_session, init_db
 from app.handlers import feedback as feedback_handlers
 from app.handlers import start as start_handlers
 from app.handlers import verification as verification_handlers
-from app.services.email_verification import is_valid_aua_email, send_verification_email
+from app.services.email_verification import (
+    get_current_academic_year,
+    get_partner_verification_badge,
+    get_user_verification_status,
+    is_valid_aua_email,
+    send_verification_email,
+)
 from app.services.matcher import match_user_in_queue
 from app.states.states import SuggestionState, VerificationState
 
@@ -188,7 +194,7 @@ class TestVerificationAndCooldowns(unittest.IsolatedAsyncioTestCase):
             # 2. User enters invalid email
             msg.text = "hacker@gmail.com"
             await verification_handlers.handle_email_input(msg, state)
-            self.assertIn("must be an official student address ending with", msg.answer.call_args[0][0])
+            self.assertIn("must be an official AUA address ending with", msg.answer.call_args[0][0])
 
             # 3. User enters valid email
             msg.text = test_email
@@ -288,6 +294,111 @@ class TestVerificationAndCooldowns(unittest.IsolatedAsyncioTestCase):
             msg.text = "Another spam message!"
             await feedback_handlers.handle_suggestion_input(msg, bot, state)
             self.assertIn("Suggestion Cooldown Active", msg.answer.call_args[0][0])
+
+    async def test_06_alumni_verification_flow(self):
+        """Test that @alumni.aua.am emails are accepted, grant alumni badge, and never expire."""
+        alumni_email = "arman_sargsyan@alumni.aua.am"
+
+        async with get_db_session() as session:
+            state = AsyncMock()
+            msg = AsyncMock(spec=Message)
+            msg.from_user = TgUser(id=self.u2, is_bot=False, first_name="Alum")
+            msg.answer = AsyncMock()
+
+            # 1. Start /verify
+            await verification_handlers.handle_verify_command(msg, state)
+            state.set_state.assert_called_with(VerificationState.waiting_for_email)
+
+            # 2. Enter @alumni.aua.am email
+            msg.text = alumni_email
+            await verification_handlers.handle_email_input(msg, state)
+            state.set_state.assert_called_with(VerificationState.waiting_for_code)
+
+            # 3. Retrieve code and submit
+            u2_db = await session.get(User, self.u2)
+            self.assertEqual(u2_db.email, alumni_email)
+            code = u2_db.verification_code
+            msg.text = code
+            await verification_handlers.handle_code_input(msg, state)
+            self.assertIn("Alumni Verification Complete", msg.answer.call_args[0][0])
+
+            # 4. Check DB status
+            await session.refresh(u2_db)
+            self.assertTrue(u2_db.is_verified)
+            self.assertTrue(u2_db.is_alumni)
+            self.assertEqual(get_user_verification_status(u2_db), "alumni")
+
+            # 5. Badge check
+            badge = get_partner_verification_badge(u2_db)
+            self.assertIn("Verified AUA Graduate / Alumni", badge)
+            self.assertIn("🎓🏛️", badge)
+
+    async def test_07_annual_expiry_and_reverification(self):
+        """Test annual September 1st expiration logic and in-chat badge changes."""
+        now = datetime.now(timezone.utc)
+        curr_year = get_current_academic_year(now)
+
+        async with get_db_session() as session:
+            u3_db = await session.get(User, self.u3)
+            u3_db.is_verified = True
+            u3_db.is_alumni = False
+            u3_db.email = "tatev_hakobyan@edu.aua.am"
+            u3_db.sex = "female"
+            u3_db.is_gender_verified = True
+
+            # 1. Active student verified in current academic year
+            u3_db.academic_year_verified = curr_year
+            await session.commit()
+            self.assertEqual(get_user_verification_status(u3_db), "student")
+            badge_active = get_partner_verification_badge(u3_db)
+            self.assertIn("Verified AUA Student", badge_active)
+            self.assertNotIn("Expired", badge_active)
+
+            # 2. Expired student (verified in past year)
+            u3_db.academic_year_verified = curr_year - 1
+            await session.commit()
+            self.assertEqual(get_user_verification_status(u3_db), "student_expired")
+            badge_expired = get_partner_verification_badge(u3_db)
+            self.assertIn("Expired: Re-verification Needed", badge_expired)
+
+            # 3. Running /verify shows expired notice with re-verify button
+            state = AsyncMock()
+            msg = AsyncMock(spec=Message)
+            msg.from_user = TgUser(id=self.u3, is_bot=False, first_name="Tatev")
+            msg.answer = AsyncMock()
+
+            await verification_handlers.handle_verify_command(msg, state)
+            call_text = msg.answer.call_args[0][0]
+            self.assertIn("AUA Student Status: Expired", call_text)
+            self.assertIn("September 1st", call_text)
+            reply_markup = msg.answer.call_args[1]["reply_markup"]
+            self.assertEqual(reply_markup.inline_keyboard[0][0].callback_data, "reverify_start")
+
+            # 4. Trigger reverify_start callback
+            cb = AsyncMock(spec=CallbackQuery)
+            cb.from_user = TgUser(id=self.u3, is_bot=False, first_name="Tatev")
+            cb.answer = AsyncMock()
+            cb.message = AsyncMock()
+            cb.message.answer = AsyncMock()
+
+            await verification_handlers.handle_reverify_start(cb, state)
+            state.set_state.assert_called_with(VerificationState.waiting_for_email)
+
+            # 5. Enter email and complete re-verification
+            msg.text = "tatev_hakobyan@edu.aua.am"
+            await verification_handlers.handle_email_input(msg, state)
+            await session.refresh(u3_db)
+            code = u3_db.verification_code
+
+            msg.text = code
+            await verification_handlers.handle_code_input(msg, state)
+
+            await session.refresh(u3_db)
+            self.assertEqual(u3_db.academic_year_verified, curr_year)
+            self.assertEqual(get_user_verification_status(u3_db), "student")
+            badge_renewed = get_partner_verification_badge(u3_db)
+            self.assertIn("Verified AUA Student", badge_renewed)
+            self.assertNotIn("Expired", badge_renewed)
 
 
 if __name__ == "__main__":

@@ -12,11 +12,14 @@ from app.database.crud import (
     get_users_for_setup_reminder,
     get_users_for_verification_reminder,
     record_setup_reminder_sent,
+    get_users_for_annual_reverification,
+    record_annual_reverification_prompt_sent,
     record_verification_reminder_sent,
 )
 from app.database.models import User
 from app.database.session import engine, get_db_session
 from app.services.daily_reminders import (
+    ANNUAL_REVERIFICATION_TEXT,
     SETUP_REMINDER_TEXT,
     VERIFICATION_REMINDER_TEXT,
     daily_reminders_worker,
@@ -43,6 +46,12 @@ class TestDailyReminders(unittest.IsolatedAsyncioTestCase):
         self.assertIn("sex", VERIFICATION_REMINDER_TEXT.lower())
         self.assertIn("anonymous", VERIFICATION_REMINDER_TEXT.lower())
         self.assertIn("@edu.aua.am", VERIFICATION_REMINDER_TEXT)
+
+        # Annual re-verification reminder
+        self.assertIn("/verify", ANNUAL_REVERIFICATION_TEXT)
+        self.assertIn("September 1st", ANNUAL_REVERIFICATION_TEXT)
+        self.assertIn("@alumni.aua.am", ANNUAL_REVERIFICATION_TEXT)
+        self.assertIn("Expired", ANNUAL_REVERIFICATION_TEXT)
 
     async def test_crud_setup_reminder_eligibility(self) -> None:
         """Verify get_users_for_setup_reminder selects only eligible uncompleted profiles."""
@@ -117,6 +126,42 @@ class TestDailyReminders(unittest.IsolatedAsyncioTestCase):
                 self.assertNotIn(99106, eligible_ids)
             finally:
                 for uid in [99101, 99102, 99103, 99104, 99105, 99106]:
+                    obj = await session.get(User, uid)
+                    if obj:
+                        await session.delete(obj)
+                await session.commit()
+
+    async def test_crud_annual_reverification_eligibility(self) -> None:
+        """Verify get_users_for_annual_reverification selects only expired students not yet prompted."""
+        current_year = 2026
+        async with get_db_session() as session:
+            # User 1: Verified student, past academic year (2025), not prompted -> ELIGIBLE
+            u1 = User(id=99501, is_verified=True, is_alumni=False, academic_year_verified=2025, last_annual_reverification_prompt_year=None, is_banned=False)
+            # User 2: Verified student, current year (2026) -> NOT eligible (active student)
+            u2 = User(id=99502, is_verified=True, is_alumni=False, academic_year_verified=2026, is_banned=False)
+            # User 3: Alumni -> NOT eligible (permanent, never expires)
+            u3 = User(id=99503, is_verified=True, is_alumni=True, academic_year_verified=2024, is_banned=False)
+            # User 4: Expired student, but already prompted for 2026 -> NOT eligible
+            u4 = User(id=99504, is_verified=True, is_alumni=False, academic_year_verified=2025, last_annual_reverification_prompt_year=2026, is_banned=False)
+            # User 5: Unverified user -> NOT eligible
+            u5 = User(id=99505, is_verified=False, is_alumni=False, is_banned=False)
+            # User 6: Expired student, but banned -> NOT eligible
+            u6 = User(id=99506, is_verified=True, is_alumni=False, academic_year_verified=2025, is_banned=True)
+
+            session.add_all([u1, u2, u3, u4, u5, u6])
+            await session.commit()
+
+            try:
+                eligible = await get_users_for_annual_reverification(session, current_academic_year=current_year, limit=1000)
+                eligible_ids = {u.id for u in eligible}
+                self.assertIn(99501, eligible_ids)
+                self.assertNotIn(99502, eligible_ids)
+                self.assertNotIn(99503, eligible_ids)
+                self.assertNotIn(99504, eligible_ids)
+                self.assertNotIn(99505, eligible_ids)
+                self.assertNotIn(99506, eligible_ids)
+            finally:
+                for uid in [99501, 99502, 99503, 99504, 99505, 99506]:
                     obj = await session.get(User, uid)
                     if obj:
                         await session.delete(obj)

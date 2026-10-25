@@ -6,7 +6,7 @@ import logging
 from aiogram import Bot, F, Router
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
-from aiogram.types import CallbackQuery, Message
+from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
 from app.config import settings
 from app.database.crud import (
@@ -29,6 +29,8 @@ from app.keyboards.inline import (
 from app.services.email_verification import (
     check_global_email_rate_limit,
     generate_otp_code,
+    get_current_academic_year,
+    get_user_verification_status,
     is_valid_aua_email,
     send_verification_email,
     validate_aua_email_format,
@@ -64,19 +66,67 @@ async def handle_verify_command(message: Message, state: FSMContext) -> None:
                 )
                 return
 
+            status = get_user_verification_status(user)
+            academic_yr = get_current_academic_year()
             gender_status = (
                 f"• <b>Gender Status:</b> Confirmed ({user.sex.capitalize()} ✅)\n"
                 if getattr(user, "is_gender_verified", False) and user.sex
                 else ""
             )
-            await message.answer(
-                f"🎓 <b>AUA Student Status: Verified</b> ✅\n\n"
-                f"• <b>Email:</b> <code>{masked_email}</code>\n"
-                f"{gender_status}\n"
-                f"<i>When you connect to chat partners, they will see that you are a verified AUA student! 🎭</i>",
-                parse_mode="HTML",
-            )
-            return
+
+            if status == "student_expired":
+                reverify_kb = InlineKeyboardMarkup(
+                    inline_keyboard=[
+                        [InlineKeyboardButton(text="🔄 Re-verify Now", callback_data="reverify_start")]
+                    ]
+                )
+                await message.answer(
+                    f"⚠️ <b>AUA Student Status: Expired (Pending Re-verification)</b>\n\n"
+                    f"• <b>Previous Email:</b> <code>{masked_email}</code>\n"
+                    f"• <b>New Academic Year:</b> {academic_yr}–{academic_yr + 1}\n\n"
+                    f"Every year on <b>September 1st</b>, active student verifications are renewed to ensure authentic campus connections.\n\n"
+                    f"• <b>Still a student?</b> Re-verify with your <code>@edu.aua.am</code> email.\n"
+                    f"• <b>Graduated?</b> Re-verify with your <code>@alumni.aua.am</code> email for permanent Graduate/Alumni status! 🎓🏛️\n\n"
+                    f"<i>Note: While expired, your status is displayed to chat partners as:</i>\n"
+                    f"<code>Verified AUA Student (Expired: Re-verification Needed)</code>\n\n"
+                    f"Tap below to renew your verification in 1 minute:",
+                    reply_markup=reverify_kb,
+                    parse_mode="HTML",
+                )
+                return
+            elif status == "alumni":
+                reverify_kb = InlineKeyboardMarkup(
+                    inline_keyboard=[
+                        [InlineKeyboardButton(text="🔄 Update Email", callback_data="reverify_start")]
+                    ]
+                )
+                await message.answer(
+                    f"🎓🏛️ <b>AUA Status: Verified Graduate / Alumni</b> ✅\n\n"
+                    f"• <b>Email:</b> <code>{masked_email}</code>\n"
+                    f"{gender_status}"
+                    f"• <b>Status:</b> Permanent Alumni\n\n"
+                    f"<i>When you connect to chat partners, they will see that you are a verified AUA Graduate! 🎭</i>",
+                    reply_markup=reverify_kb,
+                    parse_mode="HTML",
+                )
+                return
+            else:
+                user_yr = user.academic_year_verified or academic_yr
+                reverify_kb = InlineKeyboardMarkup(
+                    inline_keyboard=[
+                        [InlineKeyboardButton(text="🔄 Re-verify / Update Email", callback_data="reverify_start")]
+                    ]
+                )
+                await message.answer(
+                    f"🎓 <b>AUA Student Status: Verified</b> ✅\n\n"
+                    f"• <b>Email:</b> <code>{masked_email}</code>\n"
+                    f"{gender_status}"
+                    f"• <b>Academic Year:</b> {user_yr}–{user_yr + 1}\n\n"
+                    f"<i>When you connect to chat partners, they will see that you are a verified AUA student! 🎭</i>",
+                    reply_markup=reverify_kb,
+                    parse_mode="HTML",
+                )
+                return
 
         # Check rate limits before starting a new verification flow
         allowed, limit_err = await can_request_verification_email(session, user_id=user_id)
@@ -90,15 +140,18 @@ async def handle_verify_command(message: Message, state: FSMContext) -> None:
 
     await state.set_state(VerificationState.waiting_for_email)
     await message.answer(
-        "🎓 <b>AUA Student Verification</b> 🛡️\n"
+        "🎓 <b>AUA Email Verification</b> 🛡️\n"
         "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        "Confirm your student status with your official American University of Armenia email address.\n\n"
+        "Confirm your status with your official American University of Armenia email address.\n\n"
+        "<b>Accepted Email Domains:</b>\n"
+        "• <b>Current Students:</b> <code>firstname_lastname@edu.aua.am</code>\n"
+        "• <b>Graduates / Alumni:</b> <code>firstname_lastname@alumni.aua.am</code>\n\n"
         "<b>Why verify?</b>\n"
-        "• 🎓 <b>Verified Badge</b>: Partners see you are an authentic, verified AUA student\n"
+        "• 🎓 <b>Verified Badge</b>: Partners see you are an authentic AUA student or graduate\n"
         "• 🛡️ <b>Anti-Catfish Shield</b>: Verified gender badge protects students from fake profiles\n"
         "• 🤝 <b>Higher Trust</b>: Students feel safer connecting and chatting with you\n"
-        "• ⚖️ <b>Shielded Reputation</b>: Immunity from false 'Not from AUA' reports\n\n"
-        "✍️ <i>Please enter your AUA student email address below (e.g. <code>firstname_lastname@edu.aua.am</code>):</i>\n\n"
+        "• 🔒 <b>100% Anonymous</b>: Your email address is strictly used for verification and is NEVER shared with or shown to anyone\n\n"
+        "✍️ <i>Please enter your AUA email address below:</i>\n\n"
         "<i>(Send /cancel at any time to abort)</i>",
         parse_mode="HTML",
     )
@@ -244,6 +297,7 @@ async def handle_code_input(message: Message, state: FSMContext) -> None:
         await state.clear()
         email_str = user.email or "@edu.aua.am"
 
+        is_alumni = bool(user.is_alumni or (email_str and email_str.endswith("@alumni.aua.am")))
         if mismatch:
             inferred_cap = (inferred or "other").capitalize()
             current_cap = (user.sex or "other").capitalize()
@@ -262,22 +316,28 @@ async def handle_code_input(message: Message, state: FSMContext) -> None:
             )
         elif matched_gender:
             sex_cap = (user.sex or "").capitalize()
+            role_title = "Alumni Verification Complete! 🎓🏛️" if is_alumni else "Student Verification Complete! 🎓"
+            partner_status_desc = "Verified AUA Graduate / Alumni" if is_alumni else "Verified AUA Student"
             await message.answer(
-                f"🎉 <b>Student Verification Complete!</b> 🎓\n\n"
+                f"🎉 <b>{role_title}</b>\n\n"
                 f"Your account is officially verified with <b>{email_str}</b>.\n"
                 f"✅ <b>Gender Verified:</b> {sex_cap} (matches university records)\n\n"
                 f"✨ <b>In-Chat Trust Badge:</b>\n"
                 f"When you connect to chat partners, they will see:\n"
-                f"🎓 <b>Partner Status:</b> Verified AUA Student ({sex_cap} ✅)\n\n"
-                f"<i>Ready to meet fellow students? Type /search to start! ×͜×</i>",
+                f"🎓 <b>Partner Status:</b> {partner_status_desc} ({sex_cap} ✅)\n\n"
+                f"<i>Ready to chat? Type /search to begin! ×͜×</i>",
                 parse_mode="HTML",
             )
         else:
+            role_title = "Alumni Verification Complete! 🎓🏛️" if is_alumni else "Student Verification Complete! 🎓"
+            partner_status_desc = "Verified AUA Graduate / Alumni" if is_alumni else "Verified AUA Student"
+            domain_label = "@alumni.aua.am" if is_alumni else "@edu.aua.am"
             await message.answer(
-                f"🎉 <b>Student Verification Complete!</b> 🎓\n\n"
+                f"🎉 <b>{role_title}</b>\n\n"
                 f"Your Telegram account is officially verified with <b>{email_str}</b>.\n\n"
                 f"✨ <b>In-Chat Trust Badge:</b>\n"
-                f"When you connect to chat partners, they will see that you are a verified AUA student (@edu.aua.am) ✅.\n\n"
+                f"When you connect to chat partners, they will see:\n"
+                f"🎓 <b>Partner Status:</b> {partner_status_desc} ({domain_label}) ✅\n\n"
                 f"<i>Ready to chat? Type /search to begin! ×͜×</i>",
                 parse_mode="HTML",
             )
@@ -295,6 +355,30 @@ async def handle_code_input(message: Message, state: FSMContext) -> None:
                 f"Please check the 6-digit code in your email and enter it again (or send /cancel):",
                 parse_mode="HTML",
             )
+
+
+@router.callback_query(F.data == "reverify_start")
+async def handle_reverify_start(callback_query: CallbackQuery, state: FSMContext) -> None:
+    """Handle callback to initiate re-verification or email update."""
+    user_id = callback_query.from_user.id
+    async with get_db_session() as session:
+        allowed, limit_err = await can_request_verification_email(session, user_id=user_id)
+        if not allowed:
+            await callback_query.answer(limit_err or "Verification limit active", show_alert=True)
+            return
+
+    await state.set_state(VerificationState.waiting_for_email)
+    await callback_query.answer()
+    await callback_query.message.answer(
+        "🎓 <b>AUA Re-Verification / Email Update</b> 🛡️\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        "Please enter your official American University of Armenia email address below:\n\n"
+        "• <b>Current Students:</b> <code>firstname_lastname@edu.aua.am</code>\n"
+        "• <b>Graduates / Alumni:</b> <code>firstname_lastname@alumni.aua.am</code>\n\n"
+        "🔒 <i>Remember: Your email is solely used for verification and has zero impact on your anonymity.</i>\n\n"
+        "<i>(Send /cancel at any time to abort)</i>",
+        parse_mode="HTML",
+    )
 
 
 @router.callback_query(F.data.startswith("resolve_gender_switch:"))

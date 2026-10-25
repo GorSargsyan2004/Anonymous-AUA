@@ -222,6 +222,45 @@ async def init_db() -> None:
                 "ALTER TABLE users ADD COLUMN IF NOT EXISTS last_setup_reminder_at TIMESTAMP WITH TIME ZONE;"
             )
         )
+        await conn.execute(
+            text(
+                "ALTER TABLE users ADD COLUMN IF NOT EXISTS is_alumni BOOLEAN NOT NULL DEFAULT false;"
+            )
+        )
+        await conn.execute(
+            text(
+                "ALTER TABLE users ADD COLUMN IF NOT EXISTS verified_at TIMESTAMP WITH TIME ZONE;"
+            )
+        )
+        await conn.execute(
+            text(
+                "ALTER TABLE users ADD COLUMN IF NOT EXISTS academic_year_verified INTEGER;"
+            )
+        )
+        await conn.execute(
+            text(
+                "ALTER TABLE users ADD COLUMN IF NOT EXISTS last_annual_reverification_prompt_year INTEGER;"
+            )
+        )
+        await conn.execute(
+            text(
+                """
+                UPDATE users
+                SET academic_year_verified = 2026,
+                    verified_at = COALESCE(verification_email_sent_at, created_at)
+                WHERE is_verified = TRUE AND academic_year_verified IS NULL;
+                """
+            )
+        )
+        await conn.execute(
+            text(
+                """
+                UPDATE users
+                SET is_alumni = TRUE
+                WHERE is_verified = TRUE AND email ILIKE '%@alumni.aua.am';
+                """
+            )
+        )
 
 
 

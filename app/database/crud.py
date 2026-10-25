@@ -1509,10 +1509,9 @@ async def check_and_verify_user_code(
     if not user:
         return False, "User not found."
 
-    if user.is_verified:
-        return True, "Already verified."
-
     if not user.verification_code or not user.verification_code_expires_at:
+        if user.is_verified:
+            return True, "Already verified."
         return False, "No pending verification code found. Please run /verify to request a new code."
 
     now = datetime.now(timezone.utc)
@@ -1541,6 +1540,11 @@ async def check_and_verify_user_code(
 
     # Success!
     user.is_verified = True
+    user_email = (user.email or "").strip().lower()
+    user.is_alumni = user_email.endswith("@alumni.aua.am")
+    user.verified_at = now
+    from app.services.email_verification import get_current_academic_year
+    user.academic_year_verified = get_current_academic_year(now)
     user.verification_code = None
     user.verification_code_expires_at = None
     user.verification_attempts = 0
@@ -1787,6 +1791,52 @@ async def record_verification_reminder_sent(
     if user:
         user.last_verification_reminder_at = datetime.now(timezone.utc)
         await session.commit()
+
+
+async def get_users_for_annual_reverification(
+    session: AsyncSession,
+    current_academic_year: int,
+    limit: int = 500,
+) -> List[User]:
+    """Retrieve verified students whose verification belongs to a past academic year and have not been prompted yet this academic year.
+    
+    Alumni accounts do not expire and are excluded.
+    """
+    stmt = (
+        select(User)
+        .where(
+            User.is_banned.is_(False),
+            User.is_verified.is_(True),
+            User.is_alumni.is_(False),
+            or_(
+                User.academic_year_verified.is_(None),
+                User.academic_year_verified < current_academic_year,
+            ),
+            or_(
+                User.last_annual_reverification_prompt_year.is_(None),
+                User.last_annual_reverification_prompt_year < current_academic_year,
+            ),
+        )
+        .order_by(User.academic_year_verified.nulls_first(), User.created_at.asc())
+        .limit(limit)
+    )
+    result = await session.execute(stmt)
+    return list(result.scalars().all())
+
+
+async def record_annual_reverification_prompt_sent(
+    session: AsyncSession,
+    user_id: int,
+    year: int,
+) -> None:
+    """Record that the annual September 1st re-verification prompt was sent for academic year `year`."""
+    stmt = select(User).where(User.id == user_id)
+    res = await session.execute(stmt)
+    user = res.scalar_one_or_none()
+    if user:
+        user.last_annual_reverification_prompt_year = year
+        await session.commit()
+
 
 
 

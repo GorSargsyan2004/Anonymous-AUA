@@ -102,6 +102,18 @@ class User(Base):
     gender_appeal_pending: Mapped[bool] = mapped_column(
         Boolean, default=False, nullable=False, server_default=func.false()
     )
+    is_alumni: Mapped[bool] = mapped_column(
+        Boolean, default=False, nullable=False, server_default=func.false(), index=True
+    )
+    verified_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    academic_year_verified: Mapped[Optional[int]] = mapped_column(
+        Integer, nullable=True, index=True
+    )
+    last_annual_reverification_prompt_year: Mapped[Optional[int]] = mapped_column(
+        Integer, nullable=True
+    )
     last_verification_reminder_at: Mapped[Optional[datetime]] = mapped_column(
         DateTime(timezone=True), nullable=True
     )

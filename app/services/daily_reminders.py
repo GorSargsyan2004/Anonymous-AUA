@@ -14,12 +14,15 @@ from aiogram import Bot
 from aiogram.exceptions import TelegramForbiddenError, TelegramRetryAfter
 
 from app.database.crud import (
+    get_users_for_annual_reverification,
     get_users_for_setup_reminder,
     get_users_for_verification_reminder,
+    record_annual_reverification_prompt_sent,
     record_setup_reminder_sent,
     record_verification_reminder_sent,
 )
 from app.database.session import get_db_session
+from app.services.email_verification import get_current_academic_year
 
 logger = logging.getLogger(__name__)
 
@@ -36,18 +39,28 @@ SETUP_REMINDER_TEXT = (
 )
 
 VERIFICATION_REMINDER_TEXT = (
-    "🎓 <b>Verify your AUA Student status!</b> 🛡️\n\n"
-    "Get the verified student badge and build instant trust in your chats:\n"
-    "• Confirms you are an AUA student (@edu.aua.am) 🎓\n"
+    "🎓 <b>Verify your AUA status!</b> 🛡️\n\n"
+    "Get the verified badge and build instant trust in your chats:\n"
+    "• Confirms you are an AUA student or graduate (@edu.aua.am / @alumni.aua.am) 🎓\n"
     "• Automatically verifies your sex for genuine conversations 🔒\n"
     "• Completely anonymous: your email is only used for verification and is never shown to partners\n\n"
     "👉 Send /verify to get verified in 1 minute!"
 )
 
+ANNUAL_REVERIFICATION_TEXT = (
+    "🎓 <b>Annual AUA Student Re-Verification</b> 🔔\n\n"
+    "Welcome to the new academic year! 🍁\n\n"
+    "To ensure all active chat badges represent current students on campus, student verifications are renewed annually on <b>September 1st</b>.\n\n"
+    "• <b>Still at AUA?</b> Re-verify with your <code>@edu.aua.am</code> email to keep your verified student badge active.\n"
+    "• <b>Graduated?</b> Congratulations! 🎓 Verify with your <code>@alumni.aua.am</code> email to get the permanent <b>Verified AUA Graduate / Alumni</b> badge.\n\n"
+    "Until re-verified, your badge is displayed to chat partners as: <i>Verified AUA Student (Expired)</i>.\n\n"
+    "👉 Send /verify to renew your verification in 1 minute!"
+)
+
 
 async def process_daily_reminders(bot: Bot, hours_threshold: int = 24, batch_limit: int = 500) -> Dict[str, int]:
-    """Execute one pass of 24-hour reminder broadcasts for unfinished profiles and unverified students."""
-    stats = {"setup_sent": 0, "verification_sent": 0, "blocked_or_failed": 0}
+    """Execute one pass of 24-hour reminder broadcasts for unfinished profiles, unverified students, and annual re-verifications."""
+    stats = {"setup_sent": 0, "verification_sent": 0, "annual_reverification_sent": 0, "blocked_or_failed": 0}
 
     async with get_db_session() as session:
         # 1. Process Unfinished Setup Reminders
@@ -102,11 +115,38 @@ async def process_daily_reminders(bot: Bot, hours_threshold: int = 24, batch_lim
                 await record_verification_reminder_sent(session, user.id)
                 await asyncio.sleep(INTER_MESSAGE_DELAY_SECONDS)
 
-    if stats["setup_sent"] > 0 or stats["verification_sent"] > 0:
+        # 3. Process Annual September 1st Re-verification for Expired Students
+        current_acad_year = get_current_academic_year()
+        users_annual = await get_users_for_annual_reverification(
+            session, current_academic_year=current_acad_year, limit=batch_limit
+        )
+        for user in users_annual:
+            try:
+                await bot.send_message(
+                    chat_id=user.id,
+                    text=ANNUAL_REVERIFICATION_TEXT,
+                    parse_mode="HTML",
+                )
+                stats["annual_reverification_sent"] += 1
+            except TelegramForbiddenError:
+                logger.debug("User %s blocked bot during annual reverification broadcast", user.id)
+                stats["blocked_or_failed"] += 1
+            except TelegramRetryAfter as e:
+                logger.warning("Rate limit hit during annual reverification. Sleeping %ss", e.retry_after)
+                await asyncio.sleep(e.retry_after)
+            except Exception as e:
+                logger.warning("Failed to send annual reverification prompt to user %s: %s", user.id, e)
+                stats["blocked_or_failed"] += 1
+            finally:
+                await record_annual_reverification_prompt_sent(session, user.id, current_acad_year)
+                await asyncio.sleep(INTER_MESSAGE_DELAY_SECONDS)
+
+    if stats["setup_sent"] > 0 or stats["verification_sent"] > 0 or stats["annual_reverification_sent"] > 0:
         logger.info(
-            "Daily reminders broadcast cycle completed: %s setup reminders, %s verification reminders sent (%s failed/blocked).",
+            "Daily reminders broadcast cycle completed: %s setup reminders, %s verification reminders, %s annual re-verifications sent (%s failed/blocked).",
             stats["setup_sent"],
             stats["verification_sent"],
+            stats["annual_reverification_sent"],
             stats["blocked_or_failed"],
         )
 
