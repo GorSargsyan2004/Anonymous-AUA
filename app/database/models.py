@@ -102,6 +102,12 @@ class User(Base):
     gender_appeal_pending: Mapped[bool] = mapped_column(
         Boolean, default=False, nullable=False, server_default=func.false()
     )
+    last_verification_reminder_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    last_setup_reminder_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         server_default=func.now(),

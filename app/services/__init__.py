@@ -5,6 +5,10 @@ from app.services.backup import (
     get_backup_metadata,
     hourly_backup_worker,
 )
+from app.services.daily_reminders import (
+    daily_reminders_worker,
+    process_daily_reminders,
+)
 from app.services.inactivity_monitor import (
     check_and_process_inactivity,
     inactivity_monitor_worker,
@@ -28,6 +32,8 @@ __all__ = [
     "create_database_backup",
     "get_backup_metadata",
     "hourly_backup_worker",
+    "daily_reminders_worker",
+    "process_daily_reminders",
     "get_compatible_criteria",
     "match_user_in_queue",
     "normalize_orientation",

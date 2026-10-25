@@ -19,6 +19,7 @@ from app.handlers import register_handlers
 from app.middlewares.banned import BannedCheckMiddleware
 from app.services.backup import hourly_backup_worker
 from app.services.ban_manager import sync_banned_users
+from app.services.daily_reminders import daily_reminders_worker
 from app.services.inactivity_monitor import inactivity_monitor_worker
 
 
@@ -144,6 +145,7 @@ async def main() -> None:
     # 6. Start background workers
     backup_task = asyncio.create_task(hourly_backup_worker(bot))
     inactivity_task = asyncio.create_task(inactivity_monitor_worker(bot))
+    reminders_task = asyncio.create_task(daily_reminders_worker(bot))
 
     # 7. Start Polling (preserve pending updates so messages sent during restart are not lost)
     logger.info("Starting polling with admin IDs: %s", settings.ADMIN_IDS)
@@ -158,7 +160,8 @@ async def main() -> None:
         logger.info("Stopping background workers...")
         inactivity_task.cancel()
         backup_task.cancel()
-        for task in (inactivity_task, backup_task):
+        reminders_task.cancel()
+        for task in (inactivity_task, backup_task, reminders_task):
             try:
                 await task
             except (asyncio.CancelledError, Exception):

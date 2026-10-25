@@ -1696,6 +1696,100 @@ async def record_verification_email_sent(
     await session.commit()
 
 
+async def get_users_for_setup_reminder(
+    session: AsyncSession,
+    hours_threshold: int = 24,
+    limit: int = 50,
+) -> List[User]:
+    """Retrieve users who have not completed profile setup and are due for a 24-hour reminder.
+    
+    Criteria:
+    - User is not banned.
+    - Profile setup is incomplete (sex or orientation is NULL).
+    - Account was created at least `hours_threshold` hours ago (to avoid immediate ping).
+    - Either never reminded or last reminder was sent at least `hours_threshold` hours ago.
+    """
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=hours_threshold)
+    stmt = (
+        select(User)
+        .where(
+            User.is_banned.is_(False),
+            or_(User.sex.is_(None), User.orientation.is_(None)),
+            User.created_at <= cutoff,
+            or_(
+                User.last_setup_reminder_at.is_(None),
+                User.last_setup_reminder_at <= cutoff,
+            ),
+        )
+        .order_by(User.last_setup_reminder_at.nulls_first(), User.created_at.asc())
+        .limit(limit)
+    )
+    result = await session.execute(stmt)
+    return list(result.scalars().all())
+
+
+async def get_users_for_verification_reminder(
+    session: AsyncSession,
+    hours_threshold: int = 24,
+    limit: int = 50,
+) -> List[User]:
+    """Retrieve users who finished profile setup but are not verified, due for a 24-hour reminder.
+    
+    Criteria:
+    - User is not banned.
+    - Profile setup is complete (sex and orientation are set).
+    - User is not verified (is_verified = False).
+    - Account was created at least `hours_threshold` hours ago.
+    - Either never reminded or last reminder was sent at least `hours_threshold` hours ago.
+    """
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=hours_threshold)
+    stmt = (
+        select(User)
+        .where(
+            User.is_banned.is_(False),
+            User.sex.is_not(None),
+            User.orientation.is_not(None),
+            User.is_verified.is_(False),
+            User.created_at <= cutoff,
+            or_(
+                User.last_verification_reminder_at.is_(None),
+                User.last_verification_reminder_at <= cutoff,
+            ),
+        )
+        .order_by(User.last_verification_reminder_at.nulls_first(), User.created_at.asc())
+        .limit(limit)
+    )
+    result = await session.execute(stmt)
+    return list(result.scalars().all())
+
+
+async def record_setup_reminder_sent(
+    session: AsyncSession,
+    user_id: int,
+) -> None:
+    """Record that a setup completion reminder was sent to a user."""
+    stmt = select(User).where(User.id == user_id)
+    res = await session.execute(stmt)
+    user = res.scalar_one_or_none()
+    if user:
+        user.last_setup_reminder_at = datetime.now(timezone.utc)
+        await session.commit()
+
+
+async def record_verification_reminder_sent(
+    session: AsyncSession,
+    user_id: int,
+) -> None:
+    """Record that an email verification reminder was sent to a user."""
+    stmt = select(User).where(User.id == user_id)
+    res = await session.execute(stmt)
+    user = res.scalar_one_or_none()
+    if user:
+        user.last_verification_reminder_at = datetime.now(timezone.utc)
+        await session.commit()
+
+
+
 
 
 

@@ -212,6 +212,16 @@ async def init_db() -> None:
                 """
             )
         )
+        await conn.execute(
+            text(
+                "ALTER TABLE users ADD COLUMN IF NOT EXISTS last_verification_reminder_at TIMESTAMP WITH TIME ZONE;"
+            )
+        )
+        await conn.execute(
+            text(
+                "ALTER TABLE users ADD COLUMN IF NOT EXISTS last_setup_reminder_at TIMESTAMP WITH TIME ZONE;"
+            )
+        )
 
 
 
