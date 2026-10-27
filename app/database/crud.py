@@ -1709,12 +1709,18 @@ async def admin_override_gender(
     approved_gender: str,
 ) -> Optional[User]:
     """Administrator manual approval/override of student gender."""
+    from app.services.matcher import get_default_preferences
+
     user = await get_or_create_user(session, user_id=user_id)
     user.sex = approved_gender.lower().strip()
     user.inferred_gender = approved_gender.lower().strip()
     user.is_gender_verified = True
     user.gender_mismatch = False
     user.gender_appeal_pending = False
+    user.sex_updated_at = None  # Clear change cooldown penalty
+    def_sexes, def_orients = get_default_preferences(user.sex, user.orientation or "straight")
+    user.target_sexes = ",".join(def_sexes)
+    user.target_orientations = ",".join(def_orients)
     await session.commit()
     await session.refresh(user)
     return user

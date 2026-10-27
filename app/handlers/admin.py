@@ -26,6 +26,7 @@ from app.filters.admin import IsAdminFilter
 from app.keyboards.inline import get_admin_report_keyboard
 from app.services.backup import create_database_backup, get_backup_metadata
 from app.services.ban_manager import add_banned_user, remove_banned_user
+from app.services.matcher import get_default_preferences
 from app.services.reply_manager import reply_manager
 from app.states.states import AdminPenalizeState, AdminReplyState
 
@@ -375,6 +376,84 @@ async def handle_admin_unblock_user(message: Message) -> None:
         f"✅ <b>User <code>{target_id}</code> has been unbanned by {admin_tag}.</b>",
         parse_mode="HTML",
     )
+
+
+@router.message(Command("setsex", "changesex"))
+async def handle_admin_set_sex(message: Message, bot: Bot) -> None:
+    """Manually correct or override a user's sex: /setsex <user_id_or_@username> <male|female>"""
+    args = message.text.strip().split()
+    if len(args) < 3:
+        await message.reply(
+            "⚠️ <b>Usage:</b> <code>/setsex &lt;user_id or @username&gt; &lt;male|female&gt;</code>\n\n"
+            "Example: <code>/setsex @mm1191188 male</code> or <code>/setsex 8911682354 male</code>",
+            parse_mode="HTML",
+        )
+        return
+
+    target_raw = args[1].lstrip("@").strip()
+    new_sex = args[2].lower().strip()
+    if new_sex not in ("male", "female"):
+        await message.reply("⚠️ Sex must be either <code>male</code> or <code>female</code>.", parse_mode="HTML")
+        return
+
+    async with get_db_session() as session:
+        if target_raw.isdigit():
+            stmt = select(User).where(User.id == int(target_raw))
+        else:
+            stmt = select(User).where(User.username.ilike(target_raw))
+        res = await session.execute(stmt)
+        user = res.scalar_one_or_none()
+
+        if not user:
+            await message.reply(f"❌ User <code>{html.escape(target_raw)}</code> not found.", parse_mode="HTML")
+            return
+
+        old_sex = user.sex or "unset"
+        user.sex = new_sex
+        user.inferred_gender = new_sex
+        user.is_gender_verified = True
+        user.gender_mismatch = False
+        user.gender_appeal_pending = False
+        user.sex_updated_at = None  # Clear change cooldown penalty
+        if user.priority < 50:
+            user.priority = 50
+
+        # Update default target preferences
+        def_sexes, def_orients = get_default_preferences(user.sex, user.orientation or "straight")
+        user.target_sexes = ",".join(def_sexes)
+        user.target_orientations = ",".join(def_orients)
+
+        user_id = user.id
+        username = user.username
+        target_sexes = user.target_sexes
+        target_orients = user.target_orientations
+        await session.commit()
+
+    admin_tag = f"@{message.from_user.username}" if message.from_user.username else f"ID:{message.from_user.id}"
+    await message.reply(
+        f"✅ <b>User Sex Updated Successfully by {admin_tag}!</b>\n\n"
+        f"• <b>User ID:</b> <code>{user_id}</code> (@{html.escape(username or 'N/A')})\n"
+        f"• <b>Sex:</b> {old_sex} ➔ <b>{new_sex.capitalize()}</b>\n"
+        f"• <b>Cooldown Penalty:</b> Cleared ✅\n"
+        f"• <b>Target Sexes:</b> <code>{target_sexes}</code>\n"
+        f"• <b>Target Orientations:</b> <code>{target_orients}</code>\n"
+        f"• <b>Gender Mismatch:</b> Cleared",
+        parse_mode="HTML",
+    )
+
+    try:
+        await bot.send_message(
+            chat_id=user_id,
+            text=(
+                f"⚙️ <b>Profile Updated by Administrator</b>\n\n"
+                f"Your profile sex has been updated to <b>{new_sex.capitalize()}</b> ✅.\n"
+                "The change cooldown penalty has been cleared, and your matching preferences have been restored.\n\n"
+                "Send /search to start chatting!"
+            ),
+            parse_mode="HTML",
+        )
+    except TelegramAPIError:
+        pass
 
 
 @router.callback_query(F.data.startswith("admin_ban_user:"))
