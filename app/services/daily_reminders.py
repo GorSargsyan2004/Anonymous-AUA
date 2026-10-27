@@ -20,6 +20,7 @@ from app.database.crud import (
     record_annual_reverification_prompt_sent,
     record_setup_reminder_sent,
     record_verification_reminder_sent,
+    set_user_bot_blocked,
 )
 from app.database.session import get_db_session
 from app.services.email_verification import get_current_academic_year
@@ -79,6 +80,7 @@ async def process_daily_reminders(bot: Bot, hours_threshold: int = 24, batch_lim
                 # User blocked or deactivated the bot
                 logger.debug("User %s blocked bot during setup reminder broadcast", user.id)
                 stats["blocked_or_failed"] += 1
+                await set_user_bot_blocked(session, user.id, is_blocked=True)
             except TelegramRetryAfter as e:
                 logger.warning("Rate limit hit during setup reminder. Sleeping %ss", e.retry_after)
                 await asyncio.sleep(e.retry_after)
@@ -105,6 +107,7 @@ async def process_daily_reminders(bot: Bot, hours_threshold: int = 24, batch_lim
             except TelegramForbiddenError:
                 logger.debug("User %s blocked bot during verification reminder broadcast", user.id)
                 stats["blocked_or_failed"] += 1
+                await set_user_bot_blocked(session, user.id, is_blocked=True)
             except TelegramRetryAfter as e:
                 logger.warning("Rate limit hit during verification reminder. Sleeping %ss", e.retry_after)
                 await asyncio.sleep(e.retry_after)
@@ -131,6 +134,7 @@ async def process_daily_reminders(bot: Bot, hours_threshold: int = 24, batch_lim
             except TelegramForbiddenError:
                 logger.debug("User %s blocked bot during annual reverification broadcast", user.id)
                 stats["blocked_or_failed"] += 1
+                await set_user_bot_blocked(session, user.id, is_blocked=True)
             except TelegramRetryAfter as e:
                 logger.warning("Rate limit hit during annual reverification. Sleeping %ss", e.retry_after)
                 await asyncio.sleep(e.retry_after)

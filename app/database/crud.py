@@ -45,12 +45,33 @@ async def get_or_create_user(
         await session.commit()
         await session.refresh(user)
     else:
+        changed = False
         if username and user.username != username:
             user.username = username
+            changed = True
+        if getattr(user, "is_bot_blocked", False):
+            user.is_bot_blocked = False
+            user.bot_blocked_at = None
+            changed = True
+        if changed:
             await session.commit()
             await session.refresh(user)
 
     return user
+
+
+async def set_user_bot_blocked(
+    session: AsyncSession,
+    user_id: int,
+    is_blocked: bool = True,
+) -> None:
+    """Update user's bot blocked status when they stop/block or unblock the bot."""
+    stmt = select(User).where(User.id == user_id)
+    user = (await session.execute(stmt)).scalar_one_or_none()
+    if user:
+        user.is_bot_blocked = is_blocked
+        user.bot_blocked_at = datetime.now(timezone.utc) if is_blocked else None
+        await session.commit()
 
 
 async def get_user(session: AsyncSession, user_id: int) -> Optional[User]:
@@ -950,6 +971,60 @@ async def get_admin_stats(session: AsyncSession) -> Dict[str, Any]:
     ).scalar_one() or 0
     pending_suggestions = total_suggestions - replied_suggestions
 
+    # User Reach & Ban Stats
+    banned_count = (
+        await session.execute(select(func.count(User.id)).where(User.is_banned == True))  # noqa: E712
+    ).scalar_one() or 0
+    active_chat_users = (
+        await session.execute(select(func.count(User.id)).where(User.is_bot_blocked == False))  # noqa: E712
+    ).scalar_one() or 0
+    blocked_bot_users = (
+        await session.execute(select(func.count(User.id)).where(User.is_bot_blocked == True))  # noqa: E712
+    ).scalar_one() or 0
+
+    # Verification Breakdown
+    from app.services.email_verification import get_current_academic_year
+    current_acad_year = get_current_academic_year()
+
+    total_verified = (
+        await session.execute(select(func.count(User.id)).where(User.is_verified == True))  # noqa: E712
+    ).scalar_one() or 0
+    verified_alumni = (
+        await session.execute(
+            select(func.count(User.id)).where(User.is_verified == True, User.is_alumni == True)  # noqa: E712
+        )
+    ).scalar_one() or 0
+    verified_students = (
+        await session.execute(
+            select(func.count(User.id)).where(
+                User.is_verified == True,  # noqa: E712
+                User.is_alumni == False,  # noqa: E712
+                User.academic_year_verified >= current_acad_year,
+            )
+        )
+    ).scalar_one() or 0
+    verified_expired = (
+        await session.execute(
+            select(func.count(User.id)).where(
+                User.is_verified == True,  # noqa: E712
+                User.is_alumni == False,  # noqa: E712
+                or_(User.academic_year_verified.is_(None), User.academic_year_verified < current_acad_year),
+            )
+        )
+    ).scalar_one() or 0
+    gender_verified = (
+        await session.execute(
+            select(func.count(User.id)).where(User.is_verified == True, User.is_gender_verified == True)  # noqa: E712
+        )
+    ).scalar_one() or 0
+    unverified_count = total_users - total_verified
+    gender_mismatch_count = (
+        await session.execute(select(func.count(User.id)).where(User.gender_mismatch == True))  # noqa: E712
+    ).scalar_one() or 0
+    gender_appeal_count = (
+        await session.execute(select(func.count(User.id)).where(User.gender_appeal_pending == True))  # noqa: E712
+    ).scalar_one() or 0
+
     # Active Stats
     active_chats = (
         await session.execute(select(func.count(ChatSession.id)).where(ChatSession.is_active == True))  # noqa: E712
@@ -960,6 +1035,17 @@ async def get_admin_stats(session: AsyncSession) -> Dict[str, Any]:
 
     return {
         "total_users": total_users,
+        "banned_count": banned_count,
+        "active_chat_users": active_chat_users,
+        "blocked_bot_users": blocked_bot_users,
+        "total_verified": total_verified,
+        "verified_students": verified_students,
+        "verified_alumni": verified_alumni,
+        "verified_expired": verified_expired,
+        "gender_verified": gender_verified,
+        "unverified_count": unverified_count,
+        "gender_mismatch_count": gender_mismatch_count,
+        "gender_appeal_count": gender_appeal_count,
         "male_count": male_count,
         "female_count": female_count,
         "unset_sex_count": unset_sex_count,

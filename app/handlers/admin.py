@@ -33,7 +33,7 @@ router.message.filter(IsAdminFilter())
 router.callback_query.filter(IsAdminFilter())
 
 
-@router.message(Command("stata"))
+@router.message(Command("stata", "stats"))
 async def handle_stata(message: Message) -> None:
     """Display real-time aggregated metrics and backup status for Anonymous AUA Bot."""
     async with get_db_session() as session:
@@ -50,13 +50,30 @@ async def handle_stata(message: Message) -> None:
     else:
         backup_str = "⚠️ No backup snapshot found yet (run /backup)"
 
+    appeal_note = (
+        f" <i>({stats['gender_appeal_count']} appeal pending)</i>"
+        if stats.get("gender_appeal_count", 0) > 0
+        else ""
+    )
+
     dashboard = (
         "📊 <b>Anonymous AUA — Administrator Dashboard</b> 🎭\n"
         "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        f"👥 <b>User Base:</b>\n"
+        f"👥 <b>User Base & Reach:</b>\n"
         f"• Total Registered: <b>{stats['total_users']}</b>\n"
-        f"• Actively Searching: <b>{stats['searching_users']}</b>\n"
-        f"• Active Chats: <b>{stats['active_chats']}</b>\n\n"
+        f"• 💬 Active Bot Chats: <b>{stats['active_chat_users']}</b> <i>(have not blocked/deleted bot)</i>\n"
+        f"• 🚫 Blocked / Left Bot: <b>{stats['blocked_bot_users']}</b>\n"
+        f"• 🔨 Banned Accounts: <b>{stats['banned_count']}</b>\n"
+        f"• 🔍 Actively Searching: <b>{stats['searching_users']}</b>\n"
+        f"• ⚡ Active Match Sessions: <b>{stats['active_chats']}</b>\n\n"
+        f"🎓 <b>AUA Verification:</b>\n"
+        f"• Total Verified: <b>{stats['total_verified']}</b>\n"
+        f"  ├ 🎓 Active Students: <b>{stats['verified_students']}</b>\n"
+        f"  ├ 🎓🏛️ Alumni / Graduates: <b>{stats['verified_alumni']}</b>\n"
+        f"  ├ ⚠️ Expired (Sep 1): <b>{stats['verified_expired']}</b>\n"
+        f"  └ 🔒 Gender Confirmed: <b>{stats['gender_verified']}</b>\n"
+        f"• ❌ Unverified Users: <b>{stats['unverified_count']}</b>\n"
+        f"• ⚠️ Gender Conflicts: <b>{stats['gender_mismatch_count']}</b>{appeal_note}\n\n"
         f"🚻 <b>Sex Breakdown:</b>\n"
         f"• Male: <b>{stats['male_count']}</b>\n"
         f"• Female: <b>{stats['female_count']}</b>\n"

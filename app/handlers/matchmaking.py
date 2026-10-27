@@ -25,6 +25,7 @@ from app.database.crud import (
     get_user,
     pause_chat_session,
     reset_chat_session_inactivity_warning,
+    set_user_bot_blocked,
     set_user_searching,
     should_prompt_bot_feedback,
     touch_chat_session_activity,
@@ -750,6 +751,7 @@ async def relay_anonymous_message(message: Message, bot: Bot, state: FSMContext)
                         )
                 except TelegramForbiddenError as e:
                     logger.warning("Partner %s blocked bot during OTM album relay: %s", partner_id, e)
+                    await set_user_bot_blocked(session, partner_id, is_blocked=True)
                     result = await end_active_session(session, user_id=user_id)
                     if result:
                         chat_session, _ = result
@@ -812,6 +814,7 @@ async def relay_anonymous_message(message: Message, bot: Bot, state: FSMContext)
                     )
                 except TelegramForbiddenError as e:
                     logger.warning("Partner %s blocked the bot or is deactivated during album relay: %s", partner_id, e)
+                    await set_user_bot_blocked(session, partner_id, is_blocked=True)
                     result = await end_active_session(session, user_id=user_id)
                     if result:
                         chat_session, _ = result
@@ -980,6 +983,7 @@ async def relay_anonymous_message(message: Message, bot: Bot, state: FSMContext)
                 )
             except TelegramForbiddenError as e:
                 logger.warning("Partner %s blocked bot during OTM relay: %s", partner_id, e)
+                await set_user_bot_blocked(session, partner_id, is_blocked=True)
                 result = await end_active_session(session, user_id=user_id)
                 if result:
                     chat_session, _ = result
@@ -1081,6 +1085,7 @@ async def relay_anonymous_message(message: Message, bot: Bot, state: FSMContext)
                         pass
             except TelegramForbiddenError as e:
                 logger.warning("Partner %s blocked the bot or is deactivated: %s", partner_id, e)
+                await set_user_bot_blocked(session, partner_id, is_blocked=True)
                 result = await end_active_session(session, user_id=user_id)
                 if result:
                     chat_session, _ = result

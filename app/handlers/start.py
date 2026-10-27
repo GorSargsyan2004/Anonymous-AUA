@@ -4,7 +4,7 @@ import math
 from aiogram import F, Router
 from aiogram.filters import Command, CommandStart
 from aiogram.fsm.context import FSMContext
-from aiogram.types import CallbackQuery, Message
+from aiogram.types import CallbackQuery, ChatMemberUpdated, Message
 
 from app.config import settings
 from app.database.crud import (
@@ -13,6 +13,7 @@ from app.database.crud import (
     get_public_community_stats,
     get_user,
     get_user_blocks,
+    set_user_bot_blocked,
     set_user_typing_preference,
     update_user_preferences,
     update_user_profile,
@@ -766,3 +767,13 @@ async def handle_unblock_confirm(callback: CallbackQuery) -> None:
         reply_markup=reply_markup,
         parse_mode="HTML",
     )
+
+
+@router.my_chat_member()
+async def handle_my_chat_member_update(event: ChatMemberUpdated) -> None:
+    """Track in real-time when a user blocks/stops or unblocks/restarts the bot."""
+    user_id = event.from_user.id
+    new_status = event.new_chat_member.status
+    is_blocked = new_status in ["kicked", "left"]
+    async with get_db_session() as session:
+        await set_user_bot_blocked(session, user_id=user_id, is_blocked=is_blocked)

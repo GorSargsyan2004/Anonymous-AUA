@@ -120,6 +120,12 @@ class User(Base):
     last_setup_reminder_at: Mapped[Optional[datetime]] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    is_bot_blocked: Mapped[bool] = mapped_column(
+        Boolean, default=False, nullable=False, server_default=func.false(), index=True
+    )
+    bot_blocked_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         server_default=func.now(),
