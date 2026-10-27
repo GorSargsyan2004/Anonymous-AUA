@@ -8,17 +8,22 @@ from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 
+from sqlalchemy import select
+
 from app.database.crud import (
     apply_admin_penalty,
     ban_user_by_admin,
     dismiss_report,
     get_admin_stats,
+    get_pending_reports,
     reply_to_suggestion,
     resolve_report,
     unban_user_by_admin,
 )
+from app.database.models import User
 from app.database.session import get_db_session
 from app.filters.admin import IsAdminFilter
+from app.keyboards.inline import get_admin_report_keyboard
 from app.services.backup import create_database_backup, get_backup_metadata
 from app.services.ban_manager import add_banned_user, remove_banned_user
 from app.services.reply_manager import reply_manager
@@ -95,14 +100,91 @@ async def handle_stata(message: Message) -> None:
         f"🚨 <b>Reports Summary:</b>\n"
         f"• Total Filed: <b>{stats['total_reports']}</b>\n"
         f"• ✅ Resolved: <b>{stats['resolved_reports']}</b>\n"
-        f"• ⏳ Pending: <b>{stats['pending_reports']}</b>\n\n"
+        f"• ⏳ Pending: <b>{stats['pending_reports']}</b>"
+        + (" <i>(Review with /reports)</i>" if stats.get("pending_reports", 0) > 0 else "")
+        + "\n\n"
         f"💾 <b>Database Backups:</b>\n"
         f"{backup_str}\n"
         "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        "💡 <i>Tip: Use /backup to trigger an on-demand database snapshot.</i>"
+        "💡 <i>Tip: Use /reports to review pending reports, /backup for snapshots.</i>"
     )
 
     await message.answer(dashboard, parse_mode="HTML")
+
+
+@router.message(Command("reports", "pending_reports"))
+async def handle_pending_reports(message: Message, bot: Bot) -> None:
+    """Display and manage all pending/unresolved user reports."""
+    async with get_db_session() as session:
+        reports = await get_pending_reports(session)
+        if not reports:
+            await message.reply("✅ <b>No pending reports found!</b> All reports are resolved.", parse_mode="HTML")
+            return
+
+        user_ids = set()
+        for r in reports:
+            user_ids.add(r.reporter_id)
+            user_ids.add(r.reported_id)
+
+        user_map = {}
+        if user_ids:
+            u_stmt = select(User).where(User.id.in_(user_ids))
+            u_res = await session.execute(u_stmt)
+            for u in u_res.scalars().all():
+                user_map[u.id] = u
+
+    await message.reply(
+        f"🚨 <b>Found {len(reports)} pending report(s):</b>\n"
+        "Reviewing each report below with available evidence and moderation actions:",
+        parse_mode="HTML",
+    )
+
+    for report in reports:
+        reporter = user_map.get(report.reporter_id)
+        reported = user_map.get(report.reported_id)
+
+        reporter_tag = f"@{html.escape(reporter.username)}" if reporter and reporter.username else "N/A"
+        reported_tag = f"@{html.escape(reported.username)}" if reported and reported.username else "N/A"
+        date_str = report.created_at.strftime("%Y-%m-%d %H:%M UTC") if report.created_at else "N/A"
+
+        report_text = (
+            f"🚨 <b>Pending Report #{report.id}</b>\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"• <b>Session ID:</b> #{report.session_id}\n"
+            f"• <b>Reported User ID:</b> <code>{report.reported_id}</code> ({reported_tag})\n"
+            f"• <b>Reporter ID:</b> <code>{report.reporter_id}</code> ({reporter_tag})\n"
+            f"• <b>Filed At:</b> {date_str}\n\n"
+            f"📝 <b>Report Reason:</b>\n{html.escape(report.reason_text or 'No reason provided')}\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"⚡ <i>Quick Command to Ban:</i> <code>/block {report.reported_id}</code>"
+        )
+        keyboard = get_admin_report_keyboard(report.id, report.reported_id)
+
+        await bot.send_message(
+            chat_id=message.chat.id,
+            text=report_text,
+            reply_markup=keyboard,
+            parse_mode="HTML",
+        )
+
+        if report.evidence_file_id:
+            try:
+                await bot.send_photo(
+                    chat_id=message.chat.id,
+                    photo=report.evidence_file_id,
+                    caption=f"📸 <b>Evidence attached to Report #{report.id}</b>",
+                    parse_mode="HTML",
+                )
+            except TelegramAPIError:
+                try:
+                    await bot.send_document(
+                        chat_id=message.chat.id,
+                        document=report.evidence_file_id,
+                        caption=f"📄 <b>Document evidence attached to Report #{report.id}</b>",
+                        parse_mode="HTML",
+                    )
+                except TelegramAPIError as e:
+                    logger.warning("Could not send evidence file for report %s: %s", report.id, e)
 
 
 @router.message(Command("backup"))

@@ -1924,6 +1924,19 @@ async def record_annual_reverification_prompt_sent(
         await session.commit()
 
 
+async def get_pending_reports(session: AsyncSession, limit: int = 50) -> List[Report]:
+    """Retrieve unresolved user reports ordered chronologically."""
+    stmt = (
+        select(Report)
+        .where(Report.is_resolved.is_(False))
+        .order_by(Report.created_at.asc())
+        .limit(limit)
+    )
+    result = await session.execute(stmt)
+    return list(result.scalars().all())
+
+
+
 
 
 
