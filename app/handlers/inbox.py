@@ -163,7 +163,7 @@ async def handle_inbox_deeplink(
             await message.answer(
                 "😄 <b>This is your own anonymous link!</b>\n"
                 "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                "Share it on your social media, Telegram bio, or stories so friends can send you anonymous questions and messages!\n\n"
+                "Share it on your social media, Telegram bio, or stories so people can send you anonymous questions and messages!\n\n"
                 "Send /link to view or manage your link.",
                 parse_mode="HTML",
             )
