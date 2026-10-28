@@ -228,6 +228,8 @@ To eliminate malicious retaliation, queue manipulation, and griefing (e.g. users
 | `/pause` (or `/sleep`) | Public | Puts active chat into Sleep Mode for the night (freezes inactivity auto-close). |
 | `/report` | Public | Emergency shield: severs chat, auto-blocks partner, and accepts text/screenshot evidence. |
 | `/safety` | Public | Displays privacy facts, anti-blackmail advice, and debunking of IP/avatar leak myths. |
+| `/link` (or `/inbox`) | Public | Generates a destroyable personal anonymous Q&A / message inbox link with 20m cooldown and media support. |
+| `/invite` (or `/chatlink`) | Public | Generates one-time or persistent direct 1-on-1 private chat invite links that bypass public queue. |
 | `/preferences` | Public | Adjusts target sexes, orientations, and typing indicator via checkbox menu. |
 | `/typing` | Public | Quickly toggles typing status indicator on/off (stealth mode). |
 | `/onetime` (or `/once`) | Public | Toggles 15-second View-Once self-destructing mode for outgoing media (blocks screenshots). |
@@ -242,7 +244,6 @@ To eliminate malicious retaliation, queue manipulation, and griefing (e.g. users
 | `/backup` | **Admins Only** | Triggers an immediate on-demand database backup and gzipped SQL snapshot. |
 | `/block <user_id>` | **Admins Only** | Permanently bans a malicious user and disconnects any active chat partner. |
 | `/unblock <user_id>` | **Admins Only** | Unbans a previously banned user and restores bot access. |
-| `/stata` | **Admins Only** | Displays full administrator dashboard (backups, feedbacks, reports, suggestions). |
 
 ---
 

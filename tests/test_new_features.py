@@ -87,6 +87,8 @@ class TestPublicStatsAndHelp(unittest.IsolatedAsyncioTestCase):
         self.assertIn("/search", text)
         self.assertIn("/next", text)
         self.assertIn("/stop", text)
+        self.assertIn("/link", text)
+        self.assertIn("/invite", text)
         self.assertIn("/preferences", text)
         self.assertIn("/typing", text)
         self.assertIn("/blocklist", text)
