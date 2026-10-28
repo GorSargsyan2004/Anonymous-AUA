@@ -31,21 +31,24 @@ logging.basicConfig(
 logger = logging.getLogger("broadcast")
 
 BROADCAST_MESSAGE = (
-    "🎓 <b>NEW: Verified AUA Student Badge is Here!</b> ✅🔒\n\n"
-    "Hey AUA! We've just introduced an optional campus verification feature to make chatting safer and more trustworthy while keeping your identity <b>100% anonymous</b>:\n\n"
-    "🛡️ <b>100% Anonymous & Private:</b>\n"
-    "• <b>Zero Tracking:</b> Your email is used <b>strictly for one-time verification</b> to ensure campus authenticity. It is <b>never</b> shared with your chat partners, never made public, and your anonymity is completely preserved.\n"
-    "• <b>100% Optional:</b> You don't have to verify if you don't want to. Unverified students can continue using the bot as usual!\n\n"
-    "🌟 <b>What Does Verification Do?</b>\n"
-    "When you get verified, whenever you connect to a partner in chat, they will see:\n"
-    "🎓 <b>Partner Status:</b> <i>Verified AUA Student (@edu.aua.am) ✅</i>\n"
-    "This gives both sides complete peace of mind that you're connecting with a real student from our university.\n\n"
-    "⚡ <b>How to Verify in 30 Seconds:</b>\n"
-    "1. Type /verify\n"
-    "2. Enter your official <b>@edu.aua.am</b> university email.\n"
-    "3. Enter the 6-digit confirmation code sent to your inbox.\n\n"
+    "🎭 <b>New Features on Anonymous AUA!</b> 🚀\n"
     "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-    "Type /verify to get your badge, or /search to find a partner! ×͜×"
+    "We’ve just rolled out two powerful new ways to connect anonymously across campus:\n\n"
+    "📬 <b>1. Personal Anonymous Inbox (/link)</b>\n"
+    "Now you can have your own personal anonymous Q&A link!\n"
+    "• <b>Post anywhere:</b> Put your link in your profile bio, Telegram channel, or wherever you want.\n"
+    "• <b>Receive questions & media:</b> People can ask you anything anonymously — text, photos, voice notes, videos, or stickers.\n"
+    "• <b>Interactive replies & reactions:</b> Tap <code>[ 💬 Reply ]</code> to thread replies back anonymously, or react with emojis (❤️, 😂, 🔥, 😮, 🙈).\n"
+    "• <b>Safe & spam-free:</b> 20-minute cooldown per sender, plus one-tap blocking.\n"
+    "• <b>Destroyable:</b> Deactivate your link anytime with <code>[ 🗑️ Destroy Link ]</code> and generate a fresh one!\n\n"
+    "⚡ <b>2. Direct Chat Invitations (/invite)</b>\n"
+    "Want to chat 1-on-1 with someone specific without waiting in the public matchmaking queue?\n"
+    "• Generate an invite link (<b>One-Time</b> self-destructing or <b>Persistent</b>).\n"
+    "• Anyone who clicks your link instantly connects to a private, anonymous 1-on-1 chat with you.\n"
+    "• Destroy or revoke your invites anytime.\n\n"
+    "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+    "👉 Try it out now:\n"
+    "Send <b>/link</b> to get your personal anonymous inbox, or <b>/invite</b> to create a direct chat link!"
 )
 
 
