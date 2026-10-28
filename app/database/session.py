@@ -271,6 +271,21 @@ async def init_db() -> None:
                 "ALTER TABLE users ADD COLUMN IF NOT EXISTS bot_blocked_at TIMESTAMP WITH TIME ZONE;"
             )
         )
+        await conn.execute(
+            text(
+                "ALTER TABLE inbox_messages ADD COLUMN IF NOT EXISTS is_replied BOOLEAN NOT NULL DEFAULT false;"
+            )
+        )
+        await conn.execute(
+            text(
+                "ALTER TABLE inbox_messages ADD COLUMN IF NOT EXISTS reply_count INTEGER NOT NULL DEFAULT 0;"
+            )
+        )
+        await conn.execute(
+            text(
+                "ALTER TABLE inbox_messages ADD COLUMN IF NOT EXISTS replied_at TIMESTAMP WITH TIME ZONE;"
+            )
+        )
 
 
 

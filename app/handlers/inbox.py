@@ -21,6 +21,7 @@ from app.database.crud import (
     get_or_create_user,
     get_user_active_inbox,
     is_inbox_sender_blocked,
+    mark_inbox_message_replied,
     record_inbox_message,
 )
 from app.database.models import User
@@ -480,6 +481,8 @@ async def handle_inbox_reply_submit(message: Message, bot: Bot, state: FSMContex
                 )
 
         await message.reply("✅ <b>Reply delivered successfully!</b>", parse_mode="HTML")
+        async with get_db_session() as session:
+            await mark_inbox_message_replied(session, thread_token=thread_token)
     except TelegramAPIError as e:
         logger.error("Failed to deliver reply to %s: %s", recipient_id, e)
         await message.reply("⚠️ Could not deliver reply (recipient may have blocked the bot).")

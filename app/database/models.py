@@ -422,6 +422,16 @@ class InboxMessage(Base):
     )
     thread_token: Mapped[str] = mapped_column(String(32), unique=True, nullable=False, index=True)
     message_type: Mapped[str] = mapped_column(String(32), default="text", nullable=False)
+    is_replied: Mapped[bool] = mapped_column(
+        Boolean, default=False, nullable=False, server_default=func.false()
+    )
+    reply_count: Mapped[int] = mapped_column(
+        Integer, default=0, nullable=False, server_default=text("0")
+    )
+    replied_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         server_default=func.now(),

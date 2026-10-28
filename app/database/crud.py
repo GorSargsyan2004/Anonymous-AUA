@@ -1039,6 +1039,47 @@ async def get_admin_stats(session: AsyncSession) -> Dict[str, Any]:
         await session.execute(select(func.count(User.id)).where(User.is_searching == True))  # noqa: E712
     ).scalar_one() or 0
 
+    # Anonymous Inbox & Q&A Stats
+    inbox_users_count = (
+        await session.execute(select(func.count(func.distinct(AnonymousInbox.user_id))))
+    ).scalar_one() or 0
+    active_inboxes_count = (
+        await session.execute(
+            select(func.count(AnonymousInbox.id)).where(AnonymousInbox.is_active == True)  # noqa: E712
+        )
+    ).scalar_one() or 0
+    total_inbox_messages = (
+        await session.execute(select(func.count(InboxMessage.id)))
+    ).scalar_one() or 0
+    replied_inbox_messages = (
+        await session.execute(
+            select(func.count(InboxMessage.id)).where(InboxMessage.is_replied == True)  # noqa: E712
+        )
+    ).scalar_one() or 0
+    total_inbox_replies = (
+        await session.execute(select(func.coalesce(func.sum(InboxMessage.reply_count), 0)))
+    ).scalar_one() or 0
+    inbox_reply_rate = (
+        round((replied_inbox_messages / total_inbox_messages) * 100, 1)
+        if total_inbox_messages > 0
+        else 0.0
+    )
+
+    # Direct Chat Invites Stats
+    total_chat_invites = (
+        await session.execute(select(func.count(ChatInvite.id)))
+    ).scalar_one() or 0
+    active_chat_invites = (
+        await session.execute(
+            select(func.count(ChatInvite.id)).where(ChatInvite.is_active == True)  # noqa: E712
+        )
+    ).scalar_one() or 0
+    used_chat_invites = (
+        await session.execute(
+            select(func.count(ChatInvite.id)).where(ChatInvite.is_used == True)  # noqa: E712
+        )
+    ).scalar_one() or 0
+
     return {
         "total_users": total_users,
         "banned_count": banned_count,
@@ -1071,6 +1112,15 @@ async def get_admin_stats(session: AsyncSession) -> Dict[str, Any]:
         "pending_suggestions": pending_suggestions,
         "active_chats": active_chats,
         "searching_users": searching_users,
+        "inbox_users_count": inbox_users_count,
+        "active_inboxes_count": active_inboxes_count,
+        "total_inbox_messages": total_inbox_messages,
+        "replied_inbox_messages": replied_inbox_messages,
+        "total_inbox_replies": total_inbox_replies,
+        "inbox_reply_rate": inbox_reply_rate,
+        "total_chat_invites": total_chat_invites,
+        "active_chat_invites": active_chat_invites,
+        "used_chat_invites": used_chat_invites,
     }
 
 
@@ -2086,6 +2136,25 @@ async def get_inbox_message_by_thread(
     stmt = select(InboxMessage).where(InboxMessage.thread_token == thread_token)
     result = await session.execute(stmt)
     return result.scalar_one_or_none()
+
+
+async def mark_inbox_message_replied(
+    session: AsyncSession,
+    thread_token: str,
+) -> bool:
+    """Mark an anonymous inbox message as replied and increment its reply count."""
+    stmt = (
+        update(InboxMessage)
+        .where(InboxMessage.thread_token == thread_token)
+        .values(
+            is_replied=True,
+            reply_count=InboxMessage.reply_count + 1,
+            replied_at=func.now(),
+        )
+    )
+    res = await session.execute(stmt)
+    await session.commit()
+    return res.rowcount > 0
 
 
 # ==============================================================================

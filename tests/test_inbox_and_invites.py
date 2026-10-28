@@ -17,6 +17,7 @@ from app.database.crud import (
     create_or_regenerate_inbox,
     deactivate_chat_invite,
     deactivate_user_inbox,
+    get_admin_stats,
     get_chat_invite_by_code,
     get_inbox_by_token,
     get_inbox_cooldown_remaining,
@@ -25,6 +26,7 @@ from app.database.crud import (
     get_user_active_inbox,
     get_user_active_invites,
     is_inbox_sender_blocked,
+    mark_inbox_message_replied,
     record_inbox_message,
 )
 from app.database.models import (
@@ -206,6 +208,39 @@ class TestInboxAndInvites(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(u_owner.current_partner_id, self.guest_id)
             self.assertEqual(u_guest.current_partner_id, self.owner_id)
 
+    async def test_inbox_reply_tracking_and_admin_stats(self):
+        """Verify reply status tracking and aggregated admin statistics."""
+        async with get_db_session() as session:
+            # 1. Create an inbox and an inbox message
+            await create_or_regenerate_inbox(session, user_id=self.owner_id)
+            msg = await record_inbox_message(
+                session, owner_id=self.owner_id, sender_id=self.sender_id, message_type="text"
+            )
+            self.assertFalse(msg.is_replied)
+            self.assertEqual(msg.reply_count, 0)
+            self.assertIsNone(msg.replied_at)
+
+            # 2. Check stats before reply
+            stats_before = await get_admin_stats(session)
+            self.assertGreaterEqual(stats_before["inbox_users_count"], 1)
+            self.assertGreaterEqual(stats_before["total_inbox_messages"], 1)
+
+            # 3. Mark message as replied
+            replied = await mark_inbox_message_replied(session, thread_token=msg.thread_token)
+            self.assertTrue(replied)
+
+            # Verify updated model fields
+            updated_msg = await get_inbox_message_by_thread(session, msg.thread_token)
+            self.assertTrue(updated_msg.is_replied)
+            self.assertEqual(updated_msg.reply_count, 1)
+            self.assertIsNotNone(updated_msg.replied_at)
+
+            # 4. Check stats after reply
+            stats_after = await get_admin_stats(session)
+            self.assertGreaterEqual(stats_after["replied_inbox_messages"], 1)
+            self.assertGreaterEqual(stats_after["total_inbox_replies"], 1)
+            self.assertGreaterEqual(stats_after["inbox_reply_rate"], 0.0)
+
     def test_keyboards(self):
         """Verify inline keyboard builders return valid markup."""
         kb_active = get_inbox_owner_keyboard(has_active_link=True, token="tok123")
@@ -226,3 +261,4 @@ class TestInboxAndInvites(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
