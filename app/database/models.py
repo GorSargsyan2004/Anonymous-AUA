@@ -358,3 +358,113 @@ class UserBlock(Base):
         return f"<UserBlock id={self.id} user={self.user_id} blocked={self.blocked_user_id} expires={self.expires_at}>"
 
 
+class AnonymousInbox(Base):
+    """Stores unique shareable link tokens for a user's anonymous message inbox."""
+    __tablename__ = "anonymous_inboxes"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    token: Mapped[str] = mapped_column(String(32), unique=True, nullable=False, index=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+    )
+    deactivated_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+
+    user = relationship("User")
+
+    def __repr__(self) -> str:
+        return f"<AnonymousInbox id={self.id} user_id={self.user_id} token={self.token} active={self.is_active}>"
+
+
+class InboxBlock(Base):
+    """Tracks senders blocked from sending messages to an anonymous inbox owner."""
+    __tablename__ = "inbox_blocks"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    owner_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    blocked_sender_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+    )
+
+    __table_args__ = (
+        UniqueConstraint("owner_id", "blocked_sender_id", name="uq_inbox_owner_blocked_sender"),
+    )
+
+    def __repr__(self) -> str:
+        return f"<InboxBlock id={self.id} owner={self.owner_id} blocked={self.blocked_sender_id}>"
+
+
+class InboxMessage(Base):
+    """Stores anonymous inbox messages, reply thread tokens, and delivery timestamps."""
+    __tablename__ = "inbox_messages"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    owner_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    sender_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    thread_token: Mapped[str] = mapped_column(String(32), unique=True, nullable=False, index=True)
+    message_type: Mapped[str] = mapped_column(String(32), default="text", nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+    )
+
+    __table_args__ = (
+        Index("ix_inbox_msg_sender_owner", "sender_id", "owner_id", "created_at"),
+    )
+
+    def __repr__(self) -> str:
+        return f"<InboxMessage id={self.id} thread={self.thread_token} sender={self.sender_id} -> owner={self.owner_id}>"
+
+
+class ChatInvite(Base):
+    """Stores direct 1-on-1 chat invitation links (one-time or persistent)."""
+    __tablename__ = "chat_invites"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    creator_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    invite_code: Mapped[str] = mapped_column(String(32), unique=True, nullable=False, index=True)
+    invite_type: Mapped[str] = mapped_column(String(16), default="one_time", nullable=False)
+    is_used: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    used_by_id: Mapped[Optional[int]] = mapped_column(
+        BigInteger, ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+    )
+    used_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+
+    creator = relationship("User", foreign_keys=[creator_id])
+
+    def __repr__(self) -> str:
+        return f"<ChatInvite id={self.id} code={self.invite_code} type={self.invite_type} active={self.is_active} used={self.is_used}>"
+
+
+

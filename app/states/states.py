@@ -40,3 +40,10 @@ class VerificationState(StatesGroup):
     waiting_for_code = State()
 
 
+class InboxState(StatesGroup):
+    """FSM states for anonymous inbox messaging and two-way replies."""
+    waiting_for_message = State()
+    waiting_for_reply = State()
+
+
+

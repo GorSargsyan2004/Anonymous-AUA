@@ -330,4 +330,97 @@ def get_admin_gender_appeal_keyboard(user_id: int) -> InlineKeyboardMarkup:
     return builder.as_markup()
 
 
+# ==============================================================================
+# Anonymous Message Inbox (/link) Keyboards
+# ==============================================================================
+
+def get_inbox_owner_keyboard(
+    has_active_link: bool,
+    token: Optional[str] = None,
+    bot_username: str = "aua_anonymous_bot",
+) -> InlineKeyboardMarkup:
+    """Return management keyboard for personal anonymous inbox link."""
+    builder = InlineKeyboardBuilder()
+    if has_active_link and token:
+        share_url = (
+            f"https://t.me/share/url?url=https://t.me/{bot_username}?start=msg_{token}"
+            "&text=🎭%20Send%20me%20an%20anonymous%20message%20or%20question!"
+        )
+        builder.button(text="📤 Share Link", url=share_url)
+        builder.button(text="🗑️ Destroy & Deactivate Link", callback_data="inbox_destroy")
+        builder.adjust(1, 1)
+    else:
+        builder.button(text="➕ Generate New Link", callback_data="inbox_generate")
+        builder.adjust(1)
+    return builder.as_markup()
+
+
+def get_inbox_message_keyboard(thread_token: str) -> InlineKeyboardMarkup:
+    """Return inline action buttons for an inbox message received by owner."""
+    builder = InlineKeyboardBuilder()
+    builder.button(text="💬 Reply", callback_data=f"inbox_reply:{thread_token}")
+    builder.button(text="🚫 Block Sender", callback_data=f"inbox_block_confirm:{thread_token}")
+
+    # Fun reactions
+    emojis = ["❤️", "😂", "🔥", "😮", "🙈"]
+    for emo in emojis:
+        builder.button(text=emo, callback_data=f"inbox_react:{thread_token}:{emo}")
+
+    builder.adjust(2, 5)
+    return builder.as_markup()
+
+
+def get_inbox_block_confirm_keyboard(thread_token: str) -> InlineKeyboardMarkup:
+    """Return confirmation keyboard before permanently blocking an anonymous sender."""
+    builder = InlineKeyboardBuilder()
+    builder.button(text="🚫 Confirm Block", callback_data=f"inbox_block_do:{thread_token}")
+    builder.button(text="❌ Cancel", callback_data=f"inbox_block_cancel:{thread_token}")
+    builder.adjust(2)
+    return builder.as_markup()
+
+
+def get_inbox_reply_keyboard(thread_token: str) -> InlineKeyboardMarkup:
+    """Return reply-back button for sender when recipient responds."""
+    builder = InlineKeyboardBuilder()
+    builder.button(text="💬 Reply Back", callback_data=f"inbox_reply:{thread_token}")
+    builder.adjust(1)
+    return builder.as_markup()
+
+
+def get_inbox_prompt_keyboard() -> InlineKeyboardMarkup:
+    """Return helper keyboard when drafting an anonymous message."""
+    builder = InlineKeyboardBuilder()
+    builder.button(text="🎲 Random Question Idea", callback_data="inbox_random_prompt")
+    builder.button(text="❌ Cancel", callback_data="inbox_cancel")
+    builder.adjust(1, 1)
+    return builder.as_markup()
+
+
+# ==============================================================================
+# Direct Chat Invitation Links (/invite) Keyboards
+# ==============================================================================
+
+def get_invite_menu_keyboard(has_active: bool = False) -> InlineKeyboardMarkup:
+    """Return menu to create one-time or persistent direct chat invites."""
+    builder = InlineKeyboardBuilder()
+    builder.button(text="⚡ Create One-Time Invite", callback_data="invite_create:one_time")
+    builder.button(text="♾️ Create Persistent Invite", callback_data="invite_create:persistent")
+    if has_active:
+        builder.button(text="📋 My Active Invites", callback_data="invite_list")
+        builder.adjust(1, 1, 1)
+    else:
+        builder.adjust(1, 1)
+    return builder.as_markup()
+
+
+def get_invite_item_keyboard(invite_code: str) -> InlineKeyboardMarkup:
+    """Return action buttons for an active chat invite link."""
+    builder = InlineKeyboardBuilder()
+    builder.button(text="🗑️ Destroy / Revoke Link", callback_data=f"invite_destroy:{invite_code}")
+    builder.button(text="🔙 Back to Invites", callback_data="invite_menu")
+    builder.adjust(1, 1)
+    return builder.as_markup()
+
+
+
 

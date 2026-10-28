@@ -37,6 +37,8 @@ async def setup_bot_commands(bot: Bot) -> None:
     commands = [
         BotCommand(command="start", description="Start bot / Profile setup"),
         BotCommand(command="search", description="Search for an anonymous partner"),
+        BotCommand(command="link", description="Receive anonymous messages & Q&A 🎭"),
+        BotCommand(command="invite", description="Create direct 1-on-1 chat invite link 🔗"),
         BotCommand(command="next", description="Skip to next chat partner"),
         BotCommand(command="stop", description="End current chat or search"),
         BotCommand(command="pause", description="Pause chat / Sleep mode for the night 🌙"),

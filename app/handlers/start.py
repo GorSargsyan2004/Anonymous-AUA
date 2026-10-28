@@ -1,8 +1,8 @@
 from datetime import datetime, timezone
 import html
 import math
-from aiogram import F, Router
-from aiogram.filters import Command, CommandStart
+from aiogram import Bot, F, Router
+from aiogram.filters import Command, CommandObject, CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, ChatMemberUpdated, Message
 
@@ -33,8 +33,29 @@ router = Router(name="start_router")
 
 
 @router.message(CommandStart())
-async def handle_start(message: Message, state: FSMContext) -> None:
-    """Handle /start command. Check if profile is configured or initiate onboarding."""
+async def handle_start(
+    message: Message,
+    command: CommandObject,
+    state: FSMContext,
+    bot: Bot,
+) -> None:
+    """Handle /start command. Check for deep-link payloads or process onboarding."""
+    # 0. Check deep-link payload if provided
+    if command and command.args:
+        args = command.args.strip()
+        if args.startswith("msg_") or args.startswith("msg-"):
+            from app.handlers.inbox import handle_inbox_deeplink
+
+            token = args[4:]
+            await handle_inbox_deeplink(message=message, token=token, state=state, bot=bot)
+            return
+        elif args.startswith("chat_") or args.startswith("chat-"):
+            from app.handlers.invites import handle_invite_deeplink
+
+            code = args[5:]
+            await handle_invite_deeplink(message=message, invite_code=code, state=state, bot=bot)
+            return
+
     user_id = message.from_user.id
     username = message.from_user.username
 
@@ -84,6 +105,8 @@ async def handle_start(message: Message, state: FSMContext) -> None:
                 f"• Target Orientations: <b>{', '.join(p_orients)}</b>\n\n"
                 f"⚡ <b>Available Commands:</b>\n"
                 f"• /search — Find an anonymous chat partner\n"
+                f"• /link — Your personal link to receive anonymous questions 🎭\n"
+                f"• /invite — Create direct 1-on-1 chat invitation links 🔗\n"
                 f"• /next — Skip to the next partner\n"
                 f"• /stop — End current chat or cancel search\n"
                 f"• /pause — Put chat into Sleep Mode for the night 🌙\n"

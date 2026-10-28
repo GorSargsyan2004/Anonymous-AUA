@@ -5,11 +5,17 @@ from typing import Any, Dict, List, Optional, Tuple
 from sqlalchemy import and_, delete, desc, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+import secrets
+
 from app.config import settings
 from app.database.models import (
+    AnonymousInbox,
+    ChatInvite,
     ChatMessageMap,
     ChatSession,
     Feedback,
+    InboxBlock,
+    InboxMessage,
     Report,
     Suggestion,
     User,
@@ -1940,6 +1946,237 @@ async def get_pending_reports(session: AsyncSession, limit: int = 50) -> List[Re
     )
     result = await session.execute(stmt)
     return list(result.scalars().all())
+
+
+# ==============================================================================
+# Anonymous Message Inbox (/link) CRUD Operations
+# ==============================================================================
+
+async def get_user_active_inbox(session: AsyncSession, user_id: int) -> Optional[AnonymousInbox]:
+    """Retrieve the currently active anonymous inbox link for a user."""
+    stmt = (
+        select(AnonymousInbox)
+        .where(AnonymousInbox.user_id == user_id, AnonymousInbox.is_active.is_(True))
+        .order_by(AnonymousInbox.created_at.desc())
+    )
+    result = await session.execute(stmt)
+    return result.scalar_one_or_none()
+
+
+async def create_or_regenerate_inbox(session: AsyncSession, user_id: int) -> AnonymousInbox:
+    """Deactivate existing active links and generate a fresh unique inbox token."""
+    # Deactivate current active inboxes
+    await session.execute(
+        update(AnonymousInbox)
+        .where(AnonymousInbox.user_id == user_id, AnonymousInbox.is_active.is_(True))
+        .values(is_active=False, deactivated_at=func.now())
+    )
+
+    # Generate unique 8-character token
+    while True:
+        token = secrets.token_hex(4)
+        existing = await session.execute(
+            select(AnonymousInbox.id).where(AnonymousInbox.token == token)
+        )
+        if existing.scalar_one_or_none() is None:
+            break
+
+    inbox = AnonymousInbox(user_id=user_id, token=token, is_active=True)
+    session.add(inbox)
+    await session.commit()
+    await session.refresh(inbox)
+    return inbox
+
+
+async def deactivate_user_inbox(session: AsyncSession, user_id: int) -> bool:
+    """Deactivate/destroy any active anonymous inbox link for a user."""
+    stmt = (
+        update(AnonymousInbox)
+        .where(AnonymousInbox.user_id == user_id, AnonymousInbox.is_active.is_(True))
+        .values(is_active=False, deactivated_at=func.now())
+    )
+    res = await session.execute(stmt)
+    await session.commit()
+    return (res.rowcount or 0) > 0
+
+
+async def get_inbox_by_token(session: AsyncSession, token: str) -> Optional[AnonymousInbox]:
+    """Look up an inbox by its unique token, returning none if missing."""
+    stmt = select(AnonymousInbox).where(AnonymousInbox.token == token)
+    result = await session.execute(stmt)
+    return result.scalar_one_or_none()
+
+
+async def is_inbox_sender_blocked(session: AsyncSession, owner_id: int, sender_id: int) -> bool:
+    """Check if the owner has blocked this sender from their anonymous inbox."""
+    stmt = select(func.count(InboxBlock.id)).where(
+        InboxBlock.owner_id == owner_id,
+        InboxBlock.blocked_sender_id == sender_id,
+    )
+    result = await session.execute(stmt)
+    return (result.scalar() or 0) > 0
+
+
+async def block_inbox_sender(session: AsyncSession, owner_id: int, sender_id: int) -> bool:
+    """Block a sender from sending messages to this owner's anonymous inbox."""
+    stmt = select(InboxBlock).where(
+        InboxBlock.owner_id == owner_id,
+        InboxBlock.blocked_sender_id == sender_id,
+    )
+    res = await session.execute(stmt)
+    if res.scalar_one_or_none() is None:
+        block = InboxBlock(owner_id=owner_id, blocked_sender_id=sender_id)
+        session.add(block)
+        await session.commit()
+        return True
+    return False
+
+
+async def get_inbox_cooldown_remaining(
+    session: AsyncSession,
+    owner_id: int,
+    sender_id: int,
+    cooldown_seconds: int = 1200,  # 20 minutes
+) -> int:
+    """Return remaining cooldown seconds between sender and owner, or 0 if allowed."""
+    stmt = (
+        select(InboxMessage.created_at)
+        .where(InboxMessage.owner_id == owner_id, InboxMessage.sender_id == sender_id)
+        .order_by(InboxMessage.created_at.desc())
+        .limit(1)
+    )
+    res = await session.execute(stmt)
+    last_sent = res.scalar_one_or_none()
+    if not last_sent:
+        return 0
+
+    now = datetime.now(timezone.utc)
+    last_sent_utc = last_sent if last_sent.tzinfo else last_sent.replace(tzinfo=timezone.utc)
+    elapsed = (now - last_sent_utc).total_seconds()
+    if elapsed < cooldown_seconds:
+        return int(cooldown_seconds - elapsed)
+    return 0
+
+
+async def record_inbox_message(
+    session: AsyncSession,
+    owner_id: int,
+    sender_id: int,
+    message_type: str = "text",
+) -> InboxMessage:
+    """Record an anonymous inbox message and generate a thread token for replies."""
+    thread_token = secrets.token_hex(8)
+    msg = InboxMessage(
+        owner_id=owner_id,
+        sender_id=sender_id,
+        thread_token=thread_token,
+        message_type=message_type,
+    )
+    session.add(msg)
+    await session.commit()
+    await session.refresh(msg)
+    return msg
+
+
+async def get_inbox_message_by_thread(
+    session: AsyncSession,
+    thread_token: str,
+) -> Optional[InboxMessage]:
+    """Retrieve an inbox message record by its unique reply thread token."""
+    stmt = select(InboxMessage).where(InboxMessage.thread_token == thread_token)
+    result = await session.execute(stmt)
+    return result.scalar_one_or_none()
+
+
+# ==============================================================================
+# Direct Chat Invitation Links (/invite) CRUD Operations
+# ==============================================================================
+
+async def create_chat_invite(
+    session: AsyncSession,
+    creator_id: int,
+    invite_type: str = "one_time",
+) -> ChatInvite:
+    """Create a new one-time or persistent direct chat invitation link."""
+    while True:
+        code = secrets.token_hex(4)
+        existing = await session.execute(
+            select(ChatInvite.id).where(ChatInvite.invite_code == code)
+        )
+        if existing.scalar_one_or_none() is None:
+            break
+
+    invite = ChatInvite(
+        creator_id=creator_id,
+        invite_code=code,
+        invite_type=invite_type,
+        is_used=False,
+        is_active=True,
+    )
+    session.add(invite)
+    await session.commit()
+    await session.refresh(invite)
+    return invite
+
+
+async def get_chat_invite_by_code(
+    session: AsyncSession,
+    invite_code: str,
+) -> Optional[ChatInvite]:
+    """Retrieve a chat invite by code."""
+    stmt = select(ChatInvite).where(ChatInvite.invite_code == invite_code)
+    result = await session.execute(stmt)
+    return result.scalar_one_or_none()
+
+
+async def get_user_active_invites(
+    session: AsyncSession,
+    creator_id: int,
+) -> List[ChatInvite]:
+    """Return all active (usable) invites for a user."""
+    stmt = (
+        select(ChatInvite)
+        .where(
+            ChatInvite.creator_id == creator_id,
+            ChatInvite.is_active.is_(True),
+            or_(ChatInvite.invite_type == "persistent", ChatInvite.is_used.is_(False)),
+        )
+        .order_by(ChatInvite.created_at.desc())
+    )
+    result = await session.execute(stmt)
+    return list(result.scalars().all())
+
+
+async def deactivate_chat_invite(
+    session: AsyncSession,
+    creator_id: int,
+    invite_code: str,
+) -> bool:
+    """Revoke/destroy an invitation link created by a user."""
+    stmt = (
+        update(ChatInvite)
+        .where(ChatInvite.creator_id == creator_id, ChatInvite.invite_code == invite_code)
+        .values(is_active=False)
+    )
+    res = await session.execute(stmt)
+    await session.commit()
+    return (res.rowcount or 0) > 0
+
+
+async def consume_chat_invite(
+    session: AsyncSession,
+    invite_id: int,
+    used_by_id: int,
+) -> None:
+    """Mark a one-time chat invite as used."""
+    stmt = (
+        update(ChatInvite)
+        .where(ChatInvite.id == invite_id, ChatInvite.invite_type == "one_time")
+        .values(is_used=True, used_by_id=used_by_id, used_at=func.now())
+    )
+    await session.execute(stmt)
+    await session.commit()
+
 
 
 
