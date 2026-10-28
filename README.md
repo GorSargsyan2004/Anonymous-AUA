@@ -243,9 +243,6 @@ To eliminate malicious retaliation, queue manipulation, and griefing (e.g. users
 | `/block <user_id>` | **Admins Only** | Permanently bans a malicious user and disconnects any active chat partner. |
 | `/unblock <user_id>` | **Admins Only** | Unbans a previously banned user and restores bot access. |
 | `/stata` | **Admins Only** | Displays full administrator dashboard (backups, feedbacks, reports, suggestions). |
-| `/backup` | **Admins Only** | Triggers an immediate on-demand database backup and gzipped SQL snapshot. |
-| `/block <user_id>` | **Admins Only** | Permanently bans a malicious user and disconnects any active chat partner. |
-| `/unblock <user_id>` | **Admins Only** | Unbans a previously banned user and restores bot access. |
 
 ---
 
