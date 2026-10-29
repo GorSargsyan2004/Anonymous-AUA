@@ -422,5 +422,37 @@ def get_invite_item_keyboard(invite_code: str) -> InlineKeyboardMarkup:
     return builder.as_markup()
 
 
+# ==============================================================================
+# Privacy Policy & Data Deletion Keyboards
+# ==============================================================================
+
+def get_privacy_menu_keyboard() -> InlineKeyboardMarkup:
+    """Return navigation keyboard for the Privacy Policy sections."""
+    builder = InlineKeyboardBuilder()
+    builder.button(text="🛡️ 1. Anonymity & Data", callback_data="privacy_view:data")
+    builder.button(text="⚖️ 2. Code of Conduct & Rules", callback_data="privacy_view:rules")
+    builder.button(text="📖 Read Full Policy", callback_data="privacy_view:full")
+    builder.button(text="🗑️ Delete My Data (/delete_me)", callback_data="delete_me_prompt")
+    builder.adjust(1, 1, 1, 1)
+    return builder.as_markup()
+
+
+def get_privacy_back_keyboard() -> InlineKeyboardMarkup:
+    """Return back button to return to main Privacy Policy menu."""
+    builder = InlineKeyboardBuilder()
+    builder.button(text="🔙 Back to Privacy Menu", callback_data="privacy_view:menu")
+    return builder.as_markup()
+
+
+def get_delete_me_confirmation_keyboard() -> InlineKeyboardMarkup:
+    """Return confirmation keyboard before deleting user account permanently."""
+    builder = InlineKeyboardBuilder()
+    builder.button(text="🗑️ Yes, Delete Everything", callback_data="delete_me_confirm")
+    builder.button(text="❌ Cancel", callback_data="delete_me_cancel")
+    builder.adjust(1, 1)
+    return builder.as_markup()
+
+
+
 
 

@@ -44,6 +44,7 @@ async def setup_bot_commands(bot: Bot) -> None:
         BotCommand(command="pause", description="Pause chat / Sleep mode for the night 🌙"),
         BotCommand(command="report", description="Emergency report & block partner"),
         BotCommand(command="safety", description="Privacy facts & anti-scam shield"),
+        BotCommand(command="privacy", description="Privacy Policy & Community Rules 📜"),
         BotCommand(command="help", description="Show bot commands & help guide"),
         BotCommand(command="stats", description="View community stats & active chats"),
         BotCommand(command="blocklist", description="View & manage blocked partners"),
@@ -53,6 +54,7 @@ async def setup_bot_commands(bot: Bot) -> None:
         BotCommand(command="onetime", description="Toggle 15s View-Once mode for media 🔒"),
         BotCommand(command="profile", description="Update sex or orientation"),
         BotCommand(command="verify", description="Verify AUA student status (@edu.aua.am) 🎓"),
+        BotCommand(command="delete_me", description="Permanently delete account & data 🗑️"),
         BotCommand(command="suggestion", description="Send suggestions to improve the bot"),
         BotCommand(command="cancel", description="Cancel current input / action"),
     ]

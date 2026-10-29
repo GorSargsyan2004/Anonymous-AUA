@@ -183,6 +183,35 @@ async def set_user_searching(
     return user
 
 
+async def delete_user_account(
+    session: AsyncSession,
+    user_id: int,
+) -> Tuple[bool, Optional[int]]:
+    """Permanently delete a user account and cascade all associated data.
+
+    Returns:
+        (success: bool, partner_id: Optional[int])
+        partner_id is populated if an active session was ended so the partner can be notified.
+    """
+    # 1. End active session if any
+    ended = await end_active_session(session, user_id)
+    partner_id = ended[1] if ended else None
+
+    # 2. Clear any lingering partner reference
+    stmt_partner_clear = (
+        update(User)
+        .where(User.current_partner_id == user_id)
+        .values(current_partner_id=None)
+    )
+    await session.execute(stmt_partner_clear)
+
+    # 3. Delete the user (cascades to all foreign keys in PostgreSQL)
+    stmt = delete(User).where(User.id == user_id)
+    res = await session.execute(stmt)
+    await session.commit()
+    return (res.rowcount > 0, partner_id)
+
+
 async def get_active_session_by_user_id(
     session: AsyncSession,
     user_id: int,

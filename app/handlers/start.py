@@ -8,6 +8,7 @@ from aiogram.types import CallbackQuery, ChatMemberUpdated, Message
 
 from app.config import settings
 from app.database.crud import (
+    delete_user_account,
     delete_user_block,
     get_or_create_user,
     get_public_community_stats,
@@ -21,8 +22,11 @@ from app.database.crud import (
 from app.database.session import get_db_session
 from app.keyboards.inline import (
     get_blocklist_keyboard,
+    get_delete_me_confirmation_keyboard,
     get_orientation_keyboard,
     get_preferences_keyboard,
+    get_privacy_back_keyboard,
+    get_privacy_menu_keyboard,
     get_sex_keyboard,
     get_unblock_confirmation_keyboard,
 )
@@ -589,7 +593,9 @@ async def handle_help_command(message: Message) -> None:
         "🔒 <b>Media & Privacy Features:</b>\n"
         "• /onetime (or /once, /viewonce) — Toggle 15s View-Once mode for outgoing media\n"
         "  ↳ <i>Tip: You can also send view-once photos/videos anytime by adding <code>#once</code> to the caption or using Telegram's 'Hide with Spoiler'! Media self-destructs after 15s and blocks screenshots/saving.</i>\n"
-        "• /typing — Toggle 'typing...' stealth mode on/off\n\n"
+        "• /typing — Toggle 'typing...' stealth mode on/off\n"
+        "• /privacy (or /policy, /rules) — Privacy Policy & Community Code of Conduct 📜\n"
+        "• /delete_me — Permanently delete your profile and all stored data 🗑️\n\n"
         "⚙️ <b>Settings & Partner Management:</b>\n"
         "• /recent (or /history) — Browse recent partners to rate, change/reset feedback, or report\n"
         "• /blocklist — View and manage blocked partners with pagination\n"
@@ -638,6 +644,188 @@ async def handle_safety_command(message: Message) -> None:
         "<i>Have questions or need assistance? Send /suggestion to speak with bot admins.</i>"
     )
     await message.answer(safety_text, parse_mode="HTML")
+
+
+PRIVACY_OVERVIEW_TEXT = (
+    "📜 <b>Privacy Policy & Community Code of Conduct</b> 🛡️\n"
+    "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+    "<b>Anonymous AUA Chat Bot</b>\n"
+    "<i>Effective Date: October 2026</i>\n\n"
+    "Welcome to the <b>Anonymous AUA Chat Bot</b>. This is an independent, student-developed "
+    "project designed for the American University of Armenia (AUA) community and is not officially affiliated with AUA administration.\n\n"
+    "🔒 <b>Key Guarantees:</b>\n"
+    "• <b>100% Anonymous:</b> Your Telegram ID, name, and @username are strictly private and never shared with chat partners.\n"
+    "• <b>Zero Permanent Logs:</b> Conversations and media are never written to disk or database. Human admins cannot read chats.\n"
+    "• <b>Ephemeral 5-Min RAM Buffer:</b> Volatile memory buffer auto-erases 5 minutes after chat ends.\n"
+    "• <b>Fair AI Judging:</b> Reports trigger dual-sided evaluation of both users to prevent false reporting and doxxing.\n"
+    "• <b>User Rights:</b> Permanently delete all your data anytime with /delete_me.\n\n"
+    "<i>Select a section below to read in detail:</i>"
+)
+
+PRIVACY_DATA_TEXT = (
+    "🛡️ <b>1. How Your Anonymity & Data Are Protected</b> 🔒\n"
+    "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+    "<b>1.1 Data Stored in Our Database (PostgreSQL):</b>\n"
+    "To match compatible partners and maintain community quality, the Bot stores only:\n"
+    "• <b>Telegram User ID:</b> Used strictly to route messages and maintain account state. Your ID, name, and @username are <b>never</b> shown to your chat partner.\n"
+    "• <b>Matchmaking Profile:</b> Your selected Sex (<code>Male</code> / <code>Female</code>) and Orientation (<code>Straight</code> / <code>Gay</code> / <code>Lesbian</code> / <code>Bisexual</code>).\n"
+    "• <b>Priority Score (0–100):</b> Starts at <code>50</code> and adjusts automatically based on post-chat feedback (<code>Like</code> +1, <code>Dislike</code> -1, <code>Spam</code> -5, <code>Not from AUA</code> -5) and AI Moderation verdicts.\n"
+    "• <b>Moderation Metadata:</b> Aggregate counters of feedback and anonymized AI report verdicts.\n\n"
+    "<b>1.2 Zero-Knowledge Ephemeral Chat Buffer (No Permanent Logs):</b>\n"
+    "• <b>Human administrators CANNOT read your conversations.</b> Messages and photos are never written to any disk or database.\n"
+    "• <b>Bounded 5-Minute RAM Buffer:</b> During an active chat, a rolling window of the most recent <b>60 messages</b> (max 500 characters each) and the <b>8 most recent compressed images</b> is held temporarily in volatile server memory (RAM) under anonymous aliases (<code>User_A</code> and <code>User_B</code>).\n"
+    "• <b>Automatic Destruction:</b> If no report is filed within <b>5 minutes</b> after a chat ends (<code>/stop</code> or <code>/next</code>), the memory buffer is permanently erased.\n"
+    "• <b>Automated AI Review:</b> If a user clicks <b>Report</b>, the ephemeral memory buffer is sent once to the <b>Google Gemini API</b> (<code>gemini-2.5-flash</code>) for automated multimodal safety evaluation (including OCR on images) and is immediately wiped from server RAM the millisecond the API call completes."
+)
+
+PRIVACY_RULES_TEXT = (
+    "⚖️ <b>2. Code of Conduct & Mutual AI Judging Rules</b> 📜\n"
+    "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+    "When a report is submitted, the AI Moderator evaluates the <b>entire conversation context</b> and judges <b>BOTH</b> the <code>Reported_User</code> and the <code>Reporter</code>. Either or both participants may be penalized (<code>-1</code> to <code>-10</code> priority points, temporary/permanent ban, or identity unmasking for illegal acts).\n\n"
+    "🚫 <b>Rule A: Privacy Violations & Anti-Doxxing (Strictly Enforced)</b>\n"
+    "1. <b>Non-Consensual Identity Exposure (Doxxing):</b> Sharing, guessing, or threatening to expose another student's real full name, phone number, address, student ID, social media, or private photos without explicit consent (<b>Penalty: -6 to -10 priority + Block</b>).\n"
+    "2. <b>Coercion & Stalking:</b> Repeatedly pressuring or harassing a partner to reveal their identity after they declined (<b>Penalty: -5 to -10 priority</b>).\n"
+    "3. <b>Outing & Blackmail:</b> Threatening to screenshot or expose someone's sexual orientation or statements to the university or third parties (<b>Penalty: -10 priority + Immediate Ban + Admin Escalation</b>).\n\n"
+    "⚠️ <b>Rule B: Harassment, NSFW, and Abuse</b>\n"
+    "1. <b>Unsolicited Explicit Media (Cyber-Flashing):</b> Sending sexually explicit images, nudity, or graphic violence without mutual consent (<b>Penalty: -8 to -10 priority + Block</b>).\n"
+    "2. <b>Hate Speech & Bullying:</b> Targeted degradation, slurs, or sustained personal attacks (<b>Penalty: -5 to -10 priority</b>).\n"
+    "3. <b>Spam & Scams:</b> Commercial links, crypto scams, or flood messages (<b>Penalty: -1 to -5 priority</b>).\n\n"
+    "⚖️ <b>Rule C: Reporter Accountability (Mutual Toxicity & False Reports)</b>\n"
+    "Filing a report does <b>not</b> grant immunity. The AI Moderator inspects the Reporter's messages:\n"
+    "1. <b>Reporter Harassment:</b> If the Reporter harassed or sent prohibited content, the Reporter receives the full penalty (<code>-1</code> to <code>-10</code>) and potential ban.\n"
+    "2. <b>Provocation & Baiting:</b> If the Reporter intentionally provoked or insulted the partner to bait an angry reaction, both users (or solely Reporter) are penalized.\n"
+    "3. <b>Frivolous False Reports:</b> Reporting an innocent partner out of spite results in a <b>-2 to -5 priority penalty applied to the Reporter</b>.\n\n"
+    "🚨 <b>Rule D: Illegal Content & Emergency Identity Unmasking</b>\n"
+    "Anonymity is forfeited <b>only</b> for Tier 3 Illegal / Extreme Violations (CSAM, credible threats of violence/terrorism, extortion, non-consensual intimate images). The perpetrator is immediately banned (<code>priority = 0</code>) and their Telegram ID, @username, and violation summary are disclosed to Bot Admins for campus safety or law enforcement referral.\n\n"
+    "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+    "🗑️ <b>3. Data Deletion & User Rights</b>\n"
+    "You may permanently delete your profile, preferences, and priority record at any time using <b>/delete_me</b>."
+)
+
+DELETE_ME_WARNING_TEXT = (
+    "⚠️ <b>Delete Account & All Data?</b>\n"
+    "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+    "This will <b>permanently erase</b> your account from the Anonymous AUA database:\n"
+    "• Profile, gender, and matchmaking preferences\n"
+    "• Priority score and feedback ratings\n"
+    "• AUA verified student status & email linkage\n"
+    "• Anonymous inbox links (/link) & chat invites (/invite)\n"
+    "• Blocklists & recent partner history\n\n"
+    "<i>If you are currently in an active conversation, it will be safely ended.</i>\n\n"
+    "<b>This action is irreversible. Are you sure?</b>"
+)
+
+
+@router.message(Command("privacy", "policy", "rules"))
+async def handle_privacy_command(message: Message) -> None:
+    """Display comprehensive Privacy Policy and Community Code of Conduct."""
+    await message.answer(
+        PRIVACY_OVERVIEW_TEXT,
+        reply_markup=get_privacy_menu_keyboard(),
+        parse_mode="HTML",
+    )
+
+
+@router.callback_query(F.data.startswith("privacy_view:"))
+async def handle_privacy_view_callback(callback: CallbackQuery) -> None:
+    """Handle interactive navigation across Privacy Policy sections."""
+    view_type = callback.data.split(":")[1]
+
+    if view_type == "menu":
+        await callback.message.edit_text(
+            PRIVACY_OVERVIEW_TEXT,
+            reply_markup=get_privacy_menu_keyboard(),
+            parse_mode="HTML",
+        )
+    elif view_type == "data":
+        await callback.message.edit_text(
+            PRIVACY_DATA_TEXT,
+            reply_markup=get_privacy_back_keyboard(),
+            parse_mode="HTML",
+        )
+    elif view_type == "rules":
+        await callback.message.edit_text(
+            PRIVACY_RULES_TEXT,
+            reply_markup=get_privacy_back_keyboard(),
+            parse_mode="HTML",
+        )
+    elif view_type == "full":
+        await callback.message.edit_text(
+            PRIVACY_DATA_TEXT,
+            parse_mode="HTML",
+        )
+        await callback.message.answer(
+            PRIVACY_RULES_TEXT,
+            reply_markup=get_privacy_back_keyboard(),
+            parse_mode="HTML",
+        )
+    await callback.answer()
+
+
+@router.message(Command("delete_me", "deleteme"))
+async def handle_delete_me_command(message: Message) -> None:
+    """Prompt user for confirmation before permanently deleting their account and data."""
+    await message.answer(
+        DELETE_ME_WARNING_TEXT,
+        reply_markup=get_delete_me_confirmation_keyboard(),
+        parse_mode="HTML",
+    )
+
+
+@router.callback_query(F.data == "delete_me_prompt")
+async def handle_delete_me_prompt_callback(callback: CallbackQuery) -> None:
+    """Display confirmation prompt for data deletion when triggered from inline button."""
+    await callback.message.edit_text(
+        DELETE_ME_WARNING_TEXT,
+        reply_markup=get_delete_me_confirmation_keyboard(),
+        parse_mode="HTML",
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data == "delete_me_cancel")
+async def handle_delete_me_cancel_callback(callback: CallbackQuery) -> None:
+    """Cancel account deletion."""
+    await callback.message.edit_text(
+        "✅ <b>Account deletion cancelled.</b>\n\n"
+        "Your profile, preferences, and settings remain safe and active. 🛡️",
+        parse_mode="HTML",
+    )
+    await callback.answer("Cancelled")
+
+
+@router.callback_query(F.data == "delete_me_confirm")
+async def handle_delete_me_confirm_callback(callback: CallbackQuery, bot: Bot, state: FSMContext) -> None:
+    """Permanently delete user account and all stored data."""
+    await state.clear()
+    user_id = callback.from_user.id
+
+    async with get_db_session() as session:
+        success, partner_id = await delete_user_account(session, user_id=user_id)
+
+    if partner_id:
+        try:
+            await bot.send_message(
+                chat_id=partner_id,
+                text=(
+                    "🛑 <b>Your partner has ended the chat and deleted their account.</b>\n\n"
+                    "Send /search to find a new conversation partner! 🎭"
+                ),
+                parse_mode="HTML",
+            )
+        except Exception:
+            pass
+
+    await callback.message.edit_text(
+        "🗑️ <b>Your account and data have been permanently deleted.</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        "All profile information, preferences, priority score, and link records associated "
+        "with your Telegram account have been completely wiped from our database.\n\n"
+        "If you ever wish to return to Anonymous AUA, send /start to create a fresh profile. Thank you! 👋",
+        parse_mode="HTML",
+    )
+    await callback.answer("Account deleted successfully.")
+
 
 
 @router.message(Command("stats", "stata"))

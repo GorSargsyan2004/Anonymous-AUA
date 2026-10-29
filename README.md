@@ -228,6 +228,8 @@ To eliminate malicious retaliation, queue manipulation, and griefing (e.g. users
 | `/pause` (or `/sleep`) | Public | Puts active chat into Sleep Mode for the night (freezes inactivity auto-close). |
 | `/report` | Public | Emergency shield: severs chat, auto-blocks partner, and accepts text/screenshot evidence. |
 | `/safety` | Public | Displays privacy facts, anti-blackmail advice, and debunking of IP/avatar leak myths. |
+| `/privacy` (or `/policy`) | Public | Displays comprehensive Privacy Policy and Community Code of Conduct. |
+| `/delete_me` | Public | Irreversibly deletes profile, matching preferences, priority score, and all data. |
 | `/link` (or `/inbox`) | Public | Generates a destroyable personal anonymous Q&A / message inbox link with 20m cooldown and media support. |
 | `/invite` (or `/chatlink`) | Public | Generates one-time or persistent direct 1-on-1 private chat invite links that bypass public queue. |
 | `/preferences` | Public | Adjusts target sexes, orientations, and typing indicator via checkbox menu. |
