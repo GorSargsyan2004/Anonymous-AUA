@@ -130,10 +130,7 @@ async def handle_pending_reports(message: Message, bot: Bot) -> None:
             await message.reply("✅ <b>No pending reports found!</b> All reports are resolved.", parse_mode="HTML")
             return
 
-        user_ids = set()
-        for r in reports:
-            user_ids.add(r.reporter_id)
-            user_ids.add(r.reported_id)
+        user_ids = {r.reporter_id for r in reports if r.reporter_id} | {r.reported_id for r in reports if r.reported_id}
 
         user_map = {}
         if user_ids:
@@ -144,30 +141,51 @@ async def handle_pending_reports(message: Message, bot: Bot) -> None:
 
     await message.reply(
         f"🚨 <b>Found {len(reports)} pending report(s):</b>\n"
-        "Reviewing each report below with available evidence and moderation actions:",
+        "Reviewing each report below with available AI verdict audit details:",
         parse_mode="HTML",
     )
 
     for report in reports:
-        reporter = user_map.get(report.reporter_id)
-        reported = user_map.get(report.reported_id)
-
-        reporter_tag = f"@{html.escape(reporter.username)}" if reporter and reporter.username else "N/A"
-        reported_tag = f"@{html.escape(reported.username)}" if reported and reported.username else "N/A"
         date_str = report.created_at.strftime("%Y-%m-%d %H:%M UTC") if report.created_at else "N/A"
 
-        report_text = (
-            f"🚨 <b>Pending Report #{report.id}</b>\n"
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-            f"• <b>Session ID:</b> #{report.session_id}\n"
-            f"• <b>Reported User ID:</b> <code>{report.reported_id}</code> ({reported_tag})\n"
-            f"• <b>Reporter ID:</b> <code>{report.reporter_id}</code> ({reporter_tag})\n"
-            f"• <b>Filed At:</b> {date_str}\n\n"
-            f"📝 <b>Report Reason:</b>\n{html.escape(report.reason_text or 'No reason provided')}\n"
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-            f"⚡ <i>Quick Command to Ban:</i> <code>/block {report.reported_id}</code>"
-        )
-        keyboard = get_admin_report_keyboard(report.id, report.reported_id)
+        if report.identity_revealed_for_illegal and report.reported_id:
+            reporter = user_map.get(report.reporter_id)
+            reported = user_map.get(report.reported_id)
+            reporter_tag = f"@{html.escape(reporter.username)}" if reporter and reporter.username else "N/A"
+            reported_tag = f"@{html.escape(reported.username)}" if reported and reported.username else "N/A"
+
+            report_text = (
+                f"🚨 <b>Emergency Unmasked Report #{report.id} (Tier 3 Illegal)</b>\n"
+                "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"• <b>Session ID:</b> #{report.session_id}\n"
+                f"• <b>Reported User ID:</b> <code>{report.reported_id}</code> ({reported_tag})\n"
+                f"• <b>Reporter ID:</b> <code>{report.reporter_id}</code> ({reporter_tag})\n"
+                f"• <b>Filed At:</b> {date_str}\n"
+                f"• <b>Severity:</b> {report.severity_category}\n\n"
+                f"📝 <b>AI Summary:</b>\n{html.escape(report.anonymized_summary or report.reason_text or 'N/A')}\n"
+                "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"⚡ <i>Command:</i> <code>/block {report.reported_id}</code>"
+            )
+            keyboard = get_admin_report_keyboard(report.id, report.reported_id)
+        else:
+            guilty_str = report.guilty_party or "Evaluated by AI"
+            sev_str = (report.severity_category or "None").replace("_", " ")
+            summary_str = html.escape(report.anonymized_summary or report.reason_text or "No summary available")
+
+            report_text = (
+                f"🛡️ <b>Anonymized AI Report #{report.id}</b>\n"
+                "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"• <b>Session ID:</b> #{report.session_id}\n"
+                f"• <b>Privacy Status:</b> 🔒 Zero-Knowledge Ephemeral RAM (User IDs Protected)\n"
+                f"• <b>Guilty Party:</b> <code>{guilty_str}</code>\n"
+                f"• <b>Severity Category:</b> <code>{sev_str}</code>\n"
+                f"• <b>Penalties:</b> Reported User: -{report.reported_user_penalty} | Reporter: -{report.reporter_penalty}\n"
+                f"• <b>Filed At:</b> {date_str}\n\n"
+                f"📝 <b>Anonymized AI Summary:</b>\n<i>{summary_str}</i>\n"
+                "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                "<i>AI Moderation resolved this report automatically.</i>"
+            )
+            keyboard = None
 
         await bot.send_message(
             chat_id=message.chat.id,
@@ -176,24 +194,6 @@ async def handle_pending_reports(message: Message, bot: Bot) -> None:
             parse_mode="HTML",
         )
 
-        if report.evidence_file_id:
-            try:
-                await bot.send_photo(
-                    chat_id=message.chat.id,
-                    photo=report.evidence_file_id,
-                    caption=f"📸 <b>Evidence attached to Report #{report.id}</b>",
-                    parse_mode="HTML",
-                )
-            except TelegramAPIError:
-                try:
-                    await bot.send_document(
-                        chat_id=message.chat.id,
-                        document=report.evidence_file_id,
-                        caption=f"📄 <b>Document evidence attached to Report #{report.id}</b>",
-                        parse_mode="HTML",
-                    )
-                except TelegramAPIError as e:
-                    logger.warning("Could not send evidence file for report %s: %s", report.id, e)
 
 
 @router.message(Command("backup"))

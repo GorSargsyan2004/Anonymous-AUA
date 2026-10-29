@@ -286,6 +286,62 @@ async def init_db() -> None:
                 "ALTER TABLE inbox_messages ADD COLUMN IF NOT EXISTS replied_at TIMESTAMP WITH TIME ZONE;"
             )
         )
+        # Reports model refactoring for AI Moderation and Anonymity
+        await conn.execute(
+            text(
+                "ALTER TABLE reports ALTER COLUMN reporter_id DROP NOT NULL;"
+            )
+        )
+        await conn.execute(
+            text(
+                "ALTER TABLE reports ALTER COLUMN reported_id DROP NOT NULL;"
+            )
+        )
+        await conn.execute(
+            text(
+                "ALTER TABLE reports ALTER COLUMN reason_text DROP NOT NULL;"
+            )
+        )
+        await conn.execute(
+            text(
+                "ALTER TABLE reports ADD COLUMN IF NOT EXISTS guilty_party VARCHAR(32);"
+            )
+        )
+        await conn.execute(
+            text(
+                "ALTER TABLE reports ADD COLUMN IF NOT EXISTS severity_category VARCHAR(64);"
+            )
+        )
+        await conn.execute(
+            text(
+                "ALTER TABLE reports ADD COLUMN IF NOT EXISTS reported_user_penalty INTEGER NOT NULL DEFAULT 0;"
+            )
+        )
+        await conn.execute(
+            text(
+                "ALTER TABLE reports ADD COLUMN IF NOT EXISTS reporter_penalty INTEGER NOT NULL DEFAULT 0;"
+            )
+        )
+        await conn.execute(
+            text(
+                "ALTER TABLE reports ADD COLUMN IF NOT EXISTS reported_user_blocked BOOLEAN NOT NULL DEFAULT false;"
+            )
+        )
+        await conn.execute(
+            text(
+                "ALTER TABLE reports ADD COLUMN IF NOT EXISTS reporter_blocked BOOLEAN NOT NULL DEFAULT false;"
+            )
+        )
+        await conn.execute(
+            text(
+                "ALTER TABLE reports ADD COLUMN IF NOT EXISTS identity_revealed_for_illegal BOOLEAN NOT NULL DEFAULT false;"
+            )
+        )
+        await conn.execute(
+            text(
+                "ALTER TABLE reports ADD COLUMN IF NOT EXISTS anonymized_summary TEXT;"
+            )
+        )
 
 
 

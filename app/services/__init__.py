@@ -27,6 +27,13 @@ from app.services.matcher import (
 from app.services.media_batcher import MediaGroupBatcher, media_batcher
 from app.services.rate_limiter import TokenBucketRateLimiter, rate_limiter
 from app.services.reply_manager import ReplyManager, reply_manager
+from app.services.ai_moderator import (
+    ModerationVerdict,
+    ProtectedSessionBuffer,
+    SessionTurn,
+    gemini_moderator,
+    session_buffer,
+)
 
 __all__ = [
     "create_database_backup",
@@ -49,6 +56,12 @@ __all__ = [
     "LinkScanVerdict",
     "check_and_process_inactivity",
     "inactivity_monitor_worker",
+    "ModerationVerdict",
+    "ProtectedSessionBuffer",
+    "SessionTurn",
+    "gemini_moderator",
+    "session_buffer",
 ]
+
 
 

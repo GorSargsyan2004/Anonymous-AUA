@@ -244,23 +244,48 @@ class Feedback(Base):
 
 
 class Report(Base):
-    """Report submitted by a user against another user during/after a session."""
+    """Report submitted by a user against another user during/after a session.
+    
+    Evaluated by Gemini AI Moderator with Zero-Knowledge RAM Buffer.
+    Personal Telegram IDs are never stored unless identity_revealed_for_illegal is True.
+    """
     __tablename__ = "reports"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     session_id: Mapped[int] = mapped_column(
-        Integer, ForeignKey("chat_sessions.id", ondelete="CASCADE"), nullable=False
+        Integer, ForeignKey("chat_sessions.id", ondelete="CASCADE"), nullable=False, index=True
     )
-    reporter_id: Mapped[int] = mapped_column(
-        BigInteger, ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    reporter_id: Mapped[Optional[int]] = mapped_column(
+        BigInteger, ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
-    reported_id: Mapped[int] = mapped_column(
-        BigInteger, ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    reported_id: Mapped[Optional[int]] = mapped_column(
+        BigInteger, ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
-    reason_text: Mapped[str] = mapped_column(Text, nullable=False)
+    reason_text: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     evidence_file_id: Mapped[Optional[str]] = mapped_column(String(256), nullable=True)
     penalty_applied: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
-    is_resolved: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    is_resolved: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False, server_default=func.true())
+
+    # Automated AI Moderator Verdict Audit Fields
+    guilty_party: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
+    severity_category: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    reported_user_penalty: Mapped[int] = mapped_column(
+        Integer, default=0, nullable=False, server_default=text("0")
+    )
+    reporter_penalty: Mapped[int] = mapped_column(
+        Integer, default=0, nullable=False, server_default=text("0")
+    )
+    reported_user_blocked: Mapped[bool] = mapped_column(
+        Boolean, default=False, nullable=False, server_default=func.false()
+    )
+    reporter_blocked: Mapped[bool] = mapped_column(
+        Boolean, default=False, nullable=False, server_default=func.false()
+    )
+    identity_revealed_for_illegal: Mapped[bool] = mapped_column(
+        Boolean, default=False, nullable=False, server_default=func.false()
+    )
+    anonymized_summary: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         server_default=func.now(),
@@ -270,7 +295,11 @@ class Report(Base):
     session = relationship("ChatSession", back_populates="reports")
 
     def __repr__(self) -> str:
-        return f"<Report id={self.id} session_id={self.session_id} reporter={self.reporter_id} reported={self.reported_id} resolved={self.is_resolved}>"
+        return (
+            f"<Report id={self.id} session_id={self.session_id} "
+            f"guilty={self.guilty_party} category={self.severity_category} "
+            f"illegal_unmasked={self.identity_revealed_for_illegal}>"
+        )
 
 
 class Suggestion(Base):

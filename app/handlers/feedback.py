@@ -9,6 +9,8 @@ from aiogram.types import CallbackQuery, Message
 from app.config import settings
 from app.database.crud import (
     add_or_update_user_block,
+    apply_admin_penalty,
+    ban_user_by_admin,
     create_report,
     create_suggestion,
     delete_or_reset_feedback,
@@ -19,11 +21,17 @@ from app.database.crud import (
     get_or_create_user,
     get_recent_sessions_for_user,
     get_user,
+    has_report_for_session,
     process_feedback_with_consensus,
     record_feedback,
     update_or_override_feedback,
     update_user_priority,
 )
+from app.services.ai_moderator import (
+    gemini_moderator,
+    session_buffer,
+)
+from app.services.ban_manager import add_banned_user
 from app.database.session import get_db_session
 from app.keyboards.inline import (
     get_admin_report_keyboard,
@@ -563,14 +571,20 @@ async def handle_report_start_callback(callback: CallbackQuery, state: FSMContex
     session_id = int(session_id_str)
     reported_id = int(partner_id_str)
 
+    async with get_db_session() as session:
+        if await has_report_for_session(session, session_id):
+            await callback.answer("A report has already been submitted for this chat session.", show_alert=True)
+            return
+
     await state.set_state(ReportState.waiting_for_reason)
     await state.update_data(session_id=session_id, reported_id=reported_id)
 
     await callback.message.edit_text(
-        "🚨 <b>Describe the Incident / Attach Evidence</b> 🛡️\n\n"
-        "Please describe what happened (blackmail, threats, harassment, non-AUA intruder):\n\n"
-        "📷 <b>You can send text, a screenshot, or photo proof.</b>\n"
-        "Our administration reviews all reports immediately.\n\n"
+        "🚨 <b>Describe the Incident / Report Issue</b> 🛡️\n\n"
+        "Please provide a brief text explanation of what occurred (e.g. harassment, doxxing, non-AUA intruder, or blackmail).\n\n"
+        "🤖 <b>Zero-Knowledge Automated AI Review:</b>\n"
+        "Our Gemini AI Safety Moderator evaluates the recent conversation context directly from ephemeral memory. "
+        "<b>No screenshots or uploads needed!</b>\n\n"
         "<i>(Send /cancel to abort)</i>",
         parse_mode="HTML",
     )
@@ -579,7 +593,7 @@ async def handle_report_start_callback(callback: CallbackQuery, state: FSMContex
 
 @router.callback_query(F.data.startswith("emerg_report:") | F.data.startswith("emerg_block_report:"))
 async def handle_emergency_report_callback(callback: CallbackQuery, bot: Bot, state: FSMContext) -> None:
-    """Handle emergency in-chat report: disconnect active chat and prompt for evidence."""
+    """Handle emergency in-chat report: disconnect active chat and prompt for explanation."""
     parts = callback.data.split(":")
     is_block = parts[0] == "emerg_block_report"
     session_id = int(parts[1])
@@ -615,7 +629,8 @@ async def handle_emergency_report_callback(callback: CallbackQuery, bot: Bot, st
     block_note = " and permanently blocked" if is_block else ""
     await callback.message.edit_text(
         f"🛑 <b>Chat disconnected{block_note}.</b> 🛡️\n\n"
-        "You are now safe. Please describe what happened (blackmail, threats, harassment) or <b>attach a screenshot</b> as evidence:\n\n"
+        "You are now safe. Please provide a brief description of what happened:\n\n"
+        "🤖 <i>Our AI Moderator evaluates the conversation directly from ephemeral memory. No screenshots needed!</i>\n\n"
         "<i>(Send /cancel to abort)</i>",
         parse_mode="HTML",
     )
@@ -637,7 +652,7 @@ async def handle_emergency_cancel(callback: CallbackQuery) -> None:
     F.text | F.photo | F.document | F.voice | F.video,
 )
 async def handle_report_reason(message: Message, bot: Bot, state: FSMContext) -> None:
-    """Receive the report reason, record in DB, and notify all administrators."""
+    """Receive report reason, pop ephemeral buffer, evaluate with Gemini AI, and apply verdicts."""
     if message.text and message.text.strip().lower() in ["/cancel", "/stop"]:
         await state.clear()
         await message.answer("✅ Report cancelled.", parse_mode="HTML")
@@ -656,134 +671,227 @@ async def handle_report_reason(message: Message, bot: Bot, state: FSMContext) ->
                 session_id = latest.id
                 reported_id = latest.user2_id if latest.user1_id == reporter_id else latest.user1_id
 
-    # If still no session_id or reported_id, cannot proceed with DB constraint
     if not session_id or not reported_id:
         await state.clear()
         await message.answer(
             "⚠️ <b>Could not locate an associated chat session for this report.</b>\n\n"
-            "Please send /suggestion to report this issue directly to admins.",
+            "Please send /suggestion to submit feedback directly to admins.",
             parse_mode="HTML",
         )
         return
 
-    # Extract reason and evidence
-    evidence_file_id = None
-    evidence_type = None
-
-    if message.photo:
-        evidence_file_id = message.photo[-1].file_id
-        evidence_type = "photo"
-        reason_text = message.caption.strip() if message.caption else "[Screenshot / Photo Evidence Attached]"
-    elif message.document:
-        evidence_file_id = message.document.file_id
-        evidence_type = "document"
-        reason_text = message.caption.strip() if message.caption else f"[Document Attached: {message.document.file_name or 'file'}]"
-    elif message.voice:
-        evidence_file_id = message.voice.file_id
-        evidence_type = "voice"
-        reason_text = message.caption.strip() if message.caption else "[Voice Message Evidence Attached]"
-    elif message.video:
-        evidence_file_id = message.video.file_id
-        evidence_type = "video"
-        reason_text = message.caption.strip() if message.caption else "[Video Evidence Attached]"
-    elif message.text:
-        reason_text = message.text.strip()
-    else:
-        reason_text = "[No text explanation provided]"
+    reason_text = message.text.strip() if message.text else (
+        message.caption.strip() if message.caption else "Unspecified report reason"
+    )
 
     await state.clear()
 
     async with get_db_session() as session:
-        # Create Report in database
-        report = await create_report(
-            session=session,
-            session_id=session_id,
-            reporter_id=reporter_id,
-            reported_id=reported_id,
-            reason_text=reason_text,
-            evidence_file_id=evidence_file_id,
-        )
-        # Automatically block this partner permanently for the reporter
+        # Enforce one report per session
+        if await has_report_for_session(session, session_id):
+            await message.answer(
+                "⚠️ <b>A report has already been submitted for this chat session.</b>\n\n"
+                "Our AI moderation system evaluates each conversation once.",
+                parse_mode="HTML",
+            )
+            return
+
+        # Atomically pop turns from ProtectedSessionBuffer (clearing RAM)
+        turns = session_buffer.pop_session(session_id)
+
+        # Always ensure the partner is blocked for the reporter
         await add_or_update_user_block(
             session=session,
             user_id=reporter_id,
             blocked_user_id=reported_id,
             expires_at=None,
         )
-        reported_user = await get_user(session, user_id=reported_id)
-        current_priority = reported_user.priority if reported_user else 50
 
-    critical_keywords = ["blackmail", "scam", "extort", "threat", "photo", "leak", "money", "nude", "police", "doxx", "hack", "pay"]
-    is_critical = any(kw in reason_text.lower() for kw in critical_keywords)
-    header_alert = "🚨🚨🚨 <b>CRITICAL EMERGENCY REPORT: BLACKMAIL / THREAT DETECTED!</b>" if is_critical else f"🚨 <b>NEW USER REPORT #{report.id}</b>"
-
-    await message.answer(
-        "✅ <b>Your report has been submitted to AUA administrators.</b> 🛡️\n\n"
-        "We take harassment, threats, and blackmail extremely seriously. Our team has received your report and evidence.\n\n"
-        "🔒 <b>Your Privacy & Safety Guarantee:</b>\n"
-        "• <b>The other user DOES NOT know who you are.</b> Telegram never reveals your phone number, real name, @username, or IP address.\n"
-        "• Claims of 'tracking your IP' or 'hacking your data' are <b>100% fake scare tactics</b> used by scammers to bluff and intimidate.\n"
-        "• This user has been <b>permanently blocked</b> so you will never match with them again.\n\n"
-        "Send /search whenever you want to find a new chat partner.",
-        parse_mode="HTML",
-    )
-
-    # Notify all administrators (priority is visible only to admins, escape user text)
-    safe_reporter_username = html.escape(message.from_user.username or "N/A")
-    safe_reported_username = html.escape(reported_user.username or "N/A") if reported_user else "N/A"
-    safe_reason = html.escape(reason_text)
-
-    admin_text = (
-        f"{header_alert}\n"
-        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"• <b>Report ID:</b> #{report.id}\n"
-        f"• <b>Session ID:</b> #{session_id}\n"
-        f"• <b>Reported User ID:</b> <code>{reported_id}</code> (@{safe_reported_username})\n"
-        f"• <b>Reporter ID:</b> <code>{reporter_id}</code> (@{safe_reporter_username})\n"
-        f"• <b>Current Priority:</b> {current_priority}/100\n\n"
-        f"📝 <b>Report Reason:</b>\n{safe_reason}\n"
-        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"⚡ <i>Quick Command to Ban:</i> <code>/block {reported_id}</code>"
-    )
-
-    admin_keyboard = get_admin_report_keyboard(report.id, reported_id)
-
-    for admin_id in settings.ADMIN_IDS:
-        try:
-            await bot.send_message(
-                chat_id=admin_id,
-                text=admin_text,
-                reply_markup=admin_keyboard,
+        if not turns:
+            # Buffer has expired (> 5 minutes TTL) or was already cleared
+            await create_report(
+                session=session,
+                session_id=session_id,
+                reporter_id=None,
+                reported_id=None,
+                reason_text=reason_text,
+                guilty_party="Neither",
+                severity_category="None",
+                reported_user_penalty=0,
+                reporter_penalty=0,
+                reported_user_blocked=True,
+                reporter_blocked=False,
+                identity_revealed_for_illegal=False,
+                anonymized_summary="Report submitted after 5-minute ephemeral memory TTL expired. User blocked.",
+                is_resolved=True,
+            )
+            await message.answer(
+                "⏳ <b>Report Window Expired (Zero-Knowledge Privacy Protection)</b>\n\n"
+                "To guarantee student privacy, Anonymous AUA enforces a strict <b>5-Minute Ephemeral Buffer Policy</b>. "
+                "Chat turns are never written to disk or database, and are permanently erased 5 minutes after a chat ends.\n\n"
+                "Because more than 5 minutes have passed since this conversation concluded, the memory buffer has been destroyed.\n\n"
+                "🛡️ <b>Action Taken:</b> This user has been permanently blocked so you will never match with them again.",
                 parse_mode="HTML",
             )
-            if evidence_file_id:
-                if evidence_type == "photo":
-                    await bot.send_photo(
-                        chat_id=admin_id,
-                        photo=evidence_file_id,
-                        caption=f"📸 <b>Evidence attached to Report #{report.id}</b>",
-                        parse_mode="HTML",
-                    )
-                elif evidence_type == "document":
-                    await bot.send_document(
-                        chat_id=admin_id,
-                        document=evidence_file_id,
-                        caption=f"📄 <b>Document evidence attached to Report #{report.id}</b>",
-                        parse_mode="HTML",
-                    )
-                elif evidence_type == "voice":
-                    await bot.send_voice(
-                        chat_id=admin_id,
-                        voice=evidence_file_id,
-                        caption=f"🎙️ <b>Voice evidence attached to Report #{report.id}</b>",
-                        parse_mode="HTML",
-                    )
-                elif evidence_type == "video":
-                    await bot.send_video(
-                        chat_id=admin_id,
-                        video=evidence_file_id,
-                        caption=f"🎥 <b>Video evidence attached to Report #{report.id}</b>",
-                        parse_mode="HTML",
-                    )
-        except TelegramAPIError as e:
-            logger.error("Failed to notify admin %s of report #%s: %s", admin_id, report.id, e)
+            return
+
+        # Status notification while AI evaluates
+        status_msg = await message.answer(
+            "🤖 <b>AI Safety Moderator Evaluating Conversation...</b>\n\n"
+            "Analyzing conversation context against AUA Community & Privacy Rules. Please wait a moment...",
+            parse_mode="HTML",
+        )
+
+        # Run Multimodal Gemini AI Evaluation
+        verdict = await gemini_moderator.evaluate_session(
+            turns=turns,
+            reporter_id=reporter_id,
+            reported_id=reported_id,
+            reason_text=reason_text,
+        )
+
+        # Apply Penalties
+        if verdict.reported_user_penalty > 0:
+            await apply_admin_penalty(session, user_id=reported_id, penalty=verdict.reported_user_penalty)
+
+        if verdict.reporter_penalty > 0:
+            await apply_admin_penalty(session, user_id=reporter_id, penalty=verdict.reporter_penalty)
+
+        # Apply Blocks
+        if verdict.block_reported_user:
+            await add_or_update_user_block(session, user_id=reporter_id, blocked_user_id=reported_id, expires_at=None)
+
+        if verdict.block_reporter:
+            await add_or_update_user_block(session, user_id=reported_id, blocked_user_id=reporter_id, expires_at=None)
+
+        # Handle Tier 3 Extreme Illegal Violations
+        if verdict.reveal_identity_for_illegal_content:
+            if verdict.illegal_perpetrator in ("Reported_User", "Both"):
+                await ban_user_by_admin(session, user_id=reported_id)
+                add_banned_user(reported_id)
+            if verdict.illegal_perpetrator in ("Reporter", "Both"):
+                await ban_user_by_admin(session, user_id=reporter_id)
+                add_banned_user(reporter_id)
+
+            # Store unmasked IDs for illegal violation audit
+            report = await create_report(
+                session=session,
+                session_id=session_id,
+                reporter_id=reporter_id,
+                reported_id=reported_id,
+                reason_text=reason_text,
+                guilty_party=verdict.guilty_party,
+                severity_category=verdict.severity_category,
+                reported_user_penalty=verdict.reported_user_penalty,
+                reporter_penalty=verdict.reporter_penalty,
+                reported_user_blocked=verdict.block_reported_user,
+                reporter_blocked=verdict.block_reporter,
+                identity_revealed_for_illegal=True,
+                anonymized_summary=verdict.anonymized_summary,
+                is_resolved=True,
+            )
+
+            # Alert Admins with Emergency Unmasking Alert
+            reported_user = await get_user(session, user_id=reported_id)
+            reporter_user = await get_user(session, user_id=reporter_id)
+            reported_uname = html.escape(reported_user.username or "N/A") if reported_user else "N/A"
+            reporter_uname = html.escape(reporter_user.username or "N/A") if reporter_user else "N/A"
+
+            admin_alert = (
+                "🚨🚨🚨 <b>CRITICAL EMERGENCY: TIER 3 ILLEGAL CONTENT DETECTED</b> 🚨🚨🚨\n"
+                "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"• <b>Report ID:</b> #{report.id}\n"
+                f"• <b>Perpetrator:</b> {verdict.illegal_perpetrator}\n"
+                f"• <b>Reported User ID:</b> <code>{reported_id}</code> (@{reported_uname})\n"
+                f"• <b>Reporter ID:</b> <code>{reporter_id}</code> (@{reporter_uname})\n"
+                f"• <b>Severity:</b> {verdict.severity_category}\n\n"
+                f"📝 <b>AI Summary:</b>\n{html.escape(verdict.anonymized_summary)}\n"
+                "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"⚡ <i>Quick Command to Ban:</i> <code>/block {reported_id}</code>"
+            )
+            admin_ids = getattr(settings, "admin_ids", []) or getattr(settings, "ADMIN_IDS", [])
+            for admin_id in admin_ids:
+                try:
+                    await bot.send_message(chat_id=admin_id, text=admin_alert, parse_mode="HTML")
+                except Exception as e:
+                    logger.error("Failed to deliver emergency illegal alert to admin %s: %s", admin_id, e)
+        else:
+            # Privacy-Preserved Report (Zero-Knowledge: IDs nullified!)
+            await create_report(
+                session=session,
+                session_id=session_id,
+                reporter_id=None,
+                reported_id=None,
+                reason_text=reason_text,
+                guilty_party=verdict.guilty_party,
+                severity_category=verdict.severity_category,
+                reported_user_penalty=verdict.reported_user_penalty,
+                reporter_penalty=verdict.reporter_penalty,
+                reported_user_blocked=verdict.block_reported_user,
+                reporter_blocked=verdict.block_reporter,
+                identity_revealed_for_illegal=False,
+                anonymized_summary=verdict.anonymized_summary,
+                is_resolved=True,
+            )
+
+    # Deliver verdict response to Reporter
+    safe_summary = html.escape(verdict.anonymized_summary)
+    category_label = verdict.severity_category.replace("_", " ")
+
+    if verdict.guilty_party == "Reported_User":
+        response_text = (
+            "✅ <b>AI Safety Evaluation Complete</b> 🛡️\n\n"
+            f"<b>Verdict:</b> Violation Confirmed (<code>{category_label}</code>)\n"
+            f"<b>Action Taken:</b> -{verdict.reported_user_penalty} priority penalty applied to partner.\n"
+            f"• Partner has been permanently blocked.\n\n"
+            f"📝 <b>AI Findings:</b>\n<i>{safe_summary}</i>\n\n"
+            "Thank you for keeping Anonymous AUA safe and respectful for all students! 🎓"
+        )
+    elif verdict.guilty_party == "Reporter":
+        response_text = (
+            "⚠️ <b>AI Safety Evaluation Complete</b> 🛡️\n\n"
+            f"<b>Notice:</b> Under Rule C (Reporter Accountability), the AI Moderator determined that "
+            f"your report was improper, baited, or in violation of community standards.\n\n"
+            f"<b>Action Taken:</b> -{verdict.reporter_penalty} priority penalty applied to your account.\n\n"
+            f"📝 <b>AI Findings:</b>\n<i>{safe_summary}</i>\n\n"
+            "Please review /safety and /privacy to maintain good standing."
+        )
+    elif verdict.guilty_party == "Both":
+        response_text = (
+            "⚠️ <b>AI Safety Evaluation Complete</b> 🛡️\n\n"
+            "<b>Verdict:</b> Mutual Misconduct Detected.\n"
+            f"<b>Action Taken:</b> -{verdict.reporter_penalty} penalty applied to your account, "
+            f"and -{verdict.reported_user_penalty} applied to partner.\n\n"
+            f"📝 <b>AI Findings:</b>\n<i>{safe_summary}</i>"
+        )
+    else:
+        response_text = (
+            "ℹ️ <b>AI Safety Evaluation Complete</b> 🛡️\n\n"
+            "<b>Verdict:</b> No policy violations detected.\n"
+            "The conversation appeared normal and respectful under Community Rules.\n\n"
+            "🛡️ <b>Action Taken:</b> The user has been added to your personal blocklist.\n\n"
+            f"📝 <b>AI Findings:</b>\n<i>{safe_summary}</i>"
+        )
+
+    try:
+        await status_msg.edit_text(response_text, parse_mode="HTML")
+    except Exception:
+        await message.answer(response_text, parse_mode="HTML")
+
+    # If reported user was penalized (and not banned), notify them anonymously
+    if verdict.reported_user_penalty > 0 and not verdict.reveal_identity_for_illegal_content:
+        try:
+            await bot.send_message(
+                chat_id=reported_id,
+                text=(
+                    "⚠️ <b>Community Safety Notice</b>\n\n"
+                    f"A recent chat partner submitted a report. After automated AI moderation review, "
+                    f"a penalty of <b>-{verdict.reported_user_penalty} priority points</b> was applied to your profile "
+                    f"for <b>{category_label}</b>.\n\n"
+                    "Please review /safety and /privacy guidelines to maintain high matching priority."
+                ),
+                parse_mode="HTML",
+            )
+        except Exception:
+            pass
+

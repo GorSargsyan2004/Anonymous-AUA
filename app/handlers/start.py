@@ -66,6 +66,16 @@ async def handle_start(
     async with get_db_session() as session:
         user = await get_or_create_user(session, user_id=user_id, username=username)
 
+        # Check if user is banned
+        if getattr(user, "is_banned", False):
+            await state.clear()
+            await message.answer(
+                "🚫 <b>Access Denied</b>\n\n"
+                "You have been banned by an administrator from using Anonymous AUA.",
+                parse_mode="HTML",
+            )
+            return
+
         # 1. User is currently connected in an active anonymous chat
         if user.current_partner_id is not None:
             await state.clear()

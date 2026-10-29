@@ -30,6 +30,9 @@ logging.basicConfig(
     handlers=[logging.StreamHandler(sys.stdout)],
 )
 logger = logging.getLogger("aua_bot")
+# Ensure aiogram event/message logs are never printed to container stdout for user privacy
+logging.getLogger("aiogram").setLevel(logging.WARNING)
+logging.getLogger("aiogram.event").setLevel(logging.WARNING)
 
 
 async def setup_bot_commands(bot: Bot) -> None:

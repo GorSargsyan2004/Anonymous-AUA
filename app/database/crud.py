@@ -354,6 +354,14 @@ async def end_active_session(
 
     await session.commit()
     await session.refresh(chat_session)
+
+    # Schedule 5-minute auto-destruction of ephemeral RAM buffer
+    try:
+        from app.services.ai_moderator import session_buffer
+        session_buffer.schedule_cleanup(chat_session.id, ttl=300)
+    except Exception:
+        pass
+
     return chat_session, partner_id
 
 
@@ -798,25 +806,53 @@ async def get_recent_sessions_for_user(
 async def create_report(
     session: AsyncSession,
     session_id: int,
-    reporter_id: int,
-    reported_id: int,
-    reason_text: str,
+    reporter_id: Optional[int] = None,
+    reported_id: Optional[int] = None,
+    reason_text: Optional[str] = None,
     evidence_file_id: Optional[str] = None,
+    guilty_party: Optional[str] = None,
+    severity_category: Optional[str] = None,
+    reported_user_penalty: int = 0,
+    reporter_penalty: int = 0,
+    reported_user_blocked: bool = False,
+    reporter_blocked: bool = False,
+    identity_revealed_for_illegal: bool = False,
+    anonymized_summary: Optional[str] = None,
+    is_resolved: bool = True,
+    penalty_applied: Optional[int] = None,
 ) -> Report:
-    """Create a new report filed against a user."""
+    """Create a new report filed against a session with automated AI moderation audit fields."""
     report = Report(
         session_id=session_id,
         reporter_id=reporter_id,
         reported_id=reported_id,
         reason_text=reason_text,
         evidence_file_id=evidence_file_id,
-        is_resolved=False,
-        penalty_applied=None,
+        guilty_party=guilty_party,
+        severity_category=severity_category,
+        reported_user_penalty=reported_user_penalty,
+        reporter_penalty=reporter_penalty,
+        reported_user_blocked=reported_user_blocked,
+        reporter_blocked=reporter_blocked,
+        identity_revealed_for_illegal=identity_revealed_for_illegal,
+        anonymized_summary=anonymized_summary,
+        is_resolved=is_resolved,
+        penalty_applied=penalty_applied,
     )
     session.add(report)
     await session.commit()
     await session.refresh(report)
     return report
+
+
+async def has_report_for_session(
+    session: AsyncSession,
+    session_id: int,
+) -> bool:
+    """Check if a report has already been submitted for a given chat session."""
+    stmt = select(func.count(Report.id)).where(Report.session_id == session_id)
+    count = (await session.execute(stmt)).scalar_one()
+    return count > 0
 
 
 async def get_latest_session_for_user(

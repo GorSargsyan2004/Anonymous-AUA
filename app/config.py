@@ -37,6 +37,12 @@ class Settings(BaseSettings):
         description="Custom Telegram Bot API URL (e.g. http://telegram-bot-api:8081/bot)",
     )
 
+    # Gemini AI Moderation Configuration
+    GEMINI_API_KEY: Optional[str] = Field(
+        default=None,
+        description="Google Gemini API Key for automated multimodal chat moderation",
+    )
+
     # PostgreSQL Database Configuration
     POSTGRES_USER: str = Field(default="aua_user", description="PostgreSQL username")
     POSTGRES_PASSWORD: str = Field(default="aua_secure_password_here", description="PostgreSQL password")

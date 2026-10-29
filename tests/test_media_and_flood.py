@@ -149,9 +149,12 @@ class TestMediaGuardrailsAndRelay(unittest.IsolatedAsyncioTestCase):
         mm.rate_limiter.reset(5555)
         mm.rate_limiter.reset(6666)
         mm.reply_manager.clear_chat_sync(5555, 6666)
+        mm.session_buffer.clear_for_testing()
 
     def tearDown(self) -> None:
         mm.reply_manager.clear_chat_sync(5555, 6666)
+        mm.session_buffer.clear_for_testing()
+
 
     def test_get_message_file_size_helper(self) -> None:
         """Verify get_message_file_size extracts largest photo size and video size."""

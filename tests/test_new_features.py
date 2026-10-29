@@ -209,26 +209,46 @@ class TestAdminBlockAndBannedMiddleware(unittest.IsolatedAsyncioTestCase):
 
 
 class TestReportNotificationReportedId(unittest.IsolatedAsyncioTestCase):
-    """Test report reason handler prominently provides reported user ID."""
+    """Test report reason handler with automated AI moderation."""
 
     @patch("app.handlers.feedback.get_db_session")
     @patch("app.handlers.feedback.add_or_update_user_block")
+    @patch("app.handlers.feedback.apply_admin_penalty")
+    @patch("app.handlers.feedback.ban_user_by_admin")
     @patch("app.handlers.feedback.create_report")
     @patch("app.handlers.feedback.get_user")
-    async def test_report_includes_reported_user_id_and_ban_command(
-        self, mock_get_user, mock_create_rep, mock_add_block, mock_db_session
+    @patch("app.handlers.feedback.has_report_for_session", return_value=False)
+    @patch("app.handlers.feedback.session_buffer")
+    @patch("app.handlers.feedback.gemini_moderator")
+    async def test_report_includes_reported_user_id_and_ban_command_on_illegal(
+        self, mock_gemini, mock_buffer, mock_has_rep, mock_get_user, mock_create_rep, mock_ban, mock_penalty, mock_add_block, mock_db_session
     ) -> None:
-        """Admin alert includes Reported User ID and /block command."""
+        """Admin alert is triggered with unmasked IDs only for Tier 3 illegal violations."""
         mock_create_rep.return_value = MagicMock(id=42)
         mock_reported = MagicMock(username="troublemaker", priority=50)
         mock_get_user.return_value = mock_reported
+        mock_buffer.pop_session.return_value = [
+            MagicMock(sender_id=98765, text="I will extort money or leak your info", image_bytes=None, had_image_evicted=False)
+        ]
+        from app.services.ai_moderator import ModerationVerdict
+        mock_gemini.evaluate_session = AsyncMock(return_value=ModerationVerdict(
+            guilty_party="Reported_User",
+            severity_category="Illegal_Extreme",
+            reported_user_penalty=10,
+            reporter_penalty=0,
+            block_reported_user=True,
+            block_reporter=False,
+            reveal_identity_for_illegal_content=True,
+            illegal_perpetrator="Reported_User",
+            anonymized_summary="Extortion and blackmail detected.",
+        ))
 
         bot = AsyncMock()
         state = AsyncMock()
         state.get_data.return_value = {"session_id": 10, "reported_id": 98765}
 
         msg = AsyncMock()
-        msg.text = "Inappropriate harassment"
+        msg.text = "Extortion blackmail threat"
         msg.photo = None
         msg.document = None
         msg.voice = None
@@ -238,8 +258,8 @@ class TestReportNotificationReportedId(unittest.IsolatedAsyncioTestCase):
         with patch("app.handlers.feedback.settings.ADMIN_IDS", [5321254678]):
             await feedback_handlers.handle_report_reason(msg, bot, state)
 
-        bot.send_message.assert_awaited_once()
-        admin_alert = bot.send_message.call_args[1]["text"]
+        # Bot notifies admin about illegal emergency unmasking
+        admin_alert = [call[1]["text"] for call in bot.send_message.call_args_list if call[1].get("chat_id") == 5321254678][0]
 
         self.assertIn("Reported User ID:</b> <code>98765</code>", admin_alert)
         self.assertIn("Reporter ID:</b> <code>11111</code>", admin_alert)
@@ -248,23 +268,22 @@ class TestReportNotificationReportedId(unittest.IsolatedAsyncioTestCase):
     @patch("app.handlers.feedback.get_db_session")
     @patch("app.handlers.feedback.add_or_update_user_block")
     @patch("app.handlers.feedback.create_report")
-    @patch("app.handlers.feedback.get_user")
-    async def test_report_with_screenshot_photo(
-        self, mock_get_user, mock_create_rep, mock_add_block, mock_db_session
+    @patch("app.handlers.feedback.has_report_for_session", return_value=False)
+    @patch("app.handlers.feedback.session_buffer")
+    async def test_report_expired_buffer(
+        self, mock_buffer, mock_has_rep, mock_create_rep, mock_add_block, mock_db_session
     ) -> None:
-        """User attaching a screenshot photo has evidence recorded and sent to admins."""
+        """When 5-min TTL has passed and buffer is empty, Zero-Knowledge auto-blocks partner."""
         mock_create_rep.return_value = MagicMock(id=43)
-        mock_get_user.return_value = MagicMock(username="blackmailer", priority=30)
+        mock_buffer.pop_session.return_value = None
 
         bot = AsyncMock()
         state = AsyncMock()
         state.get_data.return_value = {"session_id": 12, "reported_id": 55555}
 
         msg = AsyncMock()
-        msg.text = None
-        photo_mock = MagicMock(file_id="photo_xyz_123")
-        msg.photo = [photo_mock]
-        msg.caption = "This user is blackmailing me saying he tracked my IP"
+        msg.text = "Report on expired session"
+        msg.photo = None
         msg.document = None
         msg.voice = None
         msg.video = None
@@ -273,28 +292,18 @@ class TestReportNotificationReportedId(unittest.IsolatedAsyncioTestCase):
         with patch("app.handlers.feedback.settings.ADMIN_IDS", [5321254678]):
             await feedback_handlers.handle_report_reason(msg, bot, state)
 
-        mock_create_rep.assert_awaited_once_with(
-            session=unittest.mock.ANY,
-            session_id=12,
-            reporter_id=22222,
-            reported_id=55555,
-            reason_text="This user is blackmailing me saying he tracked my IP",
-            evidence_file_id="photo_xyz_123",
-        )
-        # Verify photo evidence was sent to admin
-        bot.send_photo.assert_awaited_once_with(
-            chat_id=5321254678,
-            photo="photo_xyz_123",
-            caption=unittest.mock.ANY,
-            parse_mode="HTML",
-        )
-        # Verify blackmailer was auto-blocked
+        # Partner is auto-blocked
         mock_add_block.assert_awaited_once_with(
             session=unittest.mock.ANY,
             user_id=22222,
             blocked_user_id=55555,
             expires_at=None,
         )
+        # Message to reporter explains 5-minute zero knowledge policy
+        reporter_msg = msg.answer.call_args[0][0]
+        self.assertIn("Report Window Expired", reporter_msg)
+        self.assertIn("5-Minute Ephemeral Buffer Policy", reporter_msg)
+
 
 
 class TestPartnerBlockAndCooldown(unittest.IsolatedAsyncioTestCase):

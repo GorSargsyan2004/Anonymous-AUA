@@ -2,6 +2,7 @@
 
 import asyncio
 import html
+import io
 import logging
 from typing import Dict, Optional
 from aiogram import Bot, F, Router
@@ -40,6 +41,7 @@ from app.keyboards.inline import (
     get_recent_partners_keyboard,
 )
 from app.services.email_verification import get_partner_verification_badge
+from app.services.ai_moderator import session_buffer
 from app.services.link_shield import link_shield
 from app.services.matcher import match_user_in_queue
 from app.services.media_batcher import media_batcher
@@ -78,6 +80,67 @@ def get_user_relay_lock(user_id: int) -> asyncio.Lock:
     if user_id not in _user_relay_locks:
         _user_relay_locks[user_id] = asyncio.Lock()
     return _user_relay_locks[user_id]
+
+
+async def _buffer_single_message(bot: Bot, session_id: int, user_id: int, message: Message) -> None:
+    """Buffer a single message into the Zero-Knowledge RAM buffer."""
+    photo = getattr(message, "photo", None)
+    text = getattr(message, "text", None)
+    caption = getattr(message, "caption", None)
+    voice = getattr(message, "voice", None)
+    video = getattr(message, "video", None)
+    document = getattr(message, "document", None)
+    sticker = getattr(message, "sticker", None)
+
+    if photo:
+        try:
+            photo_item = photo[-2] if len(photo) > 1 else photo[-1]
+            img_bio = io.BytesIO()
+            await bot.download(photo_item, destination=img_bio)
+            session_buffer.add_image(
+                session_id=session_id,
+                user_id=user_id,
+                image_bytes=img_bio.getvalue(),
+                caption=caption,
+            )
+        except Exception as e:
+            logger.debug("Could not buffer single photo: %s", e)
+            session_buffer.add_text(session_id, user_id, caption or "[Photo]")
+    elif text:
+        session_buffer.add_text(session_id, user_id, text)
+    elif caption:
+        session_buffer.add_text(session_id, user_id, caption)
+    else:
+        label = "Voice" if voice else ("Video" if video else ("Document" if document else "Sticker" if sticker else "Media"))
+        session_buffer.add_text(session_id, user_id, f"[{label}]")
+
+
+async def _buffer_album_messages(bot: Bot, session_id: int, user_id: int, batch: list) -> None:
+    """Buffer messages in an album batch into the Zero-Knowledge RAM buffer."""
+    for item in batch:
+        photo = getattr(item, "photo", None)
+        text = getattr(item, "text", None)
+        caption = getattr(item, "caption", None)
+
+        if photo:
+            try:
+                photo_item = photo[-2] if len(photo) > 1 else photo[-1]
+                img_bio = io.BytesIO()
+                await bot.download(photo_item, destination=img_bio)
+                session_buffer.add_image(
+                    session_id=session_id,
+                    user_id=user_id,
+                    image_bytes=img_bio.getvalue(),
+                    caption=caption,
+                )
+            except Exception as e:
+                logger.debug("Could not buffer album photo: %s", e)
+                session_buffer.add_text(session_id, user_id, caption or "[Photo]")
+        elif caption:
+            session_buffer.add_text(session_id, user_id, caption)
+        elif text:
+            session_buffer.add_text(session_id, user_id, text)
+
 
 
 def get_chat_action_for_message(message: Message) -> str:
@@ -163,6 +226,15 @@ async def perform_search(user_id: int, bot: Bot, message: Message) -> None:
     """Execute queue search or enqueue user."""
     async with get_db_session() as session:
         user = await get_or_create_user(session, user_id=user_id, username=message.from_user.username)
+
+        # Check if user is banned
+        if getattr(user, "is_banned", False):
+            await message.answer(
+                "🚫 <b>Access Denied</b>\n\n"
+                "You have been banned by an administrator from using Anonymous AUA.",
+                parse_mode="HTML",
+            )
+            return
 
         # Check onboarding
         if not user.sex or not user.orientation:
@@ -657,6 +729,13 @@ async def relay_anonymous_message(message: Message, bot: Bot, state: FSMContext)
         # Check file size limit for single media messages
         max_bytes = settings.MAX_MEDIA_FILE_SIZE_MB * 1024 * 1024
         if not media_group_id:
+            # Check single image rate limiting against ephemeral buffer
+            if getattr(message, "photo", None) and session_id:
+                img_allowed, img_reason = session_buffer.check_image_rate_limit(session_id, user_id)
+                if not img_allowed:
+                    await message.answer(img_reason, parse_mode="HTML")
+                    return
+
             file_size = get_message_file_size(message)
             if file_size and file_size > max_bytes:
                 file_size_mb = file_size / (1024 * 1024)
@@ -674,6 +753,14 @@ async def relay_anonymous_message(message: Message, bot: Bot, state: FSMContext)
             if batch is None:
                 # Secondary album item debounced into batch; leader will relay all
                 return
+
+            # Check image rate limit for photos in album against ephemeral buffer
+            photos_in_album = [m for m in batch if getattr(m, "photo", None)]
+            if photos_in_album and session_id:
+                img_allowed, img_reason = session_buffer.check_image_rate_limit(session_id, user_id)
+                if not img_allowed:
+                    await message.answer(img_reason, parse_mode="HTML")
+                    return
 
             # Check if any files in album exceed MAX_MEDIA_FILE_SIZE_MB
             oversized = [m for m in batch if (get_message_file_size(m) or 0) > max_bytes]
@@ -769,6 +856,8 @@ async def relay_anonymous_message(message: Message, bot: Bot, state: FSMContext)
 
                 if session_id:
                     await touch_chat_session_activity(session, session_id)
+                    await _buffer_single_message(bot, session_id, user_id, message)
+                    await _buffer_album_messages(bot, session_id, user_id, batch)
                 return
 
             async with get_user_relay_lock(user_id):
@@ -806,6 +895,7 @@ async def relay_anonymous_message(message: Message, bot: Bot, state: FSMContext)
                             )
                     if session_id:
                         await touch_chat_session_activity(session, session_id)
+                        await _buffer_album_messages(bot, session_id, user_id, batch)
                     logger.info(
                         "Relayed album of %d messages from %s to %s",
                         len(batch),
@@ -860,6 +950,9 @@ async def relay_anonymous_message(message: Message, bot: Bot, state: FSMContext)
                                     )
                             except Exception as item_err:
                                 logger.error("Fallback copy_to failed for album item %s: %s", item.message_id, item_err)
+                        if session_id:
+                            await touch_chat_session_activity(session, session_id)
+                            await _buffer_album_messages(bot, session_id, user_id, batch)
                 except Exception as e:
                     logger.error("Unexpected error relaying album from %s to %s: %s", user_id, partner_id, e)
             return
@@ -1001,6 +1094,7 @@ async def relay_anonymous_message(message: Message, bot: Bot, state: FSMContext)
 
             if session_id:
                 await touch_chat_session_activity(session, session_id)
+                await _buffer_single_message(bot, session_id, user_id, message)
             return
 
         # Acquire per-user lock to maintain strict FIFO message ordering during typing emulation
@@ -1057,6 +1151,7 @@ async def relay_anonymous_message(message: Message, bot: Bot, state: FSMContext)
                     )
                 if session_id:
                     await touch_chat_session_activity(session, session_id)
+                    await _buffer_single_message(bot, session_id, user_id, message)
 
                 # Phishing & link safety advisory for recipient
                 if scan_res.has_links and not scan_res.is_all_trusted:
