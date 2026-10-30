@@ -117,6 +117,12 @@ class User(Base):
     last_verification_reminder_at: Mapped[Optional[datetime]] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    verification_reminders_disabled: Mapped[bool] = mapped_column(
+        Boolean, default=False, nullable=False, server_default=func.false()
+    )
+    verification_reminder_snoozed_until: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     last_setup_reminder_at: Mapped[Optional[datetime]] = mapped_column(
         DateTime(timezone=True), nullable=True
     )

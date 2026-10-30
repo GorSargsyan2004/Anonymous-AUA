@@ -13,12 +13,14 @@ from app.database.crud import (
     admin_override_gender,
     can_request_verification_email,
     check_and_verify_user_code,
+    disable_verification_reminders,
     get_or_create_user,
     is_email_already_verified,
     record_verification_email_sent,
     resolve_gender_mismatch,
     set_gender_appeal_status,
     set_user_verification_code,
+    snooze_verification_reminder,
     update_user_gender_verification,
 )
 from app.database.session import get_db_session
@@ -379,6 +381,74 @@ async def handle_reverify_start(callback_query: CallbackQuery, state: FSMContext
         "<i>(Send /cancel at any time to abort)</i>",
         parse_mode="HTML",
     )
+
+
+@router.callback_query(F.data == "verif_remind_start")
+async def handle_verif_remind_start(callback: CallbackQuery, state: FSMContext) -> None:
+    """Handle start verification directly from 24-hour reminder button."""
+    user_id = callback.from_user.id
+    async with get_db_session() as session:
+        allowed, limit_err = await can_request_verification_email(session, user_id=user_id)
+        if not allowed:
+            await callback.answer(limit_err or "Verification limit active", show_alert=True)
+            return
+
+    await state.set_state(VerificationState.waiting_for_email)
+    await callback.answer()
+    await callback.message.answer(
+        "🎓 <b>AUA Email Verification</b> 🛡️\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        "Confirm your status with your official American University of Armenia email address.\n\n"
+        "<b>Accepted Email Domains:</b>\n"
+        "• <b>Current Students:</b> <code>firstname_lastname@edu.aua.am</code>\n"
+        "• <b>Graduates / Alumni:</b> <code>firstname_lastname@alumni.aua.am</code>\n\n"
+        "<b>Why verify?</b>\n"
+        "• 🎓 <b>Verified Badge</b>: Partners see you are an authentic AUA student or graduate\n"
+        "• 🛡️ <b>Anti-Catfish Shield</b>: Verified gender badge protects students from fake profiles\n"
+        "• 🤝 <b>Higher Trust</b>: Students feel safer connecting and chatting with you\n"
+        "• 🔒 <b>100% Anonymous</b>: Your email address is strictly used for verification and is NEVER shared with or shown to anyone\n\n"
+        "✍️ <i>Please enter your AUA email address below:</i>\n\n"
+        "<i>(Send /cancel at any time to abort)</i>",
+        parse_mode="HTML",
+    )
+
+
+@router.callback_query(F.data == "verif_remind_week")
+async def handle_verif_remind_week(callback: CallbackQuery) -> None:
+    """Snooze verification reminders for 1 week (7 days)."""
+    user_id = callback.from_user.id
+    async with get_db_session() as session:
+        await snooze_verification_reminder(session, user_id=user_id, days=7)
+
+    try:
+        await callback.message.edit_text(
+            "⏳ <b>Reminder Snoozed for 1 Week</b>\n\n"
+            "We won't remind you about email verification for the next 7 days.\n\n"
+            "💡 <i>You can still verify anytime whenever you're ready by sending /verify! 🎓</i>",
+            parse_mode="HTML",
+        )
+    except Exception:
+        pass
+    await callback.answer("Remind in 1 week saved.")
+
+
+@router.callback_query(F.data == "verif_remind_never")
+async def handle_verif_remind_never(callback: CallbackQuery) -> None:
+    """Permanently disable verification reminders for the user."""
+    user_id = callback.from_user.id
+    async with get_db_session() as session:
+        await disable_verification_reminders(session, user_id=user_id)
+
+    try:
+        await callback.message.edit_text(
+            "🚫 <b>Reminders Turned Off</b>\n\n"
+            "You will no longer receive verification reminders.\n\n"
+            "💡 <i>If you ever change your mind in the future, simply send /verify anytime! 🎓</i>",
+            parse_mode="HTML",
+        )
+    except Exception:
+        pass
+    await callback.answer("Verification reminders disabled.")
 
 
 @router.callback_query(F.data.startswith("resolve_gender_switch:"))

@@ -1960,10 +1960,13 @@ async def get_users_for_verification_reminder(
     - User is not banned.
     - Profile setup is complete (sex and orientation are set).
     - User is not verified (is_verified = False).
+    - Verification reminders are not permanently disabled (verification_reminders_disabled = False).
+    - Reminder snooze period has expired (verification_reminder_snoozed_until is None or <= now).
     - Account was created at least `hours_threshold` hours ago.
     - Either never reminded or last reminder was sent at least `hours_threshold` hours ago.
     """
-    cutoff = datetime.now(timezone.utc) - timedelta(hours=hours_threshold)
+    now = datetime.now(timezone.utc)
+    cutoff = now - timedelta(hours=hours_threshold)
     stmt = (
         select(User)
         .where(
@@ -1971,6 +1974,11 @@ async def get_users_for_verification_reminder(
             User.sex.is_not(None),
             User.orientation.is_not(None),
             User.is_verified.is_(False),
+            User.verification_reminders_disabled.is_(False),
+            or_(
+                User.verification_reminder_snoozed_until.is_(None),
+                User.verification_reminder_snoozed_until <= now,
+            ),
             User.created_at <= cutoff,
             or_(
                 User.last_verification_reminder_at.is_(None),
@@ -1982,6 +1990,33 @@ async def get_users_for_verification_reminder(
     )
     result = await session.execute(stmt)
     return list(result.scalars().all())
+
+
+async def snooze_verification_reminder(
+    session: AsyncSession,
+    user_id: int,
+    days: int = 7,
+) -> None:
+    """Snooze verification reminders for a given number of days (default 7 days)."""
+    stmt = select(User).where(User.id == user_id)
+    res = await session.execute(stmt)
+    user = res.scalar_one_or_none()
+    if user:
+        user.verification_reminder_snoozed_until = datetime.now(timezone.utc) + timedelta(days=days)
+        await session.commit()
+
+
+async def disable_verification_reminders(
+    session: AsyncSession,
+    user_id: int,
+) -> None:
+    """Permanently disable verification reminders for a user."""
+    stmt = select(User).where(User.id == user_id)
+    res = await session.execute(stmt)
+    user = res.scalar_one_or_none()
+    if user:
+        user.verification_reminders_disabled = True
+        await session.commit()
 
 
 async def record_setup_reminder_sent(

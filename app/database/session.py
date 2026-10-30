@@ -219,6 +219,16 @@ async def init_db() -> None:
         )
         await conn.execute(
             text(
+                "ALTER TABLE users ADD COLUMN IF NOT EXISTS verification_reminders_disabled BOOLEAN NOT NULL DEFAULT false;"
+            )
+        )
+        await conn.execute(
+            text(
+                "ALTER TABLE users ADD COLUMN IF NOT EXISTS verification_reminder_snoozed_until TIMESTAMP WITH TIME ZONE;"
+            )
+        )
+        await conn.execute(
+            text(
                 "ALTER TABLE users ADD COLUMN IF NOT EXISTS last_setup_reminder_at TIMESTAMP WITH TIME ZONE;"
             )
         )

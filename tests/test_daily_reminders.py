@@ -7,17 +7,27 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 from aiogram import Bot
 from aiogram.exceptions import TelegramForbiddenError
+from aiogram.fsm.context import FSMContext
+from aiogram.types import CallbackQuery, Message, User as TgUser
 
 from app.database.crud import (
+    disable_verification_reminders,
     get_users_for_setup_reminder,
     get_users_for_verification_reminder,
     record_setup_reminder_sent,
     get_users_for_annual_reverification,
     record_annual_reverification_prompt_sent,
     record_verification_reminder_sent,
+    snooze_verification_reminder,
 )
 from app.database.models import User
 from app.database.session import engine, get_db_session
+from app.handlers.verification import (
+    handle_verif_remind_never,
+    handle_verif_remind_start,
+    handle_verif_remind_week,
+)
+from app.keyboards.inline import get_verification_reminder_keyboard
 from app.services.daily_reminders import (
     ANNUAL_REVERIFICATION_TEXT,
     SETUP_REMINDER_TEXT,
@@ -111,8 +121,14 @@ class TestDailyReminders(unittest.IsolatedAsyncioTestCase):
             u5 = User(id=99105, sex=None, orientation=None, is_verified=False, is_banned=False, created_at=old_time)
             # User 6: Banned -> NOT eligible
             u6 = User(id=99106, sex="female", orientation="straight", is_verified=False, is_banned=True, created_at=old_time)
+            # User 7: Never show again disabled -> NOT eligible
+            u7 = User(id=99107, sex="female", orientation="straight", is_verified=False, is_banned=False, created_at=old_time, verification_reminders_disabled=True)
+            # User 8: Snoozed for 5 days into future -> NOT eligible
+            u8 = User(id=99108, sex="male", orientation="straight", is_verified=False, is_banned=False, created_at=old_time, verification_reminder_snoozed_until=now + timedelta(days=5))
+            # User 9: Snoozed period has expired (yesterday) -> ELIGIBLE
+            u9 = User(id=99109, sex="male", orientation="straight", is_verified=False, is_banned=False, created_at=old_time, verification_reminder_snoozed_until=now - timedelta(days=1))
 
-            session.add_all([u1, u2, u3, u4, u5, u6])
+            session.add_all([u1, u2, u3, u4, u5, u6, u7, u8, u9])
             await session.commit()
 
             try:
@@ -120,12 +136,15 @@ class TestDailyReminders(unittest.IsolatedAsyncioTestCase):
                 eligible_ids = {u.id for u in eligible}
                 self.assertIn(99101, eligible_ids)
                 self.assertIn(99104, eligible_ids)
+                self.assertIn(99109, eligible_ids)
                 self.assertNotIn(99102, eligible_ids)
                 self.assertNotIn(99103, eligible_ids)
                 self.assertNotIn(99105, eligible_ids)
                 self.assertNotIn(99106, eligible_ids)
+                self.assertNotIn(99107, eligible_ids)
+                self.assertNotIn(99108, eligible_ids)
             finally:
-                for uid in [99101, 99102, 99103, 99104, 99105, 99106]:
+                for uid in [99101, 99102, 99103, 99104, 99105, 99106, 99107, 99108, 99109]:
                     obj = await session.get(User, uid)
                     if obj:
                         await session.delete(obj)
@@ -266,6 +285,80 @@ class TestDailyReminders(unittest.IsolatedAsyncioTestCase):
         except asyncio.CancelledError:
             pass
         self.assertTrue(task.done())
+
+
+    async def test_snooze_and_disable_verification_reminders(self) -> None:
+        """Verify snooze_verification_reminder and disable_verification_reminders CRUD."""
+        async with get_db_session() as session:
+            u = User(id=99601, sex="male", orientation="straight", is_verified=False, is_banned=False)
+            session.add(u)
+            await session.commit()
+
+            try:
+                # 1. Snooze for 7 days
+                await snooze_verification_reminder(session, user_id=99601, days=7)
+                await session.refresh(u)
+                self.assertIsNotNone(u.verification_reminder_snoozed_until)
+                self.assertGreater(u.verification_reminder_snoozed_until, datetime.now(timezone.utc))
+
+                # 2. Disable reminders permanently
+                await disable_verification_reminders(session, user_id=99601)
+                await session.refresh(u)
+                self.assertTrue(u.verification_reminders_disabled)
+            finally:
+                obj = await session.get(User, 99601)
+                if obj:
+                    await session.delete(obj)
+                await session.commit()
+
+    async def test_verification_reminder_keyboard_and_callbacks(self) -> None:
+        """Verify verification reminder keyboard layout and callback handlers."""
+        kb = get_verification_reminder_keyboard()
+        buttons = [b.callback_data for row in kb.inline_keyboard for b in row]
+        self.assertIn("verif_remind_start", buttons)
+        self.assertIn("verif_remind_week", buttons)
+        self.assertIn("verif_remind_never", buttons)
+
+        async with get_db_session() as session:
+            u = User(id=99602, sex="female", orientation="straight", is_verified=False, is_banned=False)
+            session.add(u)
+            await session.commit()
+
+            try:
+                # Test callback: verif_remind_week
+                cb_week = AsyncMock(spec=CallbackQuery)
+                cb_week.from_user = TgUser(id=99602, is_bot=False, first_name="Test")
+                cb_week.message = AsyncMock(spec=Message)
+                cb_week.message.edit_text = AsyncMock()
+                cb_week.answer = AsyncMock()
+
+                await handle_verif_remind_week(cb_week)
+                cb_week.answer.assert_called_with("Remind in 1 week saved.")
+                cb_week.message.edit_text.assert_called_once()
+                self.assertIn("Reminder Snoozed for 1 Week", cb_week.message.edit_text.call_args[0][0])
+
+                await session.refresh(u)
+                self.assertIsNotNone(u.verification_reminder_snoozed_until)
+
+                # Test callback: verif_remind_never
+                cb_never = AsyncMock(spec=CallbackQuery)
+                cb_never.from_user = TgUser(id=99602, is_bot=False, first_name="Test")
+                cb_never.message = AsyncMock(spec=Message)
+                cb_never.message.edit_text = AsyncMock()
+                cb_never.answer = AsyncMock()
+
+                await handle_verif_remind_never(cb_never)
+                cb_never.answer.assert_called_with("Verification reminders disabled.")
+                cb_never.message.edit_text.assert_called_once()
+                self.assertIn("Reminders Turned Off", cb_never.message.edit_text.call_args[0][0])
+
+                await session.refresh(u)
+                self.assertTrue(u.verification_reminders_disabled)
+            finally:
+                obj = await session.get(User, 99602)
+                if obj:
+                    await session.delete(obj)
+                await session.commit()
 
 
 if __name__ == "__main__":

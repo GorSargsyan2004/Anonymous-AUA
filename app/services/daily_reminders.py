@@ -23,6 +23,7 @@ from app.database.crud import (
     set_user_bot_blocked,
 )
 from app.database.session import get_db_session
+from app.keyboards.inline import get_verification_reminder_keyboard
 from app.services.email_verification import get_current_academic_year
 
 logger = logging.getLogger(__name__)
@@ -101,6 +102,7 @@ async def process_daily_reminders(bot: Bot, hours_threshold: int = 24, batch_lim
                 await bot.send_message(
                     chat_id=user.id,
                     text=VERIFICATION_REMINDER_TEXT,
+                    reply_markup=get_verification_reminder_keyboard(),
                     parse_mode="HTML",
                 )
                 stats["verification_sent"] += 1

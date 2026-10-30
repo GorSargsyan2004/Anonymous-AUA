@@ -464,6 +464,20 @@ def get_delete_me_confirmation_keyboard() -> InlineKeyboardMarkup:
     return builder.as_markup()
 
 
+def get_verification_reminder_keyboard() -> InlineKeyboardMarkup:
+    """Return action buttons for the 24-hour verification reminder:
+    - [ 🎓 Verify Status ]
+    - [ ⏳ Remind in a week ]
+    - [ 🚫 Never show again ]
+    """
+    builder = InlineKeyboardBuilder()
+    builder.button(text="🎓 Verify Now (/verify)", callback_data="verif_remind_start")
+    builder.button(text="⏳ Remind in a week", callback_data="verif_remind_week")
+    builder.button(text="🚫 Never show this again", callback_data="verif_remind_never")
+    builder.adjust(1, 2)
+    return builder.as_markup()
+
+
 
 
 
