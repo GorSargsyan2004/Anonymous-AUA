@@ -805,7 +805,9 @@ async def get_recent_sessions_for_user(
 
 async def create_report(
     session: AsyncSession,
-    session_id: int,
+    session_id: Optional[int] = None,
+    inbox_message_id: Optional[int] = None,
+    thread_token: Optional[str] = None,
     reporter_id: Optional[int] = None,
     reported_id: Optional[int] = None,
     reason_text: Optional[str] = None,
@@ -821,9 +823,11 @@ async def create_report(
     is_resolved: bool = True,
     penalty_applied: Optional[int] = None,
 ) -> Report:
-    """Create a new report filed against a session with automated AI moderation audit fields."""
+    """Create a new report filed against a session or inbox message with automated AI moderation audit fields."""
     report = Report(
         session_id=session_id,
+        inbox_message_id=inbox_message_id,
+        thread_token=thread_token,
         reporter_id=reporter_id,
         reported_id=reported_id,
         reason_text=reason_text,

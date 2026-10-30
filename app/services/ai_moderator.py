@@ -76,8 +76,8 @@ class ModerationVerdict(BaseModel):
 
 class SessionBufferEntry:
     """Tracks turns and rate limits for an active or recently completed session."""
-    def __init__(self, session_id: int, maxlen: int = 60):
-        self.session_id: int = session_id
+    def __init__(self, session_id: Any, maxlen: int = 60):
+        self.session_id: Any = session_id
         self.turns: deque[SessionTurn] = deque(maxlen=maxlen)
         # Tracks per-user image activity: user_id -> {'count': int, 'last_image_time': float}
         self.user_image_stats: Dict[int, Dict[str, Any]] = defaultdict(
@@ -92,7 +92,7 @@ class ProtectedSessionBuffer:
     1. Bounded Circular Queue (deque maxlen=60, text truncated to 500 chars).
     2. Anti-Flood Per-Session Image Rate Limiting (max 1 image / 10s, max 10 images / session).
     3. Compressed Medium Image Capture & Sliding Window Eviction (max 8 images in RAM).
-    4. 5-Minute Auto-Destruction TTL after chat ends.
+    4. Auto-Destruction TTL (5 minutes after live chat ends; 24h for inbox Q&A messages).
     """
 
     MAX_TURNS: int = 60
@@ -101,17 +101,18 @@ class ProtectedSessionBuffer:
     IMAGE_RATE_LIMIT_SECONDS: float = 10.0
     MAX_IMAGES_PER_USER_SESSION: int = 10
     SESSION_TTL_SECONDS: int = 300  # 5 minutes
+    INBOX_TTL_SECONDS: int = 86400  # 24 hours
 
     def __init__(self) -> None:
-        self._sessions: Dict[int, SessionBufferEntry] = {}
+        self._sessions: Dict[Any, SessionBufferEntry] = {}
         self._lock = asyncio.Lock()
 
-    def _get_or_create(self, session_id: int) -> SessionBufferEntry:
+    def _get_or_create(self, session_id: Any) -> SessionBufferEntry:
         if session_id not in self._sessions:
             self._sessions[session_id] = SessionBufferEntry(session_id, maxlen=self.MAX_TURNS)
         return self._sessions[session_id]
 
-    def check_image_rate_limit(self, session_id: int, user_id: int) -> Tuple[bool, str]:
+    def check_image_rate_limit(self, session_id: Any, user_id: int) -> Tuple[bool, str]:
         """Verify if the user is allowed to send an image in this session.
 
         Rules:
@@ -144,14 +145,14 @@ class ProtectedSessionBuffer:
 
         return True, ""
 
-    def record_image_sent(self, session_id: int, user_id: int) -> None:
+    def record_image_sent(self, session_id: Any, user_id: int) -> None:
         """Record an image sent by a user to update rate-limiting statistics."""
         entry = self._get_or_create(session_id)
         stats = entry.user_image_stats[user_id]
         stats["count"] += 1
         stats["last_image_time"] = time.monotonic()
 
-    def add_text(self, session_id: int, user_id: int, text: str) -> None:
+    def add_text(self, session_id: Any, user_id: int, text: str) -> None:
         """Store a text message turn in the ephemeral circular queue."""
         if not text:
             return
@@ -168,7 +169,7 @@ class ProtectedSessionBuffer:
 
     def add_image(
         self,
-        session_id: int,
+        session_id: Any,
         user_id: int,
         image_bytes: bytes,
         caption: Optional[str] = None,
@@ -196,7 +197,7 @@ class ProtectedSessionBuffer:
             )
         )
 
-    def schedule_cleanup(self, session_id: int, ttl: int = SESSION_TTL_SECONDS) -> None:
+    def schedule_cleanup(self, session_id: Any, ttl: int = SESSION_TTL_SECONDS) -> None:
         """Schedule automatic deletion of the session buffer after TTL seconds."""
         entry = self._sessions.get(session_id)
         if not entry:
@@ -215,7 +216,7 @@ class ProtectedSessionBuffer:
 
         entry.cleanup_task = asyncio.create_task(_cleanup())
 
-    def pop_session(self, session_id: int) -> Optional[List[SessionTurn]]:
+    def pop_session(self, session_id: Any) -> Optional[List[SessionTurn]]:
         """Atomically pop the buffer for evaluation, immediately erasing it from RAM."""
         entry = self._sessions.pop(session_id, None)
         if not entry:
@@ -226,7 +227,7 @@ class ProtectedSessionBuffer:
 
         return list(entry.turns)
 
-    def has_session(self, session_id: int) -> bool:
+    def has_session(self, session_id: Any) -> bool:
         """Check if an active or unexpired buffer exists for a session."""
         return session_id in self._sessions
 
@@ -250,6 +251,10 @@ Your mission is to evaluate an ephemeral chat conversation between two anonymous
 You must judge BOTH participants fairly and impartially based on the Community Code of Conduct and Privacy Rules.
 
 COMMUNITY CODE OF CONDUCT & JUDGING CRITERIA:
+
+0. Language Context:
+- AUA students communicate in English, Armenian (in standard Armenian script as well as Latin transliteration / Armlish, e.g. "vonc es axper", "inch ka", "lav em", slang, idioms, or insults/threats in Latin script), and Russian.
+- You must accurately comprehend Latin-script Armenian (Armlish), colloquial youth slang, and transliteration when judging the tone and violations in the conversation.
 
 1. Rule A: Privacy Violations & Anti-Doxxing
 - Sharing, guessing, outing, or threatening to expose another student's real full name, phone number, residential address, student ID, social media handles, or private photos without explicit consent.

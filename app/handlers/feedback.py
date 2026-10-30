@@ -436,26 +436,6 @@ async def handle_emerg_report_prompt_callback(callback: CallbackQuery) -> None:
     )
     await callback.answer()
 
-    # If consensus was reached (e.g. 2+ independent flags), notify admins
-    if result.get("consensus_reached"):
-        partner = result.get("partner")
-        safe_p_username = html.escape(partner.username or "N/A") if partner else "N/A"
-        admin_alert_text = (
-            "🚨 <b>AUTOMATED CONSENSUS WARNING: Repeated Flags!</b>\n"
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-            f"• <b>Flagged User ID:</b> <code>{partner_id}</code> (@{safe_p_username})\n"
-            f"• <b>Violation Type:</b> {feedback_type.upper()}\n"
-            f"• <b>Independent Flags:</b> {result['spam_flags_count']} students\n"
-            f"• <b>Penalty Applied:</b> -5 priority points (Current: {result['new_priority']}/100)\n"
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-            "<i>Multiple independent students have reported this account. Review via /stata.</i>"
-        )
-        for admin_id in settings.ADMIN_IDS:
-            try:
-                await bot.send_message(chat_id=admin_id, text=admin_alert_text, parse_mode="HTML")
-            except TelegramAPIError as e:
-                logger.debug("Failed to send consensus alert to admin %s: %s", admin_id, e)
-
 
 @router.callback_query(F.data == "suggest_dismiss")
 async def handle_suggest_dismiss(callback: CallbackQuery) -> None:

@@ -342,6 +342,21 @@ async def init_db() -> None:
                 "ALTER TABLE reports ADD COLUMN IF NOT EXISTS anonymized_summary TEXT;"
             )
         )
+        await conn.execute(
+            text(
+                "ALTER TABLE reports ALTER COLUMN session_id DROP NOT NULL;"
+            )
+        )
+        await conn.execute(
+            text(
+                "ALTER TABLE reports ADD COLUMN IF NOT EXISTS inbox_message_id INTEGER REFERENCES inbox_messages(id) ON DELETE CASCADE;"
+            )
+        )
+        await conn.execute(
+            text(
+                "ALTER TABLE reports ADD COLUMN IF NOT EXISTS thread_token VARCHAR(32);"
+            )
+        )
 
 
 

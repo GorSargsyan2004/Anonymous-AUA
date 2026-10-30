@@ -252,8 +252,14 @@ class Report(Base):
     __tablename__ = "reports"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    session_id: Mapped[int] = mapped_column(
-        Integer, ForeignKey("chat_sessions.id", ondelete="CASCADE"), nullable=False, index=True
+    session_id: Mapped[Optional[int]] = mapped_column(
+        Integer, ForeignKey("chat_sessions.id", ondelete="CASCADE"), nullable=True, index=True
+    )
+    inbox_message_id: Mapped[Optional[int]] = mapped_column(
+        Integer, ForeignKey("inbox_messages.id", ondelete="CASCADE"), nullable=True, index=True
+    )
+    thread_token: Mapped[Optional[str]] = mapped_column(
+        String(32), nullable=True, index=True
     )
     reporter_id: Mapped[Optional[int]] = mapped_column(
         BigInteger, ForeignKey("users.id", ondelete="SET NULL"), nullable=True

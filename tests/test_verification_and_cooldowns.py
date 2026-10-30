@@ -297,7 +297,7 @@ class TestVerificationAndCooldowns(unittest.IsolatedAsyncioTestCase):
 
     async def test_06_alumni_verification_flow(self):
         """Test that @alumni.aua.am emails are accepted, grant alumni badge, and never expire."""
-        alumni_email = "arman_sargsyan@alumni.aua.am"
+        alumni_email = "tester_student@alumni.aua.am"
 
         async with get_db_session() as session:
             state = AsyncMock()

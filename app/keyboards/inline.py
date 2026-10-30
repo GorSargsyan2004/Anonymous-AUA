@@ -359,14 +359,15 @@ def get_inbox_message_keyboard(thread_token: str) -> InlineKeyboardMarkup:
     """Return inline action buttons for an inbox message received by owner."""
     builder = InlineKeyboardBuilder()
     builder.button(text="💬 Reply", callback_data=f"inbox_reply:{thread_token}")
-    builder.button(text="🚫 Block Sender", callback_data=f"inbox_block_confirm:{thread_token}")
+    builder.button(text="🚫 Block", callback_data=f"inbox_block_confirm:{thread_token}")
+    builder.button(text="🚨 Report", callback_data=f"inbox_report_prompt:{thread_token}")
 
     # Fun reactions
     emojis = ["❤️", "😂", "🔥", "😮", "🙈"]
     for emo in emojis:
         builder.button(text=emo, callback_data=f"inbox_react:{thread_token}:{emo}")
 
-    builder.adjust(2, 5)
+    builder.adjust(3, 5)
     return builder.as_markup()
 
 
@@ -379,11 +380,21 @@ def get_inbox_block_confirm_keyboard(thread_token: str) -> InlineKeyboardMarkup:
     return builder.as_markup()
 
 
+def get_inbox_report_confirm_keyboard(thread_token: str) -> InlineKeyboardMarkup:
+    """Return confirmation keyboard before reporting an anonymous message to AI Moderator."""
+    builder = InlineKeyboardBuilder()
+    builder.button(text="🚨 Confirm Report to AI", callback_data=f"inbox_report_do:{thread_token}")
+    builder.button(text="❌ Cancel", callback_data=f"inbox_report_cancel:{thread_token}")
+    builder.adjust(1, 1)
+    return builder.as_markup()
+
+
 def get_inbox_reply_keyboard(thread_token: str) -> InlineKeyboardMarkup:
-    """Return reply-back button for sender when recipient responds."""
+    """Return reply-back and report button when partner responds."""
     builder = InlineKeyboardBuilder()
     builder.button(text="💬 Reply Back", callback_data=f"inbox_reply:{thread_token}")
-    builder.adjust(1)
+    builder.button(text="🚨 Report", callback_data=f"inbox_report_prompt:{thread_token}")
+    builder.adjust(2)
     return builder.as_markup()
 
 

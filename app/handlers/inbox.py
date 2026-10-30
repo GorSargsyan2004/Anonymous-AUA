@@ -1,6 +1,7 @@
 """Personal Anonymous Message Inbox (/link) handlers and two-way threaded replies."""
 
 import html
+import io
 import logging
 import random
 from typing import Optional
@@ -11,14 +12,20 @@ from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 
+from app.config import settings
 from app.database.crud import (
+    add_or_update_user_block,
+    apply_admin_penalty,
+    ban_user_by_admin,
     block_inbox_sender,
     create_or_regenerate_inbox,
+    create_report,
     deactivate_user_inbox,
     get_inbox_by_token,
     get_inbox_cooldown_remaining,
     get_inbox_message_by_thread,
     get_or_create_user,
+    get_user,
     get_user_active_inbox,
     is_inbox_sender_blocked,
     mark_inbox_message_replied,
@@ -32,7 +39,10 @@ from app.keyboards.inline import (
     get_inbox_owner_keyboard,
     get_inbox_prompt_keyboard,
     get_inbox_reply_keyboard,
+    get_inbox_report_confirm_keyboard,
 )
+from app.services.ai_moderator import SessionTurn, gemini_moderator, session_buffer
+from app.services.ban_manager import add_banned_user
 from app.services.link_shield import link_shield
 from app.states.states import InboxState
 from sqlalchemy import select
@@ -315,6 +325,29 @@ async def handle_inbox_message_submission(message: Message, bot: Bot, state: FSM
 
     await state.clear()
 
+    # Buffer in volatile RAM for potential AI Moderation review (24h TTL)
+    buffer_key = f"inbox_{inbox_msg.thread_token}"
+    if msg_type == "text":
+        session_buffer.add_text(buffer_key, sender_id, message.text or "")
+    elif msg_type == "photo" and message.photo:
+        try:
+            photo_item = message.photo[-2] if len(message.photo) > 1 else message.photo[-1]
+            img_bio = io.BytesIO()
+            await bot.download(photo_item, destination=img_bio)
+            session_buffer.add_image(
+                session_id=buffer_key,
+                user_id=sender_id,
+                image_bytes=img_bio.getvalue(),
+                caption=message.caption,
+            )
+        except Exception as e:
+            logger.debug("Could not buffer inbox photo: %s", e)
+            session_buffer.add_text(buffer_key, sender_id, message.caption or "[Photo]")
+    else:
+        session_buffer.add_text(buffer_key, sender_id, message.caption or f"[{msg_type.title()} attachment]")
+
+    session_buffer.schedule_cleanup(buffer_key, ttl=session_buffer.INBOX_TTL_SECONDS)
+
     # Deliver to owner
     keyboard = get_inbox_message_keyboard(inbox_msg.thread_token)
     header = (
@@ -442,6 +475,30 @@ async def handle_inbox_reply_submit(message: Message, bot: Bot, state: FSMContex
 
     await state.clear()
 
+    # Buffer reply in volatile RAM for AI Moderation
+    buffer_key = f"inbox_{thread_token}"
+    replier_id = message.from_user.id
+    if message.text:
+        session_buffer.add_text(buffer_key, replier_id, message.text)
+    elif message.photo:
+        try:
+            photo_item = message.photo[-2] if len(message.photo) > 1 else message.photo[-1]
+            img_bio = io.BytesIO()
+            await bot.download(photo_item, destination=img_bio)
+            session_buffer.add_image(
+                session_id=buffer_key,
+                user_id=replier_id,
+                image_bytes=img_bio.getvalue(),
+                caption=message.caption,
+            )
+        except Exception as e:
+            logger.debug("Could not buffer inbox reply photo: %s", e)
+            session_buffer.add_text(buffer_key, replier_id, message.caption or "[Photo]")
+    elif message.caption:
+        session_buffer.add_text(buffer_key, replier_id, message.caption)
+
+    session_buffer.schedule_cleanup(buffer_key, ttl=session_buffer.INBOX_TTL_SECONDS)
+
     reply_kb = get_inbox_reply_keyboard(thread_token)
     header_label = (
         "📬 <b>Reply from the Inbox Owner:</b> 💬"
@@ -563,3 +620,186 @@ async def handle_inbox_block_do(callback: CallbackQuery) -> None:
         parse_mode="HTML",
     )
     await callback.answer("Sender blocked permanently.")
+
+
+# ==============================================================================
+# AI Moderation Reporting for Inbox Messages
+# ==============================================================================
+
+@router.callback_query(F.data.startswith("inbox_report_prompt:"))
+async def handle_inbox_report_prompt(callback: CallbackQuery) -> None:
+    """Prompt user before reporting an anonymous message to the AI Moderator."""
+    thread_token = callback.data.split(":")[1]
+    await callback.message.reply(
+        "🚨 <b>Report Anonymous Message to AI Moderator?</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        "The automated Gemini AI Moderator will review this message against AUA Community Code of Conduct & Anti-Doxxing rules.\n\n"
+        "⚖️ <b>Accountability & Rules:</b>\n"
+        "• Evaluates harassment, death threats, doxxing, hate speech, or unsolicited NSFW.\n"
+        "• Automatically blocks the sender from messaging your inbox.\n"
+        "• Deducts matchmaking priority points from guilty senders (up to -10).\n"
+        "• Extreme illegal acts (violence threats, CSAM, extortion) result in immediate bans and identity unmasking to administration.\n"
+        "• <i>Filing false or spiteful reports against innocent messages will penalize the reporter.</i>\n\n"
+        "👉 <i>Would you like to submit this report?</i>",
+        reply_markup=get_inbox_report_confirm_keyboard(thread_token),
+        parse_mode="HTML",
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("inbox_report_cancel:"))
+async def handle_inbox_report_cancel(callback: CallbackQuery) -> None:
+    """Cancel reporting action."""
+    await callback.message.delete()
+    await callback.answer("Report cancelled.")
+
+
+@router.callback_query(F.data.startswith("inbox_report_do:"))
+async def handle_inbox_report_do(callback: CallbackQuery, bot: Bot) -> None:
+    """Evaluate anonymous inbox thread with Gemini AI Moderator and apply penalties/blocks."""
+    thread_token = callback.data.split(":")[1]
+    reporter_id = callback.from_user.id
+
+    async with get_db_session() as session:
+        msg = await get_inbox_message_by_thread(session, thread_token)
+        if not msg:
+            await callback.answer("Message thread not found.", show_alert=True)
+            return
+
+        is_owner = (reporter_id == msg.owner_id)
+        is_sender = (reporter_id == msg.sender_id)
+        if not is_owner and not is_sender:
+            await callback.answer("Unauthorized.", show_alert=True)
+            return
+
+        reported_id = msg.sender_id if is_owner else msg.owner_id
+
+    # Immediate status feedback
+    await callback.message.edit_text(
+        "🤖 <b>AI Safety Moderator Evaluating Message...</b>\n\n"
+        "Analyzing conversation turns against AUA Safety & Privacy Rules. Please wait...",
+        parse_mode="HTML",
+    )
+
+    buffer_key = f"inbox_{thread_token}"
+    turns = session_buffer.pop_session(buffer_key)
+    if not turns:
+        # Fallback if buffer expired or bot restarted
+        raw_text = callback.message.text or callback.message.caption or f"[{msg.message_type.title()} anonymous message]"
+        turns = [SessionTurn(sender_id=reported_id, text=raw_text)]
+
+    verdict = await gemini_moderator.evaluate_session(
+        turns=turns,
+        reporter_id=reporter_id,
+        reported_id=reported_id,
+        reason_text="Anonymous Inbox Q&A Report",
+    )
+
+    async with get_db_session() as session:
+        # 1. Matchmaking priority penalties
+        if verdict.reported_user_penalty > 0:
+            await apply_admin_penalty(session, user_id=reported_id, penalty=verdict.reported_user_penalty)
+
+        if verdict.reporter_penalty > 0:
+            await apply_admin_penalty(session, user_id=reporter_id, penalty=verdict.reporter_penalty)
+
+        # 2. Always block sender from this owner's inbox
+        await block_inbox_sender(session, owner_id=msg.owner_id, sender_id=msg.sender_id)
+
+        # 3. Matchmaking pairwise block
+        if verdict.block_reported_user:
+            await add_or_update_user_block(session, user_id=reporter_id, blocked_user_id=reported_id, expires_at=None)
+
+        if verdict.block_reporter:
+            await add_or_update_user_block(session, user_id=reported_id, blocked_user_id=reporter_id, expires_at=None)
+
+        # 4. Tier 3 Extreme Illegal Violations
+        if verdict.reveal_identity_for_illegal_content:
+            if verdict.illegal_perpetrator in ("Reported_User", "Both"):
+                await ban_user_by_admin(session, user_id=reported_id)
+                add_banned_user(reported_id)
+            if verdict.illegal_perpetrator in ("Reporter", "Both"):
+                await ban_user_by_admin(session, user_id=reporter_id)
+                add_banned_user(reporter_id)
+
+            # Store unmasked IDs in Report audit
+            report = await create_report(
+                session=session,
+                session_id=None,
+                inbox_message_id=msg.id,
+                thread_token=thread_token,
+                reporter_id=reporter_id,
+                reported_id=reported_id,
+                reason_text="Anonymous Inbox Q&A Illegal Violation",
+                guilty_party=verdict.guilty_party,
+                severity_category=verdict.severity_category,
+                reported_user_penalty=verdict.reported_user_penalty,
+                reporter_penalty=verdict.reporter_penalty,
+                reported_user_blocked=True,
+                reporter_blocked=verdict.block_reporter,
+                identity_revealed_for_illegal=True,
+                anonymized_summary=verdict.anonymized_summary,
+            )
+
+            # Alert administrators immediately
+            reported_obj = await get_user(session, reported_id)
+            reporter_obj = await get_user(session, reporter_id)
+            reported_un = f"@{reported_obj.username}" if (reported_obj and reported_obj.username) else f"ID: {reported_id}"
+            reporter_un = f"@{reporter_obj.username}" if (reporter_obj and reporter_obj.username) else f"ID: {reporter_id}"
+
+            admin_alert = (
+                "🚨 <b>CRITICAL SAFETY ALERT: TIER 3 ILLEGAL CONTENT IN INBOX!</b> ⚠️\n"
+                "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"• <b>Report ID:</b> #{report.id}\n"
+                f"• <b>Thread Token:</b> <code>{thread_token}</code>\n"
+                f"• <b>Perpetrator:</b> {verdict.illegal_perpetrator}\n"
+                f"• <b>Reported User:</b> {reported_un} (<code>{reported_id}</code>)\n"
+                f"• <b>Reporter:</b> {reporter_un} (<code>{reporter_id}</code>)\n"
+                f"• <b>Category:</b> {verdict.severity_category}\n"
+                f"• <b>Summary:</b> {html.escape(verdict.anonymized_summary)}\n"
+                "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                "<i>Offender account has been permanently banned from Anonymous AUA.</i>"
+            )
+            for admin_id in settings.ADMIN_IDS:
+                try:
+                    await bot.send_message(chat_id=admin_id, text=admin_alert, parse_mode="HTML")
+                except TelegramAPIError as e:
+                    logger.warning("Failed to dispatch inbox admin alert to %s: %s", admin_id, e)
+        else:
+            # Fully anonymized report record
+            await create_report(
+                session=session,
+                session_id=None,
+                inbox_message_id=msg.id,
+                thread_token=thread_token,
+                reporter_id=None,
+                reported_id=None,
+                reason_text="Anonymous Inbox Q&A Report",
+                guilty_party=verdict.guilty_party,
+                severity_category=verdict.severity_category,
+                reported_user_penalty=verdict.reported_user_penalty,
+                reporter_penalty=verdict.reporter_penalty,
+                reported_user_blocked=verdict.block_reported_user,
+                reporter_blocked=verdict.block_reporter,
+                identity_revealed_for_illegal=False,
+                anonymized_summary=verdict.anonymized_summary,
+            )
+
+    guilty_desc = {
+        "Reported_User": "Reported Sender",
+        "Reporter": "Reporter (False/Frivolous Report)",
+        "Both": "Both Parties",
+        "Neither": "Neither Party (No Violation)",
+    }.get(verdict.guilty_party, verdict.guilty_party)
+
+    summary_text = (
+        "🛡️ <b>Report Evaluated by AI Moderator</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"• <b>Verdict:</b> {guilty_desc}\n"
+        f"• <b>Category:</b> {verdict.severity_category}\n"
+        f"• <b>Summary:</b> <i>\"{html.escape(verdict.anonymized_summary)}\"</i>\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        "🔒 <b>Action Taken:</b> The sender has been blocked from your anonymous inbox."
+    )
+    await callback.message.edit_text(summary_text, parse_mode="HTML")
+    await callback.answer("Report evaluated by AI.", show_alert=False)

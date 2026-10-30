@@ -35,18 +35,27 @@ from app.database.models import (
     ChatSession,
     InboxBlock,
     InboxMessage,
+    Report,
     User,
 )
 from app.database.session import engine, get_db_session
-from app.handlers.inbox import handle_inbox_deeplink
+from app.handlers.inbox import (
+    handle_inbox_deeplink,
+    handle_inbox_report_cancel,
+    handle_inbox_report_do,
+    handle_inbox_report_prompt,
+)
 from app.handlers.invites import handle_invite_deeplink
 from app.keyboards.inline import (
     get_inbox_block_confirm_keyboard,
     get_inbox_message_keyboard,
     get_inbox_owner_keyboard,
+    get_inbox_reply_keyboard,
+    get_inbox_report_confirm_keyboard,
     get_invite_item_keyboard,
     get_invite_menu_keyboard,
 )
+from app.services.ai_moderator import ModerationVerdict, gemini_moderator, session_buffer
 
 
 class TestInboxAndInvites(unittest.IsolatedAsyncioTestCase):
@@ -71,6 +80,7 @@ class TestInboxAndInvites(unittest.IsolatedAsyncioTestCase):
             await session.execute(update(User).where(User.id.in_(test_ids)).values(current_partner_id=None))
             await session.execute(delete(ChatSession).where(ChatSession.user1_id.in_(test_ids) | ChatSession.user2_id.in_(test_ids)))
             await session.execute(delete(InboxMessage).where(InboxMessage.owner_id.in_(test_ids) | InboxMessage.sender_id.in_(test_ids)))
+            await session.execute(delete(Report).where(Report.thread_token.isnot(None)))
             await session.execute(delete(InboxBlock).where(InboxBlock.owner_id.in_(test_ids) | InboxBlock.blocked_sender_id.in_(test_ids)))
             await session.execute(delete(AnonymousInbox).where(AnonymousInbox.user_id.in_(test_ids)))
             await session.execute(delete(ChatInvite).where(ChatInvite.creator_id.in_(test_ids)))
@@ -251,12 +261,86 @@ class TestInboxAndInvites(unittest.IsolatedAsyncioTestCase):
 
         kb_msg = get_inbox_message_keyboard("thread_abc")
         self.assertGreaterEqual(len(kb_msg.inline_keyboard), 2)
+        all_cb = [btn.callback_data for row in kb_msg.inline_keyboard for btn in row]
+        self.assertIn("inbox_report_prompt:thread_abc", all_cb)
+        self.assertIn("inbox_block_confirm:thread_abc", all_cb)
+        self.assertIn("inbox_reply:thread_abc", all_cb)
+
+        kb_rep = get_inbox_reply_keyboard("thread_abc")
+        all_rep_cb = [btn.callback_data for row in kb_rep.inline_keyboard for btn in row]
+        self.assertIn("inbox_report_prompt:thread_abc", all_rep_cb)
+        self.assertIn("inbox_reply:thread_abc", all_rep_cb)
+
+        kb_confirm = get_inbox_report_confirm_keyboard("thread_abc")
+        all_conf_cb = [btn.callback_data for row in kb_confirm.inline_keyboard for btn in row]
+        self.assertIn("inbox_report_do:thread_abc", all_conf_cb)
+        self.assertIn("inbox_report_cancel:thread_abc", all_conf_cb)
 
         kb_invite_menu = get_invite_menu_keyboard(has_active=True)
         self.assertEqual(len(kb_invite_menu.inline_keyboard), 3)
 
         kb_invite_item = get_invite_item_keyboard("code123")
         self.assertEqual(len(kb_invite_item.inline_keyboard), 2)
+
+    async def test_inbox_ai_moderation_reporting(self):
+        """Test reporting an abusive anonymous inbox message to Gemini AI Moderator."""
+        async with get_db_session() as session:
+            await create_or_regenerate_inbox(session, user_id=self.owner_id)
+            inbox_msg = await record_inbox_message(
+                session, owner_id=self.owner_id, sender_id=self.sender_id, message_type="text"
+            )
+
+        # 1. Add text to ephemeral RAM buffer
+        buffer_key = f"inbox_{inbox_msg.thread_token}"
+        session_buffer.add_text(buffer_key, self.sender_id, "I will find and hurt you!")
+
+        # 2. Mock callback query
+        callback = AsyncMock(spec=CallbackQuery)
+        callback.data = f"inbox_report_do:{inbox_msg.thread_token}"
+        callback.from_user = TgUser(id=self.owner_id, is_bot=False, first_name="Owner")
+        callback.message = AsyncMock(spec=Message)
+        callback.message.text = "I will find and hurt you!"
+        callback.message.caption = None
+        callback.message.edit_text = AsyncMock()
+        callback.answer = AsyncMock()
+
+        bot = AsyncMock()
+
+        # Mock AI verdict
+        mock_verdict = ModerationVerdict(
+            guilty_party="Reported_User",
+            severity_category="Severe_Harassment_NSFW",
+            reported_user_penalty=6,
+            reporter_penalty=0,
+            block_reported_user=True,
+            block_reporter=False,
+            reveal_identity_for_illegal_content=False,
+            illegal_perpetrator="None",
+            anonymized_summary="The reported sender made severe threats.",
+        )
+
+        with patch.object(gemini_moderator, "evaluate_session", new_callable=AsyncMock) as mock_eval:
+            mock_eval.return_value = mock_verdict
+            await handle_inbox_report_do(callback, bot)
+
+            mock_eval.assert_called_once()
+            self.assertGreaterEqual(callback.message.edit_text.call_count, 1)
+
+        # 3. Verify in database:
+        async with get_db_session() as session:
+            sender_user = (await session.execute(select(User).where(User.id == self.sender_id))).scalar_one()
+            self.assertEqual(sender_user.priority, 44)
+
+            self.assertTrue(await is_inbox_sender_blocked(session, owner_id=self.owner_id, sender_id=self.sender_id))
+
+            stmt = select(Report).where(Report.thread_token == inbox_msg.thread_token)
+            rep = (await session.execute(stmt)).scalar_one_or_none()
+            self.assertIsNotNone(rep)
+            self.assertEqual(rep.guilty_party, "Reported_User")
+            self.assertEqual(rep.severity_category, "Severe_Harassment_NSFW")
+            self.assertEqual(rep.reported_user_penalty, 6)
+            self.assertIsNone(rep.reporter_id)
+            self.assertIsNone(rep.reported_id)
 
 
 if __name__ == "__main__":
