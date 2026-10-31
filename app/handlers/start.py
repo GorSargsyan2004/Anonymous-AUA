@@ -117,22 +117,7 @@ async def handle_start(
                 f"🎯 <b>Your Matching Preferences:</b>\n"
                 f"• Target Sexes: <b>{', '.join(p_sexes)}</b>\n"
                 f"• Target Orientations: <b>{', '.join(p_orients)}</b>\n\n"
-                f"⚡ <b>Available Commands:</b>\n"
-                f"• /search — Find an anonymous chat partner\n"
-                f"• /link — Your personal link to receive anonymous questions 🎭\n"
-                f"• /invite — Create direct 1-on-1 chat invitation links 🔗\n"
-                f"• /next — Skip to the next partner\n"
-                f"• /stop — End current chat or cancel search\n"
-                f"• /pause — Put chat into Sleep Mode for the night 🌙\n"
-                f"• /onetime — Toggle 15s View-Once mode for media 🔒\n"
-                f"• /recent — View recent partners to rate or report\n"
-                f"• /preferences — Adjust who you connect with\n"
-                f"• /profile — Update your sex or orientation\n"
-                f"• /verify — Verify your AUA student email (@edu.aua.am) 🎓\n"
-                f"• /blocklist — View & manage blocked partners\n"
-                f"• /safety — Anti-scam & blackmail protection guide\n"
-                f"• /help — Show full commands & features guide\n"
-                f"• /suggestion — Send feedback or ideas to improve the bot\n\n"
+                f"💡 <i>Send /help to view all available commands and features.</i>\n\n"
                 f"<i>Ready to meet fellow students? Press /search to start! ×͜×</i>",
                 parse_mode="HTML",
             )
