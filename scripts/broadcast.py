@@ -17,6 +17,7 @@ from aiogram.exceptions import (
     TelegramRetryAfter,
     TelegramAPIError,
 )
+from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from sqlalchemy import select
 
 from app.config import settings
@@ -32,17 +33,36 @@ logging.basicConfig(
 logger = logging.getLogger("broadcast")
 
 BROADCAST_MESSAGE = (
-    "👩 <b>Message from the Admin to girls.</b>\n"
-    "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-    "Dear girls, I have received feedback that most of the guys you connect with behave horny and in somewhat disgusting way. 😅\n\n"
-    "Please help eliminate or at least punish such guys to ensure a better experience in the anonymous chat. Just report them; the AI Moderator will judge their behavior and penalize them, so they will appear at the bottom of the queue. ⚖️\n\n"
-    "Be more strict with such behavior, and don't get disappointed, as not all guys behave that way. 🤝\n\n"
+    "🚀 <b>Exciting News for the AUA Community!</b> 🇦🇲\n"
+    "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+    "Dear AUA students,\n\n"
+    "Our fellow mates <b>Vahe</b> (@gnunyann) and <b>Arman</b> (@Arman_6204) have built an awesome new project dedicated to bringing our university community closer together, one of the same purposes of Anonymous Bot:\n\n"
+    "🌐 <b><a href=\"https://findaua.com\">findaua.com</a></b>\n\n"
+    "Whether you want to meet new people or make the most of campus life, <b>findaua.com</b> lets you:\n\n"
+    "• 📅 <b>Plan Meetups & Hangouts:</b> Organize gatherings with students on and around campus.\n"
+    "• 📚 <b>Study Sessions:</b> Find study partners and collaborate on coursework and exams.\n"
+    "• 📢 <b>Post & Discover Events:</b> Share student initiatives, club activities, and campus happenings.\n"
+    "• 🤝 <b>Expand Your Network:</b> Build genuine connections with students across all majors and cohorts.\n\n"
+    "I strongly recommend checking it out and giving it a spin! Let’s support student-built initiatives that make our campus vibrant. 🎓✨\n\n"
+    "👉 <b>Visit:</b> <a href=\"https://findaua.com\">findaua.com</a>\n"
+    "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
     "Best wishes,\n"
     "<b>Gor Sargsyan</b>"
 )
 
+BROADCAST_KEYBOARD = InlineKeyboardMarkup(
+    inline_keyboard=[
+        [
+            InlineKeyboardButton(
+                text="🌐 Visit findaua.com",
+                url="https://findaua.com",
+            )
+        ]
+    ]
+)
 
-async def get_target_users(gender: Optional[str] = "female", test_user_id: Optional[int] = None) -> List[int]:
+
+async def get_target_users(gender: Optional[str] = "all", test_user_id: Optional[int] = None) -> List[int]:
     """Retrieve list of user IDs to receive broadcast."""
     if test_user_id:
         return [test_user_id]
@@ -58,7 +78,7 @@ async def get_target_users(gender: Optional[str] = "female", test_user_id: Optio
     return user_ids
 
 
-async def run_broadcast(gender: Optional[str] = "female", test_user_id: Optional[int] = None) -> None:
+async def run_broadcast(gender: Optional[str] = "all", test_user_id: Optional[int] = None) -> None:
     """Execute the broadcast safely with rate limit handling."""
     session = None
     if settings.TELEGRAM_BOT_API_URL:
@@ -92,6 +112,7 @@ async def run_broadcast(gender: Optional[str] = "female", test_user_id: Optional
                         chat_id=user_id,
                         text=BROADCAST_MESSAGE,
                         parse_mode="HTML",
+                        reply_markup=BROADCAST_KEYBOARD,
                         disable_web_page_preview=True,
                     )
                     successful += 1
@@ -177,7 +198,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Broadcast message to bot users.")
     parser.add_argument("pos_test_id", nargs="?", type=int, default=None, help="Positional test user ID")
     parser.add_argument("--test", type=int, default=None, help="Test user ID")
-    parser.add_argument("--gender", type=str, default="female", help="Target gender: female, male, all (default: female)")
+    parser.add_argument("--gender", type=str, default="all", help="Target gender: female, male, all (default: all)")
     args = parser.parse_args()
 
     test_id = args.pos_test_id or args.test
