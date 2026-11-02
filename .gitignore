@@ -53,3 +53,7 @@ alembic/versions/__pycache__/
 # Logs
 *.log
 logs/
+
+# Implementation Plans & Private Notes
+implementation_plan.md
+
