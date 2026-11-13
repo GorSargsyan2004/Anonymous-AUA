@@ -91,6 +91,10 @@ from app.services.email_verification import (
     is_valid_aua_email,
     send_verification_email,
 )
+from app.services.jenzareviews_sync import (
+    get_jenzareviews_sync_status,
+    jenzareviews_sync_worker,
+)
 from app.services.link_shield import URL_REGEX, LinkShield
 from app.services.sonis_scraper import sync_courses_from_sonis
 
@@ -813,8 +817,8 @@ def serialize_academic_feedback(
 ) -> Dict[str, Any]:
     u = fb.web_user
     is_deleted = getattr(u, "is_deleted", False) or (u and u.name == "Deleted Account")
-    is_owner = bool(current_user_id and fb.web_user_id == current_user_id and not is_deleted)
-    if fb.is_anonymous:
+    is_owner = bool(current_user_id and fb.web_user_id is not None and fb.web_user_id == current_user_id and not is_deleted)
+    if fb.is_anonymous or fb.web_user_id is None:
         author_id = None
         author_name = "Anonymous AUA Student"
         author_avatar = "/static/bot-logo.svg"
@@ -835,14 +839,16 @@ def serialize_academic_feedback(
         "target_subtitle": fb.target_subtitle or "",
         "rating": fb.rating,
         "comment": fb.comment,
-        "is_anonymous": fb.is_anonymous,
+        "course_name": getattr(fb, "course_name", None) or "",
+        "would_take_again": getattr(fb, "would_take_again", None),
+        "is_anonymous": fb.is_anonymous or fb.web_user_id is None,
         "is_owner": is_owner,
         "author_id": author_id,
         "author_name": author_name,
         "author_avatar": author_avatar,
         "author_bio": author_bio,
         "author_inbox_link": author_inbox_link,
-        "is_deleted": False if fb.is_anonymous else is_deleted,
+        "is_deleted": False if (fb.is_anonymous or fb.web_user_id is None) else is_deleted,
         "created_at": fb.created_at.isoformat() if fb.created_at else None,
         "updated_at": fb.updated_at.isoformat() if fb.updated_at else None,
     }
@@ -2360,6 +2366,11 @@ async def api_mark_all_notifications_read(request: web.Request) -> web.Response:
 # 8. Academic Feedbacks (<Feedbacks>: Instructors & Courses)
 # ------------------------------------------------------------------------------
 
+@routes.get("/api/feedbacks/sync-status")
+async def api_get_feedbacks_sync_status(request: web.Request) -> web.Response:
+    return web.json_response(get_jenzareviews_sync_status())
+
+
 @routes.get("/api/feedbacks/catalog")
 async def api_get_feedbacks_catalog(request: web.Request) -> web.Response:
     async with get_db_session() as session:
@@ -2432,6 +2443,9 @@ async def api_create_feedback(request: web.Request) -> web.Response:
     target_subtitle = (data.get("target_subtitle") or "").strip()
     comment = (data.get("comment") or "").strip()
     is_anonymous = bool(data.get("is_anonymous", True))
+    course_name = (data.get("course_name") or data.get("course") or "").strip() or None
+    wta_raw = data.get("would_take_again")
+    would_take_again = bool(wta_raw) if wta_raw is not None else None
 
     try:
         rating = int(data.get("rating", 5))
@@ -2460,6 +2474,8 @@ async def api_create_feedback(request: web.Request) -> web.Response:
             rating=rating,
             comment=comment,
             is_anonymous=is_anonymous,
+            course_name=course_name,
+            would_take_again=would_take_again,
         )
         return web.json_response(
             {
@@ -2543,9 +2559,10 @@ async def start_background_web_server(bot: Any = None, host: str = "0.0.0.0", po
     await site.start()
     logger.info("AUA Hub Web Server listening on http://%s:%d", host, listen_port)
 
-    # Trigger non-blocking background workers: course sync and free rooms pre-warmer
+    # Trigger non-blocking background workers: course sync, free rooms pre-warmer, and 5-min jenzareviews sync
     asyncio.create_task(_initial_course_warmup())
     asyncio.create_task(free_rooms_prewarm_worker())
+    asyncio.create_task(jenzareviews_sync_worker())
     return runner
 
 

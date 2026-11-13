@@ -627,6 +627,7 @@ class TestAuaHub(unittest.IsolatedAsyncioTestCase):
                 rating=5,
                 comment="Amazing lectures and clear grading criteria!",
                 is_anonymous=True,
+                push_to_remote=False,
             )
             fb_course = await create_academic_feedback(
                 session=session,
@@ -638,6 +639,7 @@ class TestAuaHub(unittest.IsolatedAsyncioTestCase):
                 rating=4,
                 comment="Challenging homework but super rewarding.",
                 is_anonymous=False,
+                push_to_remote=False,
             )
 
             inst_fbs, inst_sum = await list_academic_feedbacks(
@@ -840,6 +842,7 @@ class TestAuaHub(unittest.IsolatedAsyncioTestCase):
                 rating=5,
                 comment="Great course!",
                 is_anonymous=False,
+                push_to_remote=False,
             )
 
             # Create in-app notification
@@ -936,6 +939,166 @@ class TestAuaHub(unittest.IsolatedAsyncioTestCase):
             # Verify second call returns False
             second_del = await delete_or_anonymize_web_user(session, uid)
             self.assertFalse(second_del)
+
+    async def test_jenzareviews_anonymized_writethrough_and_mirror(self) -> None:
+        """Verify jenzareviews anonymization strips all PII/user IDs and write-through & serialization work."""
+        from datetime import datetime, timezone
+        from app.services.jenzareviews_sync import (
+            _extract_candidate_professor_name,
+            _extract_project_ref,
+            anonymize_review_payload,
+            push_anonymized_review_to_remote,
+        )
+        from app.database.models import JenzaReview
+
+        # 1. Test anonymize_review_payload strips every user-identifying key
+        raw_input = {
+            "web_user_id": 42,
+            "user_id": "550e8400-e29b-41d4-a716-446655440000",
+            "telegram_id": 123456789,
+            "telegram_user_id": 123456789,
+            "email": "student@edu.aua.am",
+            "author_name": "Real Student Name",
+            "author_email": "student@edu.aua.am",
+            "author_avatar": "/uploads/avatar.png",
+            "username": "real_student",
+            "ip_address": "192.0.2.1",
+            "professor_id": 302,
+            "rating": 5,
+            "comment": "  Fantastic seminar, learned a lot!  ",
+            "course": "CHSS195",
+            "would_take_again": True,
+        }
+        anon = anonymize_review_payload(raw_input)
+        self.assertIsNone(anon["user_id"])
+        self.assertEqual(anon["professor_id"], 302)
+        self.assertEqual(anon["rating"], 5.0)
+        self.assertEqual(anon["comment"], "Fantastic seminar, learned a lot!")
+        self.assertEqual(anon["course"], "CHSS195")
+        self.assertTrue(anon["would_take_again"])
+        for forbidden_key in (
+            "web_user_id",
+            "telegram_id",
+            "telegram_user_id",
+            "email",
+            "author_name",
+            "author_email",
+            "author_avatar",
+            "username",
+            "ip_address",
+        ):
+            self.assertNotIn(forbidden_key, anon)
+
+        # 2. Test Supabase project ref extraction
+        self.assertEqual(
+            _extract_project_ref("db.yfvshmfkyxcwgyhfhqms.supabase.co", ""),
+            "yfvshmfkyxcwgyhfhqms",
+        )
+        self.assertEqual(
+            _extract_project_ref("", "https://yfvshmfkyxcwgyhfhqms.supabase.co"),
+            "yfvshmfkyxcwgyhfhqms",
+        )
+
+        # 3. Test professor extraction from instructor vs course feedback
+        dummy_inst_fb = AcademicFeedback(
+            web_user_id=1,
+            target_type="instructor",
+            target_key="Arsen Bobokhyan",
+            target_title="Arsen Bobokhyan",
+            target_subtitle="CBE",
+            rating=5,
+            comment="Great!",
+            course_name="CHSS195",
+        )
+        prof_name, dept, crs = _extract_candidate_professor_name(dummy_inst_fb)
+        self.assertEqual(prof_name, "Arsen Bobokhyan")
+        self.assertEqual(dept, "CBE")
+        self.assertEqual(crs, "CHSS195")
+
+        dummy_staff_fb = AcademicFeedback(
+            web_user_id=1,
+            target_type="course",
+            target_key="CS100",
+            target_title="CS100 — Intro",
+            target_subtitle="TBA",
+            rating=4,
+            comment="Good!",
+        )
+        prof_name2, _, crs2 = _extract_candidate_professor_name(dummy_staff_fb)
+        self.assertIsNone(prof_name2)
+        self.assertEqual(crs2, "CS100")
+
+        # 4. Test serialize_academic_feedback for remote-mirrored review (web_user_id=None)
+        mirrored_fb = AcademicFeedback(
+            id=999999,
+            web_user_id=None,
+            target_type="instructor",
+            target_key="Arpi Stepanyan",
+            target_title="Arpi Stepanyan",
+            target_subtitle="CHSS",
+            rating=5,
+            comment="Mirrored from jenzareviews",
+            is_anonymous=True,
+            remote_review_id=777777,
+            remote_professor_id=243,
+            course_name="ENG101",
+            would_take_again=True,
+            created_at=datetime.now(timezone.utc),
+            updated_at=datetime.now(timezone.utc),
+        )
+        ser_mirrored = serialize_academic_feedback(mirrored_fb, current_user_id=1)
+        self.assertTrue(ser_mirrored["is_anonymous"])
+        self.assertFalse(ser_mirrored["is_owner"])
+        self.assertIsNone(ser_mirrored["author_id"])
+        self.assertEqual(ser_mirrored["author_name"], "Anonymous AUA Student")
+        self.assertEqual(ser_mirrored["course_name"], "ENG101")
+        self.assertTrue(ser_mirrored["would_take_again"])
+
+        # 5. Test write-through with mocked remote asyncpg connection verifying user_id=None in SQL args
+        async with get_db_session() as session:
+            local_fb = AcademicFeedback(
+                web_user_id=None,
+                target_type="instructor",
+                target_key="Arsen Bobokhyan",
+                target_title="Arsen Bobokhyan",
+                target_subtitle="CHSS",
+                rating=5,
+                comment="Unit test write-through verification",
+                is_anonymous=False,
+                remote_professor_id=302,
+                course_name="CHSS195",
+                would_take_again=True,
+            )
+            session.add(local_fb)
+            await session.commit()
+
+            mock_remote_conn = AsyncMock()
+            # First fetchrow checks for existing duplicate (returns None), second fetchrow is INSERT RETURNING
+            mock_remote_conn.fetchrow = AsyncMock(
+                side_effect=[
+                    None,
+                    {"id": 999888777, "created_at": datetime.now(timezone.utc)},
+                ]
+            )
+
+            pushed_id = await push_anonymized_review_to_remote(
+                session, local_fb, remote_conn=mock_remote_conn
+            )
+            self.assertEqual(pushed_id, 999888777)
+            self.assertEqual(local_fb.remote_review_id, 999888777)
+
+            # Verify the INSERT call passed user_id=None as the first parameter ($1)
+            insert_call_args = mock_remote_conn.fetchrow.call_args_list[1][0]
+            self.assertIn("INSERT INTO public.reviews", insert_call_args[0])
+            self.assertIsNone(insert_call_args[1])  # $1 = user_id IS NULL
+            self.assertEqual(insert_call_args[2], 302)  # $2 = professor_id
+            self.assertEqual(insert_call_args[3], 5.0)  # $3 = rating
+            self.assertEqual(insert_call_args[4], "Unit test write-through verification")
+
+            # Clean up test row and mirror row
+            await session.execute(delete(JenzaReview).where(JenzaReview.id == 999888777))
+            await session.execute(delete(AcademicFeedback).where(AcademicFeedback.id == local_fb.id))
+            await session.commit()
 
 
 if __name__ == "__main__":

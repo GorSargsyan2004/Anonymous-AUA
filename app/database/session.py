@@ -427,6 +427,41 @@ async def init_db() -> None:
                 "ALTER TABLE spam_chat_reactions ALTER COLUMN emoji TYPE VARCHAR(64);"
             )
         )
+        await conn.execute(
+            text(
+                "ALTER TABLE academic_feedbacks ALTER COLUMN web_user_id DROP NOT NULL;"
+            )
+        )
+        await conn.execute(
+            text(
+                "ALTER TABLE academic_feedbacks ADD COLUMN IF NOT EXISTS remote_review_id BIGINT UNIQUE;"
+            )
+        )
+        await conn.execute(
+            text(
+                "ALTER TABLE academic_feedbacks ADD COLUMN IF NOT EXISTS remote_professor_id BIGINT;"
+            )
+        )
+        await conn.execute(
+            text(
+                "ALTER TABLE academic_feedbacks ADD COLUMN IF NOT EXISTS course_name VARCHAR(256);"
+            )
+        )
+        await conn.execute(
+            text(
+                "ALTER TABLE academic_feedbacks ADD COLUMN IF NOT EXISTS would_take_again BOOLEAN;"
+            )
+        )
+        await conn.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS ix_academic_feedbacks_remote_review_id ON academic_feedbacks (remote_review_id);"
+            )
+        )
+        await conn.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS ix_academic_feedbacks_remote_professor_id ON academic_feedbacks (remote_professor_id);"
+            )
+        )
 
 
 

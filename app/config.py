@@ -1,7 +1,7 @@
 """Configuration settings loaded from environment variables using pydantic-settings."""
 
 from typing import Any, List, Optional, Union
-from pydantic import Field, field_validator
+from pydantic import AliasChoices, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -100,6 +100,30 @@ class Settings(BaseSettings):
     WEB_PORT: int = Field(
         default=8000,
         description="HTTP port for AUA Hub web server",
+    )
+
+    # Shared JenzaReviews Remote Database & Supabase Configuration
+    DATABASE_URL: Optional[str] = Field(
+        default=None,
+        description="Remote Supabase PostgreSQL connection URL for shared jenzareviews database",
+    )
+    SUPABASE_URL: Optional[str] = Field(
+        default=None,
+        description="Remote Supabase project base URL for shared jenzareviews database",
+    )
+    SUPABASE_PUBLISHABLE_KEY: Optional[str] = Field(
+        default=None,
+        validation_alias=AliasChoices("SUPABASE_PUBLISHABLE_KEY", "SUPABASE_ANON_KEY"),
+        description="Supabase publishable / anon key",
+    )
+    SUPABASE_SECRET_KEY: Optional[str] = Field(
+        default=None,
+        validation_alias=AliasChoices("SUPABASE_SECRET_KEY", "SUPABASE_SERVICE_ROLE_KEY"),
+        description="Supabase secret / service_role key for server-side synchronization",
+    )
+    JENZAREVIEWS_SYNC_INTERVAL_SECONDS: int = Field(
+        default=300,
+        description="Periodic synchronization interval in seconds (default: 300s = 5 minutes)",
     )
 
     @field_validator("ADMIN_IDS", mode="before")

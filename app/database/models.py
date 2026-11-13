@@ -8,6 +8,7 @@ from sqlalchemy import (
     BigInteger,
     Boolean,
     DateTime,
+    Float,
     ForeignKey,
     Index,
     Integer,
@@ -740,12 +741,12 @@ class SpamChatRead(Base):
 
 
 class AcademicFeedback(Base):
-    """Stores student feedbacks & ratings for AUA Instructors and Courses parsed from Jenzabar."""
+    """Stores student feedbacks & ratings for AUA Instructors and Courses parsed from Jenzabar & JenzaReviews."""
     __tablename__ = "academic_feedbacks"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    web_user_id: Mapped[int] = mapped_column(
-        Integer, ForeignKey("web_users.id", ondelete="CASCADE"), nullable=False, index=True
+    web_user_id: Mapped[Optional[int]] = mapped_column(
+        Integer, ForeignKey("web_users.id", ondelete="SET NULL"), nullable=True, index=True
     )
     target_type: Mapped[str] = mapped_column(String(16), nullable=False, index=True)  # "instructor" or "course"
     target_key: Mapped[str] = mapped_column(String(160), nullable=False, index=True)
@@ -754,6 +755,10 @@ class AcademicFeedback(Base):
     rating: Mapped[int] = mapped_column(Integer, default=5, nullable=False, server_default=text("5"))
     comment: Mapped[str] = mapped_column(Text, nullable=False)
     is_anonymous: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False, server_default=text("true"))
+    remote_review_id: Mapped[Optional[int]] = mapped_column(BigInteger, unique=True, index=True, nullable=True)
+    remote_professor_id: Mapped[Optional[int]] = mapped_column(BigInteger, index=True, nullable=True)
+    course_name: Mapped[Optional[str]] = mapped_column(String(256), nullable=True)
+    would_take_again: Mapped[Optional[bool]] = mapped_column(Boolean, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
@@ -842,5 +847,64 @@ class ReconnectRequest(Base):
             f"<ReconnectRequest id={self.id} session={self.session_id} "
             f"sender={self.sender_id} -> recipient={self.recipient_id} status={self.status}>"
         )
+
+
+class JenzaProfessor(Base):
+    """Local mirror of remote jenzareviews `public.professors` table."""
+    __tablename__ = "jenza_professors"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=False)
+    name: Mapped[str] = mapped_column(String(256), unique=True, nullable=False, index=True)
+    department: Mapped[Optional[str]] = mapped_column(String(256), nullable=True)
+    synced_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+class JenzaReview(Base):
+    """Local mirror of remote jenzareviews `public.reviews` table."""
+    __tablename__ = "jenza_reviews"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=False)
+    user_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    professor_id: Mapped[Optional[int]] = mapped_column(
+        BigInteger, ForeignKey("jenza_professors.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    rating: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    comment: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    created_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
+    course: Mapped[Optional[str]] = mapped_column(String(256), nullable=True)
+    would_take_again: Mapped[Optional[bool]] = mapped_column(Boolean, nullable=True)
+    upvotes: Mapped[int] = mapped_column(Integer, default=0, nullable=False, server_default=text("0"))
+    downvotes: Mapped[int] = mapped_column(Integer, default=0, nullable=False, server_default=text("0"))
+    local_feedback_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True, index=True)
+    synced_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+class JenzaReviewVote(Base):
+    """Local mirror of remote jenzareviews `public.review_votes` table."""
+    __tablename__ = "jenza_review_votes"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=False)
+    review_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("jenza_reviews.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    user_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    vote: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class JenzaProfessorRequest(Base):
+    """Local mirror of remote jenzareviews `public.professor_requests` table."""
+    __tablename__ = "jenza_professor_requests"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    name: Mapped[str] = mapped_column(String(256), nullable=False)
+    department: Mapped[Optional[str]] = mapped_column(String(256), nullable=True)
+    created_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    user_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+
 
 

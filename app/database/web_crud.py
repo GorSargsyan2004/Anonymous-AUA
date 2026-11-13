@@ -20,6 +20,8 @@ from app.database.models import (
     Course,
     HaveNeedPost,
     InboxMessage,
+    JenzaProfessor,
+    JenzaReview,
     SpamChatMessage,
     SpamChatReaction,
     SpamChatRead,
@@ -1169,20 +1171,42 @@ async def get_feedback_catalog(session: AsyncSession) -> Dict[str, Any]:
                 instructors_map[i_key_upper] = {
                     "key": inst,
                     "title": inst,
+                    "department": None,
                     "courses": set(),
                 }
             if code:
                 instructors_map[i_key_upper]["courses"].add(code)
 
+    # Merge professors mirrored from remote jenzareviews database
+    jenza_profs = list((await session.execute(select(JenzaProfessor))).scalars().all())
+    for jp in jenza_profs:
+        p_name = (jp.name or "").strip()
+        if not p_name or p_name.upper() in ("TBA", "STAFF"):
+            continue
+        i_key_upper = p_name.upper()
+        if i_key_upper not in instructors_map:
+            instructors_map[i_key_upper] = {
+                "key": p_name,
+                "title": p_name,
+                "department": (jp.department or "").strip() or None,
+                "courses": set(),
+            }
+        elif jp.department and not instructors_map[i_key_upper].get("department"):
+            instructors_map[i_key_upper]["department"] = jp.department.strip()
+
     instructors_list: List[Dict[str, Any]] = []
     for i_key_upper, info in sorted(instructors_map.items(), key=lambda x: x[1]["title"].lower()):
         cnt, avg_r = stats_map.get(("instructor", i_key_upper), (0, 0.0))
         sorted_codes = sorted(info["courses"])
+        if sorted_codes:
+            sub = ", ".join(sorted_codes[:8]) + ("..." if len(sorted_codes) > 8 else "")
+        else:
+            sub = info.get("department") or "AUA Faculty"
         instructors_list.append(
             {
                 "key": info["key"],
                 "title": info["title"],
-                "subtitle": ", ".join(sorted_codes[:8]) + ("..." if len(sorted_codes) > 8 else ""),
+                "subtitle": sub,
                 "reviews_count": cnt,
                 "avg_rating": avg_r,
             }
@@ -1221,9 +1245,13 @@ async def create_academic_feedback(
     rating: int = 5,
     target_subtitle: Optional[str] = None,
     is_anonymous: bool = True,
+    course_name: Optional[str] = None,
+    would_take_again: Optional[bool] = None,
+    push_to_remote: bool = True,
 ) -> AcademicFeedback:
-    """Create a new feedback entry for an Instructor or Course."""
+    """Create a new feedback entry locally and push an anonymized copy to remote `jenzareviews`."""
     clamped_rating = max(1, min(5, int(rating)))
+    clean_course = course_name.strip()[:256] if course_name and course_name.strip() else None
     fb = AcademicFeedback(
         web_user_id=web_user_id,
         target_type=target_type.strip().lower(),
@@ -1233,9 +1261,19 @@ async def create_academic_feedback(
         rating=clamped_rating,
         comment=comment.strip()[:2000],
         is_anonymous=bool(is_anonymous),
+        course_name=clean_course,
+        would_take_again=would_take_again,
     )
     session.add(fb)
     await session.commit()
+
+    if push_to_remote:
+        try:
+            from app.services.jenzareviews_sync import push_anonymized_review_to_remote
+            await push_anonymized_review_to_remote(session, fb)
+        except Exception:
+            # Best-effort immediate write-through; 5-minute sync worker will retry if remote was unreachable
+            pass
 
     stmt = (
         select(AcademicFeedback)
@@ -1300,14 +1338,33 @@ async def delete_academic_feedback(
     feedback_id: int,
     web_user_id: int,
 ) -> bool:
-    """Delete a user's own academic feedback entry."""
+    """Delete a user's own academic feedback entry (and its remote anonymized mirror if linked)."""
+    existing_stmt = select(AcademicFeedback).where(
+        AcademicFeedback.id == feedback_id,
+        AcademicFeedback.web_user_id == web_user_id,
+    )
+    existing_fb = (await session.execute(existing_stmt)).scalar_one_or_none()
+    if not existing_fb:
+        return False
+
+    remote_rev_id = existing_fb.remote_review_id
     res = await session.execute(
         delete(AcademicFeedback).where(
             AcademicFeedback.id == feedback_id,
             AcademicFeedback.web_user_id == web_user_id,
         )
     )
+    if remote_rev_id is not None:
+        await session.execute(delete(JenzaReview).where(JenzaReview.id == int(remote_rev_id)))
     await session.commit()
+
+    if remote_rev_id is not None:
+        try:
+            from app.services.jenzareviews_sync import delete_review_on_remote
+            await delete_review_on_remote(int(remote_rev_id))
+        except Exception:
+            pass
+
     return (res.rowcount or 0) > 0
 
 
