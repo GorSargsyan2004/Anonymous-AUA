@@ -83,6 +83,11 @@ from app.database.web_crud import (
     update_web_user_profile,
     verify_web_otp_and_register,
 )
+from app.services.ai_agent import (
+    MAX_PROMPTS_PER_SESSION,
+    ai_orchestrator,
+    ai_session_store,
+)
 from app.services.booking_scraper import (
     free_rooms_prewarm_worker,
     get_free_rooms_schedule,
@@ -2566,6 +2571,89 @@ async def api_delete_feedback(request: web.Request) -> web.Response:
             return web.json_response({"error": "Feedback not found or not owned by you."}, status=404)
 
     return web.json_response({"ok": True})
+
+
+# ------------------------------------------------------------------------------
+# 8.5. AI Assistant (Multi-Source RAG with 5-Prompt Session Limit)
+# ------------------------------------------------------------------------------
+
+@routes.post("/api/ai/chat")
+async def api_ai_chat(request: web.Request) -> web.Response:
+    user = await get_current_web_user(request)
+    rate_key = f"user_{user.id}" if user else f"ip_{get_client_ip(request)}"
+    allowed, retry = check_rate_limit("ai_chat", rate_key, max_calls=15, window_sec=60)
+    if not allowed:
+        return web.json_response(
+            {"error": f"Too many AI requests. Please wait {retry}s."},
+            status=429,
+        )
+
+    try:
+        data = await request.json()
+    except Exception:
+        return web.json_response({"error": "Invalid JSON body."}, status=400)
+
+    prompt = (data.get("prompt") or "").strip()
+    session_id = (data.get("session_id") or "").strip() or None
+    reset = bool(data.get("reset", False))
+
+    if reset:
+        chat_state = ai_session_store.reset_session(session_id)
+    else:
+        chat_state = ai_session_store.get_or_create(session_id)
+
+    if chat_state.prompts_used >= MAX_PROMPTS_PER_SESSION:
+        return web.json_response(
+            {
+                "ok": False,
+                "limit_reached": True,
+                "session_id": chat_state.session_id,
+                "prompts_used": chat_state.prompts_used,
+                "max_prompts": MAX_PROMPTS_PER_SESSION,
+                "error": (
+                    "You've reached the 5-prompt limit for this session. "
+                    "Please start a new chat to continue."
+                ),
+            },
+            status=429,
+        )
+
+    if not prompt:
+        return web.json_response({"error": "Please enter a prompt question."}, status=400)
+
+    if len(prompt) > 1200:
+        return web.json_response(
+            {"error": "Prompt is too long (maximum 1,200 characters)."},
+            status=400,
+        )
+
+    async with get_db_session() as session:
+        result = await ai_orchestrator.answer_prompt(
+            db_session=session,
+            user_prompt=prompt,
+            chat_state=chat_state,
+        )
+        return web.json_response(result)
+
+
+@routes.post("/api/ai/reset")
+async def api_ai_reset(request: web.Request) -> web.Response:
+    try:
+        data = await request.json()
+    except Exception:
+        data = {}
+
+    old_sid = (data.get("session_id") or "").strip() or None
+    fresh_state = ai_session_store.reset_session(old_sid)
+    return web.json_response(
+        {
+            "ok": True,
+            "session_id": fresh_state.session_id,
+            "prompts_used": 0,
+            "max_prompts": MAX_PROMPTS_PER_SESSION,
+            "limit_reached": False,
+        }
+    )
 
 
 # ------------------------------------------------------------------------------

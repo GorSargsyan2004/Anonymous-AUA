@@ -17,7 +17,7 @@
     href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;700;800&display=swap"
     rel="stylesheet">
   <link rel="icon" type="image/svg+xml" href="/static/bot-logo.svg" />
-  <link rel="stylesheet" href="/static/styles.css?v=20261113_3" />
+  <link rel="stylesheet" href="/static/styles.css?v=20261113_4" />
 </head>
 
 <body>
@@ -39,6 +39,9 @@
       </div>
 
       <nav class="nav-tabs" aria-label="Main Navigation">
+        <button class="nav-tab nav-tab-ai" data-view="ai-assistant" onclick="switchView('ai-assistant')">
+          <span class="ai-sparkle-icon">✦</span> AI Assistant
+        </button>
         <button class="nav-tab" data-view="have-need" onclick="switchView('have-need')">
           Have-Need
         </button>
@@ -100,6 +103,14 @@
         </p>
 
         <div class="home-modules-grid">
+          <div class="glass-card home-module-card home-ai-card hero-reveal-card" style="--card-d: 0.52s;"
+            onclick="switchView('ai-assistant')">
+            <div>
+              <h3><span class="ai-sparkle-icon">✦</span> AI Assistant <span class="arrow">&rarr;</span></h3>
+              <p style="margin-top:6px;">Ask anything about AUA professors, course feedbacks, Newsroom events, faculty directory, The Highlander, or campus chat.</p>
+            </div>
+          </div>
+
           <div class="glass-card home-module-card hero-reveal-card" style="--card-d: 0.58s;"
             onclick="switchView('have-need')">
             <div>
@@ -162,6 +173,169 @@
           style="display:none; padding:9px 18px; font-size:13px;" onclick="promptPwaInstall()">
           Install AUA Hub App to Home Screen
         </button>
+      </div>
+    </section>
+
+    <!-- ======================================================================
+         VIEW 0.5: <AI Assistant> Multi-Source RAG Campus Intelligence
+         ====================================================================== -->
+    <section id="view-ai-assistant" class="view-section">
+      <div class="ai-assistant-shell">
+        <!-- Top Status & Session Quota Bar -->
+        <div class="glass-panel ai-topbar">
+          <div class="ai-topbar-brand">
+            <div class="ai-orb-badge" aria-hidden="true">✦</div>
+            <div>
+              <div class="ai-topbar-title-row">
+                <h1 class="ai-topbar-title">AUA Hub <span class="ai-gradient-text">AI</span></h1>
+                <span class="ai-model-pill">Multi-Source RAG</span>
+              </div>
+              <p class="ai-topbar-sub">
+                Connected to Course Feedbacks &bull; AUA Directory &bull; Newsroom Events &bull; The Highlander &bull; Campus Chat
+              </p>
+            </div>
+          </div>
+
+          <div class="ai-topbar-controls">
+            <div class="ai-quota-pill" id="aiSessionQuotaPill" title="Maximum 5 prompts per chat session">
+              <span class="ai-quota-label" id="aiQuotaText">0 / 5 Prompts</span>
+              <div class="ai-quota-segments" id="aiQuotaSegments">
+                <span class="ai-quota-seg"></span>
+                <span class="ai-quota-seg"></span>
+                <span class="ai-quota-seg"></span>
+                <span class="ai-quota-seg"></span>
+                <span class="ai-quota-seg"></span>
+              </div>
+            </div>
+            <button type="button" class="btn-glass ai-new-chat-top-btn" onclick="resetAiChatSession()" title="Start a fresh 5-prompt session">
+              <span>↻</span> New Chat
+            </button>
+          </div>
+        </div>
+
+        <!-- Main Conversation & Hero Stage -->
+        <div class="glass-panel ai-stage-panel">
+          <!-- Welcome Hero (Visible before first prompt in session) -->
+          <div id="aiWelcomeState" class="ai-welcome-state">
+            <div class="ai-hero-emblem">
+              <div class="ai-hero-ring ring-outer"></div>
+              <div class="ai-hero-ring ring-inner"></div>
+              <span class="ai-hero-star">✦</span>
+            </div>
+            <h2 class="ai-hero-heading">
+              Ask anything about <span class="ai-gradient-text">AUA Campus Life &amp; Academics</span>
+            </h2>
+            <p class="ai-hero-desc">
+              Real-time retrieval across JenzaReviews professor ratings, official AUA Directory &amp; People profiles,
+              AUA Newsroom events, The Highlander student magazine, and live campus discussions.
+            </p>
+
+            <div class="ai-source-chips-row" aria-label="Connected RAG data sources">
+              <span class="ai-source-badge">🎓 Feedbacks DB</span>
+              <span class="ai-source-badge">🏛️ AUA Directory</span>
+              <span class="ai-source-badge">📅 Newsroom Events</span>
+              <span class="ai-source-badge">📰 The Highlander</span>
+              <span class="ai-source-badge">💬 Campus Chat</span>
+              <span class="ai-source-badge">🎭 Anonymous Posts</span>
+            </div>
+
+            <div class="ai-suggestions-grid">
+              <button type="button" class="ai-suggestion-card"
+                onclick="useAiSuggestedPrompt(&quot;How is Dr. Aram Hajian's teaching, background, and office contact info?&quot;)">
+                <span class="ai-sug-icon">🏛️</span>
+                <div class="ai-sug-body">
+                  <div class="ai-sug-title">Faculty &amp; Professor Lookup</div>
+                  <div class="ai-sug-text">"How is Dr. Aram Hajian's teaching, background, and office contact info?"</div>
+                </div>
+              </button>
+
+              <button type="button" class="ai-suggestion-card"
+                onclick="useAiSuggestedPrompt(&quot;Are there any upcoming events, masterclasses, or workshops at AUA this week?&quot;)">
+                <span class="ai-sug-icon">📅</span>
+                <div class="ai-sug-body">
+                  <div class="ai-sug-title">AUA Newsroom Events</div>
+                  <div class="ai-sug-text">"Are there any upcoming events, masterclasses, or workshops at AUA this week?"</div>
+                </div>
+              </button>
+
+              <button type="button" class="ai-suggestion-card"
+                onclick="useAiSuggestedPrompt(&quot;What do students say in course feedbacks about grading fairness and workload?&quot;)">
+                <span class="ai-sug-icon">🎓</span>
+                <div class="ai-sug-body">
+                  <div class="ai-sug-title">Course &amp; Grading Reviews</div>
+                  <div class="ai-sug-text">"What do students say in course feedbacks about grading fairness and workload?"</div>
+                </div>
+              </button>
+
+              <button type="button" class="ai-suggestion-card"
+                onclick="useAiSuggestedPrompt(&quot;Find student articles in The Highlander about AUA student clubs and campus life&quot;)">
+                <span class="ai-sug-icon">📰</span>
+                <div class="ai-sug-body">
+                  <div class="ai-sug-title">The Highlander Magazine</div>
+                  <div class="ai-sug-text">"Find student articles in The Highlander about AUA student clubs and campus life"</div>
+                </div>
+              </button>
+            </div>
+          </div>
+
+          <!-- Chat Thread Stream -->
+          <div id="aiChatThread" class="ai-chat-thread hidden" aria-live="polite"></div>
+
+          <!-- 5-Prompt Limit Reached Banner / Lock Card -->
+          <div id="aiLimitBanner" class="ai-limit-banner hidden" role="alert">
+            <div class="ai-limit-banner-left">
+              <span class="ai-limit-icon">🔒</span>
+              <div>
+                <div class="ai-limit-title">Session Prompt Limit Reached (5 / 5)</div>
+                <div class="ai-limit-desc">
+                  You've reached the 5-prompt limit for this session. Please start a new chat to continue.
+                </div>
+              </div>
+            </div>
+            <button type="button" class="btn-illuminated ai-limit-reset-btn" onclick="resetAiChatSession()">
+              ✦ New Chat
+            </button>
+          </div>
+
+          <!-- Centerpiece Gemini-Style Glowing Prompt Box -->
+          <form id="aiComposerForm" class="ai-composer-shell" onsubmit="submitAiPrompt(event)">
+            <div class="ai-composer-glow-border"></div>
+            <div class="ai-composer-inner">
+              <div class="ai-input-stage">
+                <!-- Animated Typewriter Placeholder Overlay (Visible when input is empty) -->
+                <div id="aiDynamicPlaceholderWrap" class="ai-dynamic-placeholder-wrap" aria-hidden="true">
+                  <span class="ai-placeholder-sparkle">✦</span>
+                  <span id="aiDynamicPlaceholderText" class="ai-dynamic-placeholder-text"></span>
+                  <span class="ai-typewriter-cursor">|</span>
+                </div>
+
+                <textarea
+                  id="aiPromptInput"
+                  class="ai-prompt-textarea"
+                  rows="1"
+                  maxlength="1200"
+                  aria-label="Ask AUA Hub AI Assistant"
+                  oninput="handleAiInputChanged(this)"
+                  onfocus="handleAiInputFocus()"
+                  onblur="handleAiInputBlur()"
+                  onkeydown="handleAiInputKeydown(event)"
+                ></textarea>
+              </div>
+
+              <div class="ai-composer-footer">
+                <div class="ai-composer-meta">
+                  <span class="ai-composer-hint">Press <kbd>Enter</kbd> to ask &bull; <kbd>Shift+Enter</kbd> for new line</span>
+                  <span id="aiComposerCounter" class="ai-composer-counter">Prompt 1 of 5</span>
+                </div>
+
+                <button type="submit" id="aiSendBtn" class="ai-send-btn" title="Send prompt to AUA Hub AI">
+                  <span class="ai-send-btn-icon">✦</span>
+                  <span class="ai-send-btn-label">Ask AI</span>
+                </button>
+              </div>
+            </div>
+          </form>
+        </div>
       </div>
     </section>
 
@@ -1156,7 +1330,7 @@
     </div>
   </div>
 
-  <script src="/static/app.js?v=20261113_3"></script>
+  <script src="/static/app.js?v=20261113_4"></script>
 </body>
 
 </html>

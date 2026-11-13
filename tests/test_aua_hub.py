@@ -1124,6 +1124,73 @@ class TestAuaHub(unittest.IsolatedAsyncioTestCase):
             await session.execute(delete(AcademicFeedback).where(AcademicFeedback.id == local_fb.id))
             await session.commit()
 
+    async def test_ai_assistant_rag_tools_and_session_limit(self) -> None:
+        """Verify AI Assistant tool routing, Cloudflare email decoding, DB RAG tools, and strict 5-prompt session limit."""
+        from app.services.ai_agent import (
+            AISessionStore,
+            AUAAssistantOrchestrator,
+            MAX_PROMPTS_PER_SESSION,
+            classify_tools_heuristic,
+            decode_cfemails_in_html,
+            extract_person_name_candidate,
+            search_course_and_professor_feedbacks,
+        )
+
+        # 1. Verify Cloudflare email de-obfuscation
+        cf_sample = '<a href="/cdn-cgi/l/email-protection" class="__cf_email__" data-cfemail="f3929b92999a929db3928692dd929e">[email&#160;protected]</a>'
+        self.assertEqual(decode_cfemails_in_html(cf_sample), "ahajian@aua.am")
+
+        # 2. Verify intent routing & candidate person extraction
+        self.assertEqual(
+            extract_person_name_candidate("How is Professor Aram Hajian's grading policy?"),
+            "Aram Hajian",
+        )
+        plan1 = classify_tools_heuristic("How is Professor Aram Hajian's grading policy?")
+        self.assertTrue(plan1.use_feedbacks)
+        self.assertTrue(plan1.use_directory)
+
+        plan2 = classify_tools_heuristic("Are there any upcoming events or masterclasses at AUA this week?")
+        self.assertTrue(plan2.use_newsroom_events)
+
+        plan3 = classify_tools_heuristic("Find student articles in The Highlander about clubs")
+        self.assertTrue(plan3.use_highlander)
+
+        plan4 = classify_tools_heuristic("Find discussions about CS courses in chat")
+        self.assertTrue(plan4.use_chat_history)
+
+        # 3. Verify 5-prompt session limit and reset
+        store = AISessionStore()
+        st = store.get_or_create("test_session_123")
+        self.assertEqual(st.prompts_used, 0)
+
+        orchestrator = AUAAssistantOrchestrator(api_key="")  # Deterministic fallback mode
+        async with get_db_session() as session:
+            # Test DB feedback retrieval directly
+            fb_results, _ = await search_course_and_professor_feedbacks(
+                session, "course feedback grading"
+            )
+            self.assertIsInstance(fb_results, list)
+
+            # Execute 5 prompts in the session (using internal chat/feedback query to avoid slow external calls)
+            for i in range(1, MAX_PROMPTS_PER_SESSION + 1):
+                resp = await orchestrator.answer_prompt(
+                    db_session=session,
+                    user_prompt=f"Find discussions about CS courses in chat #{i}",
+                    chat_state=st,
+                )
+                self.assertTrue(resp["ok"])
+                self.assertEqual(resp["prompts_used"], i)
+                self.assertEqual(resp["max_prompts"], 5)
+                if i < 5:
+                    self.assertFalse(resp["limit_reached"])
+                else:
+                    self.assertTrue(resp["limit_reached"])
+
+        # Reset session -> prompts_used back to 0
+        fresh_st = store.reset_session("test_session_123")
+        self.assertNotEqual(fresh_st.session_id, "test_session_123")
+        self.assertEqual(fresh_st.prompts_used, 0)
+
 
 if __name__ == "__main__":
     unittest.main()

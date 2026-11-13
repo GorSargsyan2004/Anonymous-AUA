@@ -47,6 +47,11 @@ const state = {
   groupsPage: 1,
   groupsList: [],
   editingGroupId: null,
+  // AI Assistant state
+  aiSessionId: localStorage.getItem("aua_hub_ai_session_id") || "",
+  aiPromptsUsed: Number(localStorage.getItem("aua_hub_ai_prompts_used") || 0),
+  aiMaxPrompts: 5,
+  aiIsGenerating: false,
   // Campus Chat state
   unreadSpamCount: 0,
   chatPendingMediaUrl: "",
@@ -612,6 +617,7 @@ function renderClickableUserNameHtml(userObj, extraClass = "") {
 
   const VALID_VIEWS = [
     "home",
+    "ai-assistant",
     "have-need",
     "feedbacks",
     "anonymous",
@@ -678,6 +684,9 @@ function renderClickableUserNameHtml(userObj, extraClass = "") {
 
     if (viewName === "home") {
       replayHomeHeroAnimation();
+    } else if (viewName === "ai-assistant") {
+      trackWebEvent("click_ai_assistant");
+      initAiAssistantView();
     } else if (viewName === "have-need") {
       trackWebEvent("click_have_need");
       loadHaveNeedPosts();
@@ -6490,6 +6499,473 @@ function renderClickableUserNameHtml(userObj, extraClass = "") {
     state.deferredPwaPrompt = null;
     const btn = document.getElementById("pwaInstallBtn");
     if (btn) btn.style.display = "none";
+  }
+
+  /* --------------------------------------------------------------------------
+     AI Assistant (Multi-Source RAG, Dynamic Typewriter Placeholder & 5-Prompt Limit)
+     -------------------------------------------------------------------------- */
+
+  const AI_PLACEHOLDER_EXAMPLES = [
+    "How is Dr. Aram Hajian's grading policy and courses?",
+    "Are there any upcoming tech events or masterclasses this week?",
+    "Find discussions about CS courses and section swaps in chat...",
+    "What do students say about course workload and exams?",
+    "Search The Highlander for articles on AUA student clubs...",
+    "What is the office room, email, and background for Professor...",
+  ];
+
+  let aiTypewriterTimer = null;
+  let aiPlaceholderIdx = 0;
+  let aiPlaceholderCharIdx = 0;
+  let aiPlaceholderDeleting = false;
+  let aiTypewriterInitialized = false;
+
+  function initAiAssistantView() {
+    updateAiQuotaUI();
+    if (!aiTypewriterInitialized) {
+      aiTypewriterInitialized = true;
+      startAiTypewriterLoop();
+    }
+    syncAiPlaceholderVisibility();
+  }
+
+  function syncAiPlaceholderVisibility() {
+    const input = document.getElementById("aiPromptInput");
+    const wrap = document.getElementById("aiDynamicPlaceholderWrap");
+    if (!input || !wrap) return;
+    const hasText = Boolean((input.value || "").length > 0);
+    wrap.classList.toggle("hidden", hasText || state.aiPromptsUsed >= state.aiMaxPrompts);
+  }
+
+  function startAiTypewriterLoop() {
+    if (aiTypewriterTimer) clearTimeout(aiTypewriterTimer);
+
+    const tick = () => {
+      const textEl = document.getElementById("aiDynamicPlaceholderText");
+      const input = document.getElementById("aiPromptInput");
+      if (!textEl) return;
+
+      // Pause cycling if input has user text
+      if (input && input.value.length > 0) {
+        aiTypewriterTimer = setTimeout(tick, 450);
+        return;
+      }
+
+      const fullPhrase = AI_PLACEHOLDER_EXAMPLES[aiPlaceholderIdx % AI_PLACEHOLDER_EXAMPLES.length];
+
+      if (!aiPlaceholderDeleting) {
+        aiPlaceholderCharIdx = Math.min(fullPhrase.length, aiPlaceholderCharIdx + 1);
+        textEl.textContent = fullPhrase.slice(0, aiPlaceholderCharIdx);
+
+        if (aiPlaceholderCharIdx >= fullPhrase.length) {
+          aiPlaceholderDeleting = true;
+          aiTypewriterTimer = setTimeout(tick, 2100);
+          return;
+        }
+        aiTypewriterTimer = setTimeout(tick, 38);
+      } else {
+        aiPlaceholderCharIdx = Math.max(0, aiPlaceholderCharIdx - 1);
+        textEl.textContent = fullPhrase.slice(0, aiPlaceholderCharIdx);
+
+        if (aiPlaceholderCharIdx === 0) {
+          aiPlaceholderDeleting = false;
+          aiPlaceholderIdx = (aiPlaceholderIdx + 1) % AI_PLACEHOLDER_EXAMPLES.length;
+          aiTypewriterTimer = setTimeout(tick, 340);
+          return;
+        }
+        aiTypewriterTimer = setTimeout(tick, 18);
+      }
+    };
+
+    tick();
+  }
+
+  function handleAiInputChanged(textarea) {
+    if (!textarea) return;
+    textarea.style.height = "auto";
+    textarea.style.height = `${Math.min(150, Math.max(32, textarea.scrollHeight))}px`;
+    syncAiPlaceholderVisibility();
+  }
+
+  function handleAiInputFocus() {
+    syncAiPlaceholderVisibility();
+  }
+
+  function handleAiInputBlur() {
+    syncAiPlaceholderVisibility();
+  }
+
+  function handleAiInputKeydown(e) {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      submitAiPrompt(e);
+    }
+  }
+
+  function updateAiQuotaUI() {
+    const used = Math.min(state.aiMaxPrompts, Math.max(0, Number(state.aiPromptsUsed) || 0));
+    const max = state.aiMaxPrompts || 5;
+    const isLocked = used >= max;
+
+    const quotaText = document.getElementById("aiQuotaText");
+    if (quotaText) {
+      quotaText.textContent = `${used} / ${max} Prompts`;
+    }
+
+    const quotaPill = document.getElementById("aiSessionQuotaPill");
+    if (quotaPill) {
+      quotaPill.classList.toggle("exhausted", isLocked);
+    }
+
+    const segContainer = document.getElementById("aiQuotaSegments");
+    if (segContainer) {
+      const segs = segContainer.querySelectorAll(".ai-quota-seg");
+      segs.forEach((seg, idx) => {
+        seg.classList.toggle("used", idx < used);
+      });
+    }
+
+    const counterEl = document.getElementById("aiComposerCounter");
+    if (counterEl) {
+      counterEl.textContent = isLocked
+        ? "Session Limit Reached (5 / 5)"
+        : `Prompt ${Math.min(max, used + 1)} of ${max}`;
+    }
+
+    const banner = document.getElementById("aiLimitBanner");
+    if (banner) {
+      banner.classList.toggle("hidden", !isLocked);
+    }
+
+    const composer = document.getElementById("aiComposerForm");
+    if (composer) {
+      composer.classList.toggle("locked", isLocked);
+    }
+
+    const input = document.getElementById("aiPromptInput");
+    const sendBtn = document.getElementById("aiSendBtn");
+    if (input) {
+      input.disabled = isLocked || state.aiIsGenerating;
+      if (isLocked) {
+        input.value = "";
+      }
+    }
+    if (sendBtn) {
+      sendBtn.disabled = isLocked || state.aiIsGenerating;
+    }
+    syncAiPlaceholderVisibility();
+  }
+
+  function predictPredictedRagSteps(promptText) {
+    const q = (promptText || "").toLowerCase();
+    const steps = [{ icon: "🧠", label: "Analyzing query & selecting RAG tools..." }];
+
+    if (/(professor|prof|dr|instructor|grading|course|class|workload|review|feedback|rating|cs|math|bus|econ|law)/.test(q)) {
+      steps.push({ icon: "🎓", label: "Searching course & professor feedbacks..." });
+    }
+    if (/(professor|prof|dr|dean|chair|faculty|office|room|phone|email|directory|people|degree|education|who is)/.test(q)) {
+      steps.push({ icon: "🏛️", label: "Checking AUA Directory & Faculty profiles..." });
+    }
+    if (/(event|events|upcoming|workshop|masterclass|seminar|conference|talk|newsroom|week|today|calendar)/.test(q)) {
+      steps.push({ icon: "📅", label: "Checking AUA Newsroom events..." });
+    }
+    if (/(highlander|magazine|article|articles|club|clubs|student life|council)/.test(q)) {
+      steps.push({ icon: "📰", label: "Searching The Highlander student magazine..." });
+    }
+    if (/(chat|discussion|talking|said|lounge|swap|group|telegram)/.test(q)) {
+      steps.push({ icon: "💬", label: "Scanning global campus chat history..." });
+    }
+    if (steps.length === 1) {
+      steps.push({ icon: "🎓", label: "Searching course & professor feedbacks..." });
+      steps.push({ icon: "📅", label: "Checking AUA Newsroom & campus sources..." });
+    }
+    steps.push({ icon: "✨", label: "Synthesizing response..." });
+    return steps;
+  }
+
+  function renderAiMarkdownHtml(mdText) {
+    if (!mdText) return "";
+    let htmlStr = escapeHtml(mdText);
+
+    // Code blocks & inline code
+    htmlStr = htmlStr.replace(/`([^`\n]+)`/g, "<code>$1</code>");
+
+    // Headings
+    htmlStr = htmlStr.replace(/^####\s+(.+)$/gm, "<h4>$1</h4>");
+    htmlStr = htmlStr.replace(/^###\s+(.+)$/gm, "<h3>$1</h3>");
+    htmlStr = htmlStr.replace(/^##\s+(.+)$/gm, "<h3>$1</h3>");
+
+    // Bold & Italic
+    htmlStr = htmlStr.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+    htmlStr = htmlStr.replace(/(?<!\*)\*([^*\n]+)\*(?!\*)/g, "<em>$1</em>");
+
+    // Markdown Links [title](url)
+    htmlStr = htmlStr.replace(
+      /\[([^\]]+)\]\((https?:\/\/[^\s)]+|#[a-z-]+)\)/gi,
+      (match, label, url) => {
+        if (url.startsWith("#")) {
+          const viewTarget = url.slice(1);
+          return `<a href="${url}" onclick="event.preventDefault(); switchView('${viewTarget}');">${label}</a>`;
+        }
+        return `<a href="${url}" target="_blank" rel="noopener noreferrer">${label} ↗</a>`;
+      }
+    );
+
+    // Bullet lists & paragraphs
+    const lines = htmlStr.split("\n");
+    const out = [];
+    let inList = false;
+
+    for (const rawLine of lines) {
+      const line = rawLine.trim();
+      if (!line) {
+        if (inList) {
+          out.push("</ul>");
+          inList = false;
+        }
+        continue;
+      }
+      const bulletMatch = line.match(/^(?:[-*•])\s+(.+)$/);
+      if (bulletMatch) {
+        if (!inList) {
+          out.push("<ul>");
+          inList = true;
+        }
+        out.push(`<li>${bulletMatch[1]}</li>`);
+      } else {
+        if (inList) {
+          out.push("</ul>");
+          inList = false;
+        }
+        if (line.startsWith("<h3>") || line.startsWith("<h4>")) {
+          out.push(line);
+        } else {
+          out.push(`<p>${line}</p>`);
+        }
+      }
+    }
+    if (inList) {
+      out.push("</ul>");
+    }
+    return out.join("");
+  }
+
+  function useAiSuggestedPrompt(promptText) {
+    if (state.aiIsGenerating) return;
+    if (state.aiPromptsUsed >= state.aiMaxPrompts) {
+      updateAiQuotaUI();
+      showToast("You've reached the 5-prompt limit. Click 'New Chat' to continue.", true);
+      return;
+    }
+    const input = document.getElementById("aiPromptInput");
+    if (input) {
+      input.value = promptText;
+      handleAiInputChanged(input);
+    }
+    submitAiPrompt(new Event("submit"));
+  }
+
+  async function submitAiPrompt(e) {
+    if (e && typeof e.preventDefault === "function") e.preventDefault();
+    if (state.aiIsGenerating) return;
+
+    if (state.aiPromptsUsed >= state.aiMaxPrompts) {
+      updateAiQuotaUI();
+      return;
+    }
+
+    const input = document.getElementById("aiPromptInput");
+    const promptText = (input?.value || "").trim();
+    if (!promptText) return;
+
+    // Switch from welcome hero to thread view
+    const welcomeEl = document.getElementById("aiWelcomeState");
+    const threadEl = document.getElementById("aiChatThread");
+    if (welcomeEl) welcomeEl.classList.add("hidden");
+    if (threadEl) threadEl.classList.remove("hidden");
+
+    if (input) {
+      input.value = "";
+      input.style.height = "auto";
+    }
+    state.aiIsGenerating = true;
+    updateAiQuotaUI();
+
+    // Append user prompt bubble
+    const turnId = `ai-turn-${Date.now()}`;
+    const predictedSteps = predictPredictedRagSteps(promptText);
+
+    const stepsHtml = predictedSteps
+      .map(
+        (st, idx) => `
+        <span class="ai-step-pill ${idx === 0 ? "active-pulse" : ""}" data-step-idx="${idx}">
+          <span>${st.icon}</span>
+          <span>${escapeHtml(st.label)}</span>
+        </span>
+      `
+      )
+      .join("");
+
+    if (threadEl) {
+      threadEl.insertAdjacentHTML(
+        "beforeend",
+        `
+        <div class="ai-turn-user">${escapeHtml(promptText)}</div>
+        <div class="ai-turn-assistant" id="${turnId}">
+          <div class="ai-assistant-avatar" aria-hidden="true">✦</div>
+          <div class="ai-assistant-body">
+            <div class="ai-activity-steps" id="${turnId}-steps">${stepsHtml}</div>
+            <div class="ai-markdown-output" id="${turnId}-output">
+              <span style="color:var(--text-secondary); font-size:13.5px;">Gathering live campus intelligence...</span>
+            </div>
+            <div id="${turnId}-sources"></div>
+          </div>
+        </div>
+      `
+      );
+      threadEl.scrollTop = threadEl.scrollHeight;
+    }
+
+    // Animate step progression while awaiting backend response
+    let activeStepIdx = 0;
+    const stepTimer = setInterval(() => {
+      const container = document.getElementById(`${turnId}-steps`);
+      if (!container) return;
+      const pills = container.querySelectorAll(".ai-step-pill");
+      if (activeStepIdx < pills.length - 1) {
+        pills[activeStepIdx].classList.remove("active-pulse");
+        pills[activeStepIdx].classList.add("done");
+        activeStepIdx += 1;
+        pills[activeStepIdx].classList.add("active-pulse");
+      }
+    }, 850);
+
+    try {
+      const data = await apiFetch("/api/ai/chat", {
+        method: "POST",
+        body: JSON.stringify({
+          prompt: promptText,
+          session_id: state.aiSessionId || undefined,
+        }),
+      });
+
+      clearInterval(stepTimer);
+
+      if (data.session_id) {
+        state.aiSessionId = data.session_id;
+        localStorage.setItem("aua_hub_ai_session_id", data.session_id);
+      }
+      if (typeof data.prompts_used === "number") {
+        state.aiPromptsUsed = data.prompts_used;
+        localStorage.setItem("aua_hub_ai_prompts_used", String(data.prompts_used));
+      }
+
+      const stepsContainer = document.getElementById(`${turnId}-steps`);
+      if (stepsContainer && Array.isArray(data.steps) && data.steps.length > 0) {
+        stepsContainer.innerHTML = data.steps
+          .map(
+            (st) => `
+            <span class="ai-step-pill done">
+              <span>${escapeHtml(st.icon || "✓")}</span>
+              <span>${escapeHtml(st.label || "")}</span>
+            </span>
+          `
+          )
+          .join("");
+      }
+
+      const outputContainer = document.getElementById(`${turnId}-output`);
+      if (outputContainer) {
+        outputContainer.innerHTML = renderAiMarkdownHtml(data.answer || "");
+      }
+
+      const sourcesContainer = document.getElementById(`${turnId}-sources`);
+      if (sourcesContainer && Array.isArray(data.sources) && data.sources.length > 0) {
+        const chips = data.sources
+          .map((s) => {
+            const url = s.url || "#";
+            const isInternal = url.startsWith("#");
+            const clickAttr = isInternal
+              ? `onclick="event.preventDefault(); switchView('${escapeHtml(url.slice(1))}');"`
+              : `target="_blank" rel="noopener noreferrer"`;
+            return `
+              <a href="${escapeHtml(url)}" class="ai-source-link-chip" ${clickAttr} title="${escapeHtml(s.source_type || "Source")}">
+                <span>🔗</span>
+                <span>${escapeHtml(s.title || s.source_type || "Source")}</span>
+              </a>
+            `;
+          })
+          .join("");
+
+        sourcesContainer.innerHTML = `
+          <div class="ai-sources-bar">
+            <span class="ai-sources-label">Sources:</span>
+            ${chips}
+          </div>
+        `;
+      }
+
+      if (threadEl) {
+        threadEl.scrollTop = threadEl.scrollHeight;
+      }
+    } catch (err) {
+      clearInterval(stepTimer);
+      const errMsg = err?.message || "Failed to generate AI response.";
+      if (errMsg.includes("5-prompt limit")) {
+        state.aiPromptsUsed = state.aiMaxPrompts;
+        localStorage.setItem("aua_hub_ai_prompts_used", String(state.aiMaxPrompts));
+      }
+      const outputContainer = document.getElementById(`${turnId}-output`);
+      if (outputContainer) {
+        outputContainer.innerHTML = `<p style="color:#fca5a5;">${escapeHtml(errMsg)}</p>`;
+      }
+    } finally {
+      state.aiIsGenerating = false;
+      updateAiQuotaUI();
+    }
+  }
+
+  async function resetAiChatSession() {
+    try {
+      const res = await apiFetch("/api/ai/reset", {
+        method: "POST",
+        body: JSON.stringify({ session_id: state.aiSessionId || undefined }),
+      });
+      if (res && res.session_id) {
+        state.aiSessionId = res.session_id;
+        localStorage.setItem("aua_hub_ai_session_id", res.session_id);
+      } else {
+        state.aiSessionId = "";
+        localStorage.removeItem("aua_hub_ai_session_id");
+      }
+    } catch {
+      state.aiSessionId = "";
+      localStorage.removeItem("aua_hub_ai_session_id");
+    }
+
+    state.aiPromptsUsed = 0;
+    state.aiIsGenerating = false;
+    localStorage.setItem("aua_hub_ai_prompts_used", "0");
+
+    const threadEl = document.getElementById("aiChatThread");
+    const welcomeEl = document.getElementById("aiWelcomeState");
+    const input = document.getElementById("aiPromptInput");
+
+    if (threadEl) {
+      threadEl.innerHTML = "";
+      threadEl.classList.add("hidden");
+    }
+    if (welcomeEl) {
+      welcomeEl.classList.remove("hidden");
+    }
+    if (input) {
+      input.disabled = false;
+      input.value = "";
+      input.style.height = "auto";
+    }
+
+    updateAiQuotaUI();
+    showToast("Started a fresh AI chat session (0 / 5 prompts) ✨");
   }
 
   /* --------------------------------------------------------------------------
