@@ -11,6 +11,7 @@ from zoneinfo import ZoneInfo
 import hashlib
 import hmac
 import html
+import ipaddress
 import json
 import logging
 import os
@@ -207,20 +208,80 @@ def check_rate_limit(bucket: str, key: str, max_calls: int, window_sec: float) -
     return True, 0
 
 
+def _parse_ip_str(candidate: Optional[str]) -> Optional[str]:
+    """Parse and canonicalize a literal IPv4/IPv6 string, or return None."""
+    if not candidate:
+        return None
+    try:
+        return str(ipaddress.ip_address(candidate.strip()))
+    except ValueError:
+        return None
+
+
+_TRUSTED_PROXY_NETS = (
+    ipaddress.ip_network("127.0.0.0/8"),
+    ipaddress.ip_network("10.0.0.0/8"),
+    ipaddress.ip_network("172.16.0.0/12"),
+    ipaddress.ip_network("192.168.0.0/16"),
+    ipaddress.ip_network("::1/128"),
+    ipaddress.ip_network("fc00::/7"),
+)
+
+
+def _is_trusted_proxy_ip(ip_str: Optional[str]) -> bool:
+    """Return True only if the immediate TCP peer is a trusted loopback or RFC1918 proxy."""
+    if not ip_str:
+        return False
+    try:
+        addr = ipaddress.ip_address(ip_str.strip())
+        if getattr(addr, "ipv4_mapped", None):
+            addr = addr.ipv4_mapped
+        return any(addr in net for net in _TRUSTED_PROXY_NETS)
+    except ValueError:
+        return False
+
+
 def get_client_ip(request: web.Request) -> str:
-    """Extract client IP address safely."""
-    xff = request.headers.get("X-Forwarded-For", "")
-    if xff:
-        return xff.split(",")[0].strip()[:64]
+    """Extract real client IP safely, trusting forwarding headers only from trusted proxies."""
+    peer_ip = _parse_ip_str(request.remote)
+    if _is_trusted_proxy_ip(peer_ip):
+        cf_ip = _parse_ip_str(request.headers.get("CF-Connecting-IP"))
+        if cf_ip:
+            return cf_ip[:64]
+
+        x_real_ip = _parse_ip_str(request.headers.get("X-Real-IP"))
+        if x_real_ip:
+            return x_real_ip[:64]
+
+        xff = request.headers.get("X-Forwarded-For", "")
+        if xff:
+            parts = [p.strip() for p in xff.split(",") if p.strip()]
+            first_valid = None
+            for hop in reversed(parts):
+                hop_ip = _parse_ip_str(hop)
+                if not hop_ip:
+                    continue
+                if first_valid is None:
+                    first_valid = hop_ip
+                if not _is_trusted_proxy_ip(hop_ip):
+                    return hop_ip[:64]
+            if first_valid:
+                return first_valid[:64]
+
+    if peer_ip:
+        return peer_ip[:64]
     return (request.remote or "unknown")[:64]
 
 
 def _is_https_request(request: web.Request) -> bool:
-    """Return True if the request arrived over HTTPS directly or via reverse proxy."""
+    """Return True if the request arrived over HTTPS directly or via trusted reverse proxy."""
     if request.secure:
         return True
-    proto = request.headers.get("X-Forwarded-Proto", "")
-    return proto.split(",")[0].strip().lower() == "https"
+    peer_ip = _parse_ip_str(request.remote)
+    if _is_trusted_proxy_ip(peer_ip):
+        proto = request.headers.get("X-Forwarded-Proto", "")
+        return proto.split(",")[0].strip().lower() == "https"
+    return False
 
 
 def validate_media_magic_bytes(data: bytes, ext: str) -> Tuple[bool, str]:
@@ -303,21 +364,47 @@ def scan_web_text_for_malicious_links(text: Optional[str]) -> Optional[str]:
 async def security_middleware(request: web.Request, handler: Callable) -> web.StreamResponse:
     """Global security middleware enforcing dotfile/traversal blocking, CSRF Origin checks, and strict HTTP security headers."""
     raw_path = request.raw_path or request.path or ""
-    if ".." in raw_path or "/." in raw_path or "%2e" in raw_path.lower():
+    raw_low = raw_path.lower()
+    if ".." in raw_path or "/." in raw_path or "%2e" in raw_low or "%5c" in raw_low:
         return web.json_response({"error": "Forbidden path."}, status=403)
 
     if request.method in ("POST", "PUT", "DELETE", "PATCH"):
         origin = request.headers.get("Origin")
-        if origin:
+        if origin is not None:
+            if origin.strip().lower() == "null":
+                return web.json_response(
+                    {"error": "Null Origin state-changing request blocked by CSRF policy."},
+                    status=403,
+                )
             try:
                 parsed_origin = urlparse(origin)
-                if parsed_origin.netloc and request.host and parsed_origin.netloc.lower() != request.host.lower():
+                if not parsed_origin.netloc or (
+                    request.host and parsed_origin.netloc.lower() != request.host.lower()
+                ):
                     return web.json_response(
                         {"error": "Cross-origin state-changing request blocked by CSRF policy."},
                         status=403,
                     )
             except Exception:
                 return web.json_response({"error": "Invalid Origin header."}, status=403)
+        else:
+            sec_fetch_site = (request.headers.get("Sec-Fetch-Site") or "").strip().lower()
+            if sec_fetch_site == "cross-site":
+                return web.json_response(
+                    {"error": "Cross-site state-changing request blocked by CSRF policy."},
+                    status=403,
+                )
+            referer = request.headers.get("Referer")
+            if referer:
+                try:
+                    parsed_ref = urlparse(referer)
+                    if parsed_ref.netloc and request.host and parsed_ref.netloc.lower() != request.host.lower():
+                        return web.json_response(
+                            {"error": "Cross-origin Referer blocked by CSRF policy."},
+                            status=403,
+                        )
+                except Exception:
+                    return web.json_response({"error": "Invalid Referer header."}, status=403)
 
     response = await handler(request)
 
@@ -2548,7 +2635,22 @@ async def api_mark_spam_chat_read(request: web.Request) -> web.Response:
 @routes.get("/ws/spam-chat")
 @routes.get("/ws/chat")
 async def ws_spam_chat(request: web.Request) -> web.WebSocketResponse:
-    ws = web.WebSocketResponse(heartbeat=30.0)
+    origin = request.headers.get("Origin")
+    if origin is not None:
+        if origin.strip().lower() == "null":
+            raise web.HTTPForbidden(text="Cross-origin WebSocket rejected.")
+        try:
+            parsed_origin = urlparse(origin)
+            if not parsed_origin.netloc or (
+                request.host and parsed_origin.netloc.lower() != request.host.lower()
+            ):
+                raise web.HTTPForbidden(text="Cross-origin WebSocket rejected.")
+        except web.HTTPException:
+            raise
+        except Exception:
+            raise web.HTTPForbidden(text="Invalid WebSocket Origin.")
+
+    ws = web.WebSocketResponse(heartbeat=30.0, max_msg_size=4096)
     await ws.prepare(request)
 
     token = request.cookies.get("aua_hub_token") or request.query.get("token")
@@ -2565,10 +2667,10 @@ async def ws_spam_chat(request: web.Request) -> web.WebSocketResponse:
             if msg.type == WSMsgType.TEXT:
                 if msg.data == "ping":
                     await ws.send_str(json.dumps({"type": "pong"}))
-                elif msg.data and msg.data.startswith("{"):
+                elif msg.data and msg.data.startswith("{") and len(msg.data) <= 2048:
                     try:
                         payload = json.loads(msg.data)
-                        if payload.get("type") == "auth":
+                        if isinstance(payload, dict) and payload.get("type") == "auth":
                             _ACTIVE_WS_USERS[ws] = decode_jwt_token(payload.get("token"))
                     except Exception:
                         pass
@@ -2779,18 +2881,42 @@ async def api_delete_feedback(request: web.Request) -> web.Response:
 # 8.5. AI Assistant (Multi-Source RAG with 5-Prompt Session Limit)
 # ------------------------------------------------------------------------------
 
+def _resolve_ai_lock_key(
+    session_id: Optional[str],
+    user_id: Optional[int],
+    client_ip: str,
+) -> str:
+    """Resolve an isolated per-user or per-guest-session execution lock key."""
+    if user_id:
+        return f"user:{user_id}"
+    if session_id and not session_id.startswith("user_"):
+        st = ai_session_store._sessions.get(session_id)
+        if st is not None and st.owner_user_id is None:
+            return f"sid:{session_id}"
+    return f"ip_guest:{client_ip}"
+
+
 @routes.get("/api/ai/session")
 @routes.post("/api/ai/session")
 async def api_ai_session(request: web.Request) -> web.Response:
     user = await get_current_web_user(request)
-    session_id = (request.query.get("session_id") or "").strip() or None
+    client_ip = get_client_ip(request)
+    rl_key = f"user_{user.id}" if user else f"ip_{client_ip}"
+    allowed, retry = check_rate_limit("ai_session", rl_key, max_calls=60, window_sec=60)
+    if not allowed:
+        return web.json_response(
+            {"error": f"Too many AI session requests. Please wait {retry}s."},
+            status=429,
+        )
+
+    session_id = (request.query.get("session_id") or "").strip()[:80] or None
     client_history = None
 
     if request.method == "POST":
         try:
             body = await request.json()
             if isinstance(body, dict):
-                session_id = (body.get("session_id") or session_id or "").strip() or None
+                session_id = (str(body.get("session_id") or session_id or "")).strip()[:80] or None
                 if isinstance(body.get("client_history"), list):
                     client_history = body.get("client_history")
         except Exception:
@@ -2808,14 +2934,16 @@ async def api_ai_session(request: web.Request) -> web.Response:
             }
         )
 
-    async with get_db_session() as session:
-        chat_state, was_updated = await load_or_sync_ai_session(
-            db_session=session,
-            session_id=session_id,
-            web_user_id=user.id if user else None,
-            client_history=client_history,
-        )
-        history = chat_state.get_history_payload()
+    lock_key = _resolve_ai_lock_key(session_id, user.id if user else None, client_ip)
+    async with ai_session_store.get_execution_lock(lock_key):
+        async with get_db_session() as session:
+            chat_state, was_updated = await load_or_sync_ai_session(
+                db_session=session,
+                session_id=session_id,
+                web_user_id=user.id if user else None,
+                client_history=client_history,
+            )
+            history = chat_state.get_history_payload()
 
     payload = {
         "ok": True,
@@ -2841,71 +2969,114 @@ async def api_ai_session(request: web.Request) -> web.Response:
 @routes.post("/api/ai/chat")
 async def api_ai_chat(request: web.Request) -> web.Response:
     user = await get_current_web_user(request)
-    rate_key = f"user_{user.id}" if user else f"ip_{get_client_ip(request)}"
+    client_ip = get_client_ip(request)
+    rate_key = f"user_{user.id}" if user else f"ip_{client_ip}"
+
     allowed, retry = check_rate_limit("ai_chat", rate_key, max_calls=15, window_sec=60)
     if not allowed:
         return web.json_response(
             {"error": f"Too many AI requests. Please wait {retry}s."},
             status=429,
         )
+    allowed_ip, retry_ip = check_rate_limit("ai_chat_ip", f"ip_{client_ip}", max_calls=25, window_sec=60)
+    if not allowed_ip:
+        return web.json_response(
+            {"error": f"Too many AI requests from your network. Please wait {retry_ip}s."},
+            status=429,
+        )
+    allowed_hr_ip, retry_hr_ip = check_rate_limit("ai_chat_hourly", f"ip_{client_ip}", max_calls=40, window_sec=3600)
+    if not allowed_hr_ip:
+        return web.json_response(
+            {"error": f"Hourly AI quota exceeded. Please try again in {max(1, retry_hr_ip // 60)}m."},
+            status=429,
+        )
+    if user:
+        allowed_hr_usr, retry_hr_usr = check_rate_limit("ai_chat_hourly_user", f"user_{user.id}", max_calls=40, window_sec=3600)
+        if not allowed_hr_usr:
+            return web.json_response(
+                {"error": f"Hourly account AI quota exceeded. Please try again in {max(1, retry_hr_usr // 60)}m."},
+                status=429,
+            )
 
     try:
         data = await request.json()
     except Exception:
         return web.json_response({"error": "Invalid JSON body."}, status=400)
 
-    prompt = (data.get("prompt") or "").strip()
-    session_id = (data.get("session_id") or "").strip() or None
+    if not isinstance(data, dict):
+        return web.json_response({"error": "Invalid JSON object."}, status=400)
+
+    prompt = str(data.get("prompt") or "").strip()
+    session_id = str(data.get("session_id") or "").strip()[:80] or None
     reset = bool(data.get("reset", False))
     client_history = data.get("client_history")
 
-    async with get_db_session() as session:
-        if reset:
-            chat_state = await reset_ai_session_persistent(
-                db_session=session,
-                old_session_id=session_id,
-                web_user_id=user.id if user else None,
-            )
-        else:
-            chat_state, _ = await load_or_sync_ai_session(
-                db_session=session,
-                session_id=session_id,
-                web_user_id=user.id if user else None,
-                client_history=client_history if isinstance(client_history, list) else None,
-            )
+    if not prompt:
+        return web.json_response({"error": "Please enter a prompt question."}, status=400)
 
-        if chat_state.prompts_used >= MAX_PROMPTS_PER_SESSION:
+    if len(prompt) > 1200:
+        return web.json_response(
+            {"error": "Prompt is too long (maximum 1,200 characters)."},
+            status=400,
+        )
+
+    malicious_url_err = scan_web_text_for_malicious_links(prompt)
+    if malicious_url_err:
+        return web.json_response({"error": malicious_url_err}, status=400)
+
+    if reset:
+        r_ok, r_wait = check_rate_limit("ai_reset", rate_key, max_calls=15, window_sec=60)
+        r_hr_ok, r_hr_wait = check_rate_limit("ai_reset_hourly", f"ip_{client_ip}", max_calls=30, window_sec=3600)
+        if not r_ok or not r_hr_ok:
+            wait_s = r_wait if not r_ok else r_hr_wait
             return web.json_response(
-                {
-                    "ok": False,
-                    "limit_reached": True,
-                    "session_id": chat_state.session_id,
-                    "prompts_used": chat_state.prompts_used,
-                    "max_prompts": MAX_PROMPTS_PER_SESSION,
-                    "history": chat_state.get_history_payload(),
-                    "error": (
-                        "You've reached the 5-prompt limit for this session. "
-                        "Please start a new chat to continue."
-                    ),
-                },
+                {"error": f"Too many AI session resets. Please wait {wait_s}s."},
                 status=429,
             )
 
-        if not prompt:
-            return web.json_response({"error": "Please enter a prompt question."}, status=400)
+    lock_key = _resolve_ai_lock_key(session_id, user.id if user else None, client_ip)
+    async with ai_session_store.get_execution_lock(lock_key):
+        async with get_db_session() as session:
+            if reset:
+                chat_state = await reset_ai_session_persistent(
+                    db_session=session,
+                    old_session_id=session_id,
+                    web_user_id=user.id if user else None,
+                )
+            else:
+                chat_state, _ = await load_or_sync_ai_session(
+                    db_session=session,
+                    session_id=session_id,
+                    web_user_id=user.id if user else None,
+                    client_history=client_history if isinstance(client_history, list) else None,
+                )
 
-        if len(prompt) > 1200:
-            return web.json_response(
-                {"error": "Prompt is too long (maximum 1,200 characters)."},
-                status=400,
+            if chat_state.prompts_used >= MAX_PROMPTS_PER_SESSION:
+                return web.json_response(
+                    {
+                        "ok": False,
+                        "limit_reached": True,
+                        "session_id": chat_state.session_id,
+                        "prompts_used": chat_state.prompts_used,
+                        "max_prompts": MAX_PROMPTS_PER_SESSION,
+                        "history": chat_state.get_history_payload(),
+                        "error": (
+                            "You've reached the 5-prompt limit for this session. "
+                            "Please start a new chat to continue."
+                        ),
+                    },
+                    status=429,
+                )
+
+            result = await ai_orchestrator.answer_prompt(
+                db_session=session,
+                user_prompt=prompt,
+                chat_state=chat_state,
+                web_user_id=user.id if user else None,
             )
 
-        result = await ai_orchestrator.answer_prompt(
-            db_session=session,
-            user_prompt=prompt,
-            chat_state=chat_state,
-            web_user_id=user.id if user else None,
-        )
+    if not result.get("ok") and result.get("limit_reached"):
+        return web.json_response(result, status=429)
 
     if user:
         await broadcast_ws_event(
@@ -2926,18 +3097,37 @@ async def api_ai_chat(request: web.Request) -> web.Response:
 @routes.post("/api/ai/reset")
 async def api_ai_reset(request: web.Request) -> web.Response:
     user = await get_current_web_user(request)
+    client_ip = get_client_ip(request)
+    rate_key = f"user_{user.id}" if user else f"ip_{client_ip}"
+    allowed, retry = check_rate_limit("ai_reset", rate_key, max_calls=15, window_sec=60)
+    if not allowed:
+        return web.json_response(
+            {"error": f"Too many AI session resets. Please wait {retry}s."},
+            status=429,
+        )
+    allowed_hr, retry_hr = check_rate_limit("ai_reset_hourly", f"ip_{client_ip}", max_calls=30, window_sec=3600)
+    if not allowed_hr:
+        return web.json_response(
+            {"error": f"Hourly AI reset quota exceeded. Please try again in {max(1, retry_hr // 60)}m."},
+            status=429,
+        )
+
     try:
         data = await request.json()
     except Exception:
         data = {}
+    if not isinstance(data, dict):
+        data = {}
 
-    old_sid = (data.get("session_id") or "").strip() or None
-    async with get_db_session() as session:
-        fresh_state = await reset_ai_session_persistent(
-            db_session=session,
-            old_session_id=old_sid,
-            web_user_id=user.id if user else None,
-        )
+    old_sid = str(data.get("session_id") or "").strip()[:80] or None
+    lock_key = _resolve_ai_lock_key(old_sid, user.id if user else None, client_ip)
+    async with ai_session_store.get_execution_lock(lock_key):
+        async with get_db_session() as session:
+            fresh_state = await reset_ai_session_persistent(
+                db_session=session,
+                old_session_id=old_sid,
+                web_user_id=user.id if user else None,
+            )
 
     payload = {
         "ok": True,

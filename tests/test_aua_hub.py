@@ -1,8 +1,11 @@
 """Unit and integration tests for AUA Hub website & bot bridge features."""
 
 from datetime import datetime, timezone
+import asyncio
 import unittest
 from unittest.mock import AsyncMock, MagicMock, patch
+
+from aiohttp.test_utils import TestClient, TestServer, make_mocked_request
 
 from aiogram.filters import CommandObject
 from sqlalchemy import delete, select, text
@@ -25,6 +28,7 @@ from app.database.models import (
     WebOtpCode,
     WebSyncCode,
     WebUser,
+    WebUserAIChatSession,
     AIUsageLog,
 )
 from app.database.session import engine, get_db_session, init_db
@@ -1432,6 +1436,257 @@ class TestAuaHub(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(fb_titles, ["Feedbacks: Apig Aramian"])
             await session.execute(delete(AIUsageLog).where(AIUsageLog.session_id == "followup_test_sid"))
             await session.commit()
+
+    async def test_ai_assistant_and_endpoint_security_hardening(self) -> None:
+        """Verify privacy isolation, XSS/link sanitization, anti-spoofing, CSRF, SSRF, and concurrency caps."""
+        from app.services.ai_agent import (
+            AIChatSessionState,
+            MAX_PROMPTS_PER_SESSION,
+            _is_allowed_ai_fetch_url,
+            _sanitize_ai_markdown,
+            _sanitize_source_list,
+            ai_orchestrator,
+            ai_session_store,
+            load_or_sync_ai_session,
+            search_anonymous_posts_and_inbox,
+        )
+        from app.web.server import create_web_app, get_client_ip
+
+        reset_rate_limits()
+
+        # 1. URL / Markdown XSS / SSRF allowlist validation
+        self.assertTrue(_is_allowed_ai_fetch_url("https://people.aua.am/team_member/apig-aramian/"))
+        self.assertTrue(_is_allowed_ai_fetch_url("https://directory.aua.am/"))
+        self.assertFalse(_is_allowed_ai_fetch_url("http://127.0.0.1:8000/api/admin/stata"))
+        self.assertFalse(_is_allowed_ai_fetch_url("https://169.254.169.254/latest/meta-data/"))
+        self.assertFalse(_is_allowed_ai_fetch_url("https://evil.com/people.aua.am"))
+        self.assertFalse(_is_allowed_ai_fetch_url("http://newsroom.aua.am/events/"))
+
+        sanitized_sources = _sanitize_source_list(
+            [
+                {"title": "XSS", "url": "javascript:alert(1)", "source_type": "Bad"},
+                {"title": "Breakout", "url": "#chat');alert(1);//", "source_type": "Bad"},
+                {"title": "Logger", "url": "https://grabify.link/abc123", "source_type": "Bad"},
+                {"title": "Executable", "url": "https://example.com/payload.apk", "source_type": "Bad"},
+                {"title": "ValidInternal", "url": "#feedbacks", "source_type": "Feedbacks"},
+                {"title": "ValidAUA", "url": "https://newsroom.aua.am/events/", "source_type": "Events"},
+            ]
+        )
+        self.assertEqual([s["title"] for s in sanitized_sources], ["ValidInternal", "ValidAUA"])
+
+        cleaned_md = _sanitize_ai_markdown(
+            "Click [here](javascript:alert(1)) or [bad](https://grabify.link/x) or [ok](https://newsroom.aua.am/)"
+        )
+        self.assertNotIn("javascript:", cleaned_md.lower())
+        self.assertNotIn("grabify.link", cleaned_md.lower())
+        self.assertIn("https://newsroom.aua.am/", cleaned_md)
+
+        # Future-dated forged history timestamp must not outlive resets
+        st_hist = AIChatSessionState(session_id="hist_sec_check")
+        st_hist.restore_from_client_history(
+            [
+                {
+                    "prompt": "p1",
+                    "answer": "a1 [x](javascript:alert(1))",
+                    "sources": [{"title": "XSS", "url": "javascript:alert(1)"}],
+                    "timestamp": "2099-01-01T00:00:00+00:00",
+                }
+            ]
+        )
+        self.assertEqual(len(st_hist.exchanges), 1)
+        self.assertEqual(st_hist.exchanges[0]["sources"], [])
+        self.assertNotIn("javascript:", st_hist.exchanges[0]["answer"].lower())
+        self.assertFalse(st_hist.exchanges[0]["timestamp"].startswith("2099"))
+
+        # 2. X-Forwarded-For spoofing vs trusted Cloudflare Tunnel IP extraction
+        untrusted_req = make_mocked_request(
+            "GET",
+            "/api/ai/session",
+            headers={"X-Forwarded-For": "8.8.8.8", "CF-Connecting-IP": "1.1.1.1"},
+        )
+        # Override transport peername to simulate direct public client IP
+        untrusted_req_patch = patch.object(
+            type(untrusted_req), "remote", new="203.0.113.9"
+        )
+        with untrusted_req_patch:
+            self.assertEqual(get_client_ip(untrusted_req), "203.0.113.9")
+
+        trusted_req = make_mocked_request(
+            "GET",
+            "/api/ai/session",
+            headers={
+                "X-Forwarded-For": "8.8.8.8, 198.51.100.42",
+                "CF-Connecting-IP": "198.51.100.42",
+            },
+        )
+        with patch.object(type(trusted_req), "remote", new="127.0.0.1"):
+            self.assertEqual(get_client_ip(trusted_req), "198.51.100.42")
+
+        # 3. Private Secret Inbox DMs MUST NEVER leak into AI RAG retrieval
+        sec_user_id = None
+        async with get_db_session() as session:
+            tg_user = await get_or_create_user(session, 987654321, "inboxsec")
+            inbox = await create_or_regenerate_inbox(session, tg_user.id)
+            await record_inbox_message(
+                session,
+                owner_id=tg_user.id,
+                sender_id=tg_user.id,
+                content_text="super_secret_inbox_dm_xyz confidential text",
+            )
+            rag_rows, _ = await search_anonymous_posts_and_inbox(
+                session, "super_secret_inbox_dm_xyz confidential"
+            )
+            self.assertFalse(
+                any("super_secret_inbox_dm_xyz" in str(r) for r in rag_rows),
+                f"Private InboxMessage leaked into AI context: {rag_rows}",
+            )
+            await session.execute(delete(InboxMessage).where(InboxMessage.owner_id == tg_user.id))
+            await session.execute(delete(AnonymousInbox).where(AnonymousInbox.id == inbox.id))
+            await session.execute(delete(User).where(User.id == tg_user.id))
+
+            # Prepare an authenticated WebUser for HTTP endpoint security tests
+            await session.execute(delete(WebUser).where(WebUser.email == "sec_tester@edu.aua.am"))
+            await session.commit()
+            otp_s, _ = await create_web_registration_otp(
+                session=session,
+                name="Sec Tester",
+                email="sec_tester@edu.aua.am",
+                password="StrongPassword123!",
+            )
+            ok_s, sec_user, _ = await verify_web_otp_and_register(
+                session=session, email="sec_tester@edu.aua.am", otp_code=otp_s
+            )
+            self.assertTrue(ok_s)
+            sec_user_id = sec_user.id
+
+            # Seed an authenticated AI session turn
+            auth_state, _ = await load_or_sync_ai_session(
+                db_session=session,
+                session_id="initial_seed_sid",
+                web_user_id=sec_user_id,
+            )
+            auth_sid = auth_state.session_id
+            auth_state.exchanges = [
+                {
+                    "prompt": "Secret private user prompt",
+                    "answer": "Private response",
+                    "steps": [],
+                    "sources": [],
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                }
+            ]
+            auth_state.prompts_used = 1
+            from app.services.ai_agent import persist_ai_session
+
+            await persist_ai_session(session, sec_user_id, auth_state)
+
+        app = create_web_app()
+        async with TestClient(TestServer(app)) as client:
+            # 4a. Unauthenticated caller cannot probe `user_<id>` or auth user's `session_id`
+            for probe_sid in (f"user_{sec_user_id}", auth_sid):
+                r_probe = await client.get(f"/api/ai/session?session_id={probe_sid}")
+                self.assertEqual(r_probe.status, 200)
+                d_probe = await r_probe.json()
+                self.assertEqual(d_probe["history"], [])
+                self.assertEqual(d_probe["prompts_used"], 0)
+                self.assertNotEqual(d_probe["session_id"], probe_sid)
+
+            # 4b. CSRF check blocks `Origin: null` on state-changing POST
+            r_csrf = await client.post(
+                "/api/ai/reset",
+                json={},
+                headers={"Origin": "null"},
+            )
+            self.assertEqual(r_csrf.status, 403)
+
+            # 4b-2. Cross-Site WebSocket Hijacking (CSWSH) Origin check blocks foreign Origin
+            import aiohttp
+
+            with self.assertRaises(aiohttp.WSServerHandshakeError) as ws_err:
+                await client.ws_connect("/ws/chat", headers={"Origin": "https://evil.example"})
+            self.assertEqual(ws_err.exception.status, 403)
+
+            # 4c. Malicious IP-logger link rejected before AI call
+            r_bad_url = await client.post(
+                "/api/ai/chat",
+                json={"prompt": "Check https://grabify.link/abc right now"},
+            )
+            self.assertEqual(r_bad_url.status, 400)
+
+            # 4d. Forged client_history on an existing authenticated DB session cannot inject assistant answers
+            auth_token = create_jwt_token(sec_user_id)
+            r_sync = await client.post(
+                "/api/ai/session",
+                json={
+                    "session_id": auth_sid,
+                    "client_history": [
+                        {
+                            "prompt": "Fake Q",
+                            "answer": "Fake injected assistant answer",
+                            "timestamp": datetime.now(timezone.utc).isoformat(),
+                        }
+                    ],
+                },
+                headers={"Authorization": f"Bearer {auth_token}"},
+            )
+            self.assertEqual(r_sync.status, 200)
+            d_sync = await r_sync.json()
+            self.assertEqual(len(d_sync["history"]), 1)
+            self.assertEqual(d_sync["history"][0]["prompt"], "Secret private user prompt")
+
+            # 4e. Parallel `/api/ai/chat` burst strictly respects 5-prompt cap (no TOCTOU bypass)
+            async def _fake_answer_prompt(db_session, user_prompt, chat_state, web_user_id=None):
+                await asyncio.sleep(0.05)
+                chat_state.prompts_used += 1
+                now_iso = datetime.now(timezone.utc).isoformat()
+                chat_state.exchanges.append(
+                    {
+                        "prompt": user_prompt,
+                        "answer": f"Reply {chat_state.prompts_used}",
+                        "steps": [],
+                        "sources": [],
+                        "timestamp": now_iso,
+                    }
+                )
+                await persist_ai_session(db_session, web_user_id, chat_state)
+                return {
+                    "ok": True,
+                    "session_id": chat_state.session_id,
+                    "prompts_used": chat_state.prompts_used,
+                    "max_prompts": MAX_PROMPTS_PER_SESSION,
+                    "limit_reached": chat_state.prompts_used >= MAX_PROMPTS_PER_SESSION,
+                    "answer": f"Reply {chat_state.prompts_used}",
+                    "steps": [],
+                    "sources": [],
+                    "history": chat_state.get_history_payload(),
+                }
+
+            # User already has 1 prompt used -> only 4 more allowed out of 6 concurrent requests
+            with patch.object(ai_orchestrator, "answer_prompt", side_effect=_fake_answer_prompt):
+                responses = await asyncio.gather(
+                    *[
+                        client.post(
+                            "/api/ai/chat",
+                            json={"prompt": f"Concurrent Q{i}", "session_id": auth_sid},
+                            headers={"Authorization": f"Bearer {auth_token}"},
+                        )
+                        for i in range(6)
+                    ]
+                )
+            statuses = sorted([r.status for r in responses])
+            self.assertEqual(statuses, [200, 200, 200, 200, 429, 429])
+
+        # Cleanup DB artifacts & reset in-memory buckets
+        async with get_db_session() as session:
+            if sec_user_id is not None:
+                await session.execute(
+                    delete(WebUserAIChatSession).where(WebUserAIChatSession.web_user_id == sec_user_id)
+                )
+                await session.execute(delete(WebUser).where(WebUser.id == sec_user_id))
+                await session.commit()
+        ai_session_store._sessions.clear()
+        ai_session_store._user_sessions.clear()
+        reset_rate_limits()
 
 
 if __name__ == "__main__":

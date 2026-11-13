@@ -6765,24 +6765,65 @@ function renderClickableUserNameHtml(userObj, extraClass = "") {
       .join("");
   }
 
+  function bindAiViewLinkHandler() {
+    if (window.__auaAiViewLinkBound) return;
+    window.__auaAiViewLinkBound = true;
+    document.addEventListener("click", (e) => {
+      const link = e.target && e.target.closest ? e.target.closest("a[data-ai-view]") : null;
+      if (!link) return;
+      const targetView = String(link.getAttribute("data-ai-view") || "");
+      if (/^[a-z-]+$/.test(targetView)) {
+        e.preventDefault();
+        if (typeof switchView === "function") {
+          switchView(targetView);
+        }
+      }
+    });
+  }
+
+  function sanitizeAiLinkUrl(rawUrl) {
+    const u = String(rawUrl || "").trim();
+    if (!u || u.length > 500 || /['"<>`\s]/.test(u)) return null;
+    if (/^#[a-z-]+$/.test(u)) {
+      return { type: "internal", view: u.slice(1), href: u };
+    }
+    try {
+      const parsed = new URL(u);
+      if (parsed.protocol !== "https:" && parsed.protocol !== "http:") return null;
+      if (parsed.username || parsed.password) return null;
+      return { type: "external", href: parsed.href };
+    } catch (_) {
+      return null;
+    }
+  }
+
   function renderAiSourcesBarHtml(sources) {
+    bindAiViewLinkHandler();
     if (!Array.isArray(sources) || sources.length === 0) return "";
     const chips = sources
       .map((s) => {
-        const url = s.url || "#";
-        const isInternal = url.startsWith("#");
-        const clickAttr = isInternal
-          ? `onclick="event.preventDefault(); switchView('${escapeHtml(url.slice(1))}');"`
-          : `target="_blank" rel="noopener noreferrer"`;
+        if (!s || typeof s !== "object") return "";
+        const safeLink = sanitizeAiLinkUrl(s.url);
+        if (!safeLink) return "";
+        if (safeLink.type === "internal") {
+          return `
+            <a href="#${safeLink.view}" class="ai-source-link-chip" data-ai-view="${safeLink.view}" title="${escapeHtml(s.source_type || "Source")}">
+              <span>🔗</span>
+              <span>${escapeHtml(s.title || s.source_type || "Source")}</span>
+            </a>
+          `;
+        }
         return `
-          <a href="${escapeHtml(url)}" class="ai-source-link-chip" ${clickAttr} title="${escapeHtml(s.source_type || "Source")}">
+          <a href="${escapeHtml(safeLink.href)}" class="ai-source-link-chip" target="_blank" rel="noopener noreferrer" title="${escapeHtml(s.source_type || "Source")}">
             <span>🔗</span>
             <span>${escapeHtml(s.title || s.source_type || "Source")}</span>
           </a>
         `;
       })
+      .filter(Boolean)
       .join("");
 
+    if (!chips) return "";
     return `
       <div class="ai-sources-bar">
         <span class="ai-sources-label">Sources:</span>
@@ -7052,14 +7093,17 @@ function renderClickableUserNameHtml(userObj, extraClass = "") {
     htmlStr = htmlStr.replace(/(?<!\*)\*([^*\n]+)\*(?!\*)/g, "<em>$1</em>");
 
     // Markdown Links [title](url)
+    bindAiViewLinkHandler();
     htmlStr = htmlStr.replace(
       /\[([^\]]+)\]\((https?:\/\/[^\s)]+|#[a-z-]+)\)/gi,
       (match, label, url) => {
-        if (url.startsWith("#")) {
-          const viewTarget = url.slice(1);
-          return `<a href="${url}" onclick="event.preventDefault(); switchView('${viewTarget}');">${label}</a>`;
+        const unescapedUrl = String(url || "").replace(/&amp;/g, "&");
+        const safeLink = sanitizeAiLinkUrl(unescapedUrl);
+        if (!safeLink) return label;
+        if (safeLink.type === "internal") {
+          return `<a href="#${safeLink.view}" data-ai-view="${safeLink.view}">${label}</a>`;
         }
-        return `<a href="${url}" target="_blank" rel="noopener noreferrer">${label} ↗</a>`;
+        return `<a href="${escapeHtml(safeLink.href)}" target="_blank" rel="noopener noreferrer">${label} ↗</a>`;
       }
     );
 
