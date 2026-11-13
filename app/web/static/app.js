@@ -309,7 +309,7 @@ function renderClickableUserNameHtml(userObj, extraClass = "") {
     modal.classList.add("open");
 
     if (cached) {
-      renderUserProfileModalContent(cached, Boolean(state.user && state.user.id === uid));
+      renderUserProfileModalContent(cached, Boolean(state.user && state.user.id === uid), [], []);
     } else {
       body.innerHTML = `
       <div style="text-align:center; padding:44px 20px;">
@@ -323,7 +323,12 @@ function renderClickableUserNameHtml(userObj, extraClass = "") {
       const data = await apiFetch(`/api/users/${uid}/profile`);
       if (data && data.user) {
         const freshUser = registerKnownUser(data.user);
-        renderUserProfileModalContent(freshUser, Boolean(data.is_self));
+        renderUserProfileModalContent(
+          freshUser,
+          Boolean(data.is_self),
+          data.have_need_posts || [],
+          data.telegram_groups || []
+        );
       }
     } catch (err) {
       if (!cached) {
@@ -377,7 +382,27 @@ function renderClickableUserNameHtml(userObj, extraClass = "") {
     if (viewer) viewer.classList.add("hidden");
   }
 
-  function renderUserProfileModalContent(u, isSelf) {
+  async function copyUserInboxLink(url) {
+    if (!url) return;
+    try {
+      await navigator.clipboard.writeText(url);
+      showToast("Anonymous inbox link copied! 📋");
+    } catch {
+      showToast("Could not copy link automatically.", true);
+    }
+  }
+
+  function jumpToUserSwapCourse(courseCode) {
+    closeUserProfileModal();
+    switchView("have-need");
+    const searchInput = document.getElementById("hnFeedSearch");
+    if (searchInput && courseCode) {
+      searchInput.value = courseCode;
+      loadHaveNeedPosts();
+    }
+  }
+
+  function renderUserProfileModalContent(u, isSelf, haveNeedPosts = [], telegramGroups = []) {
     const body = document.getElementById("userProfileModalBody");
     if (!body || !u) return;
 
@@ -395,6 +420,25 @@ function renderClickableUserNameHtml(userObj, extraClass = "") {
       ? `<div class="profile-modal-bio">${escapeHtml(u.bio)}</div>`
       : `<div class="profile-modal-bio empty">No bio added yet.</div>`;
 
+    const statsHtml = `
+      <div class="profile-modal-stats-row">
+        <div class="profile-stat-box">
+          <div class="profile-stat-val">${haveNeedPosts.length}</div>
+          <div class="profile-stat-lbl">Active Swaps</div>
+        </div>
+        <div class="profile-stat-box">
+          <div class="profile-stat-val">${telegramGroups.length}</div>
+          <div class="profile-stat-lbl">Shared Groups</div>
+        </div>
+        <div class="profile-stat-box">
+          <div class="profile-stat-val" style="font-size:13px; color:${u.is_bot_synced ? "#34d399" : "var(--neon-blue-bright)"};">
+            ${u.is_bot_synced ? "⚡ Synced" : "✅ Verified"}
+          </div>
+          <div class="profile-stat-lbl">Account Status</div>
+        </div>
+      </div>
+    `;
+
     const actions = [];
     if (u.inbox_link) {
       actions.push(`
@@ -403,10 +447,19 @@ function renderClickableUserNameHtml(userObj, extraClass = "") {
         target="_blank"
         rel="noopener noreferrer"
         class="btn-illuminated"
-        style="flex:1; min-width:200px;"
+        style="flex:1.4; min-width:170px;"
       >
-        ✉️ Send Anonymous Message
+        ✉️ Anonymous Message
       </a>
+      <button
+        type="button"
+        class="btn-glass"
+        style="padding:10px 13px;"
+        onclick="copyUserInboxLink('${escapeHtml(u.inbox_link)}')"
+        title="Copy Anonymous Inbox Link"
+      >
+        📋
+      </button>
     `);
     }
     if (isSelf) {
@@ -414,12 +467,106 @@ function renderClickableUserNameHtml(userObj, extraClass = "") {
       <button
         type="button"
         class="btn-glass"
-        style="flex:1; min-width:150px;"
+        style="flex:1; min-width:140px;"
         onclick="closeUserProfileModal(); switchView('profile');"
       >
         ✏️ Edit My Profile
       </button>
     `);
+    }
+
+    let activityHtml = "";
+    if (haveNeedPosts.length > 0) {
+      const swapsItems = haveNeedPosts
+        .slice(0, 4)
+        .map((p) => {
+          const hc = p.have_course || {};
+          const nc = p.need_course || {};
+          const hCode = hc.course_code || "Course";
+          const nCode = nc.course_code || "Course";
+          const hSec = hc.section ? ` (${hc.section})` : "";
+          const nSec = nc.section ? ` (${nc.section})` : "";
+          return `
+            <div
+              class="profile-activity-item"
+              onclick="jumpToUserSwapCourse('${escapeHtml(hCode)}')"
+              role="button"
+              tabindex="0"
+              title="Click to view in Have-Need"
+            >
+              <div style="min-width:0;">
+                <div class="profile-activity-swap-codes">
+                  <span style="color:#34d399;">HAVE ${escapeHtml(hCode)}${escapeHtml(hSec)}</span>
+                  <span style="color:var(--text-secondary); margin:0 4px;">↔</span>
+                  <span style="color:var(--neon-blue-bright);">NEED ${escapeHtml(nCode)}${escapeHtml(nSec)}</span>
+                </div>
+                <div class="profile-activity-sub">
+                  ${escapeHtml(hc.course_title || "")}
+                </div>
+              </div>
+              <span style="font-size:12px; color:var(--neon-blue-bright); font-weight:700; flex-shrink:0;">View &rarr;</span>
+            </div>
+          `;
+        })
+        .join("");
+
+      activityHtml += `
+        <div class="profile-modal-section">
+          <div class="profile-modal-section-title">
+            <span>🔄 Active Course Swaps</span>
+            <span class="profile-modal-section-count">${haveNeedPosts.length}</span>
+          </div>
+          <div class="profile-modal-activity-list">
+            ${swapsItems}
+          </div>
+        </div>
+      `;
+    }
+
+    if (telegramGroups.length > 0) {
+      const groupItems = telegramGroups
+        .slice(0, 4)
+        .map((g) => {
+          const initial = getUserInitial(g.name || "G");
+          const thumb = g.image_url
+            ? `<img src="${escapeHtml(g.image_url)}" alt="" style="width:32px; height:32px; border-radius:9px; object-fit:cover; flex-shrink:0; border:1px solid rgba(56,189,248,0.28);" />`
+            : `<div style="width:32px; height:32px; border-radius:9px; background:linear-gradient(135deg,#0284c7,#2563eb); display:flex; align-items:center; justify-content:center; font-weight:800; font-size:13px; color:#fff; flex-shrink:0;">${escapeHtml(initial)}</div>`;
+          return `
+            <a
+              href="${escapeHtml(g.invite_link)}"
+              target="_blank"
+              rel="noopener noreferrer"
+              class="profile-activity-item"
+              style="text-decoration:none;"
+            >
+              <div style="display:flex; align-items:center; gap:10px; min-width:0;">
+                ${thumb}
+                <div style="min-width:0;">
+                  <div style="font-size:13px; font-weight:800; color:var(--text-white); white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">
+                    ${escapeHtml(g.name)}
+                  </div>
+                  <div class="profile-activity-sub">
+                    ${escapeHtml(g.description || "Telegram community group")}
+                  </div>
+                </div>
+              </div>
+              <span style="font-size:12px; color:var(--neon-blue-bright); font-weight:700; flex-shrink:0;">Join ↗</span>
+            </a>
+          `;
+        })
+        .join("");
+
+      activityHtml += `
+        <div class="profile-modal-section">
+          <div class="profile-modal-section-title">
+            <span>✈️ Shared Telegram Groups</span>
+            <span class="profile-modal-section-count">${telegramGroups.length}</span>
+          </div>
+          <div class="profile-modal-activity-list">
+            ${groupItems}
+          </div>
+        </div>
+      `;
     }
 
     body.innerHTML = `
@@ -444,12 +591,16 @@ function renderClickableUserNameHtml(userObj, extraClass = "") {
       </div>
     </div>
 
+    ${statsHtml}
+
     ${bioHtml}
 
     ${actions.length > 0
         ? `<div class="profile-modal-actions">${actions.join("")}</div>`
         : ""
       }
+
+    ${activityHtml}
   `;
   }
 
@@ -2252,26 +2403,80 @@ function renderClickableUserNameHtml(userObj, extraClass = "") {
       openAuthModal("login");
       return;
     }
+    updateGroupModalPreview();
     document.getElementById("groupModal").classList.add("open");
+    if (window.innerWidth > 768) {
+      setTimeout(() => document.getElementById("groupNameInput")?.focus(), 80);
+    }
   }
 
   function closeGroupModal() {
-    document.getElementById("groupModal").classList.remove("open");
+    document.getElementById("groupModal")?.classList.remove("open");
+  }
+
+  function updateGroupModalPreview() {
+    const nameVal = (document.getElementById("groupNameInput")?.value || "").trim();
+    const initialEl = document.getElementById("groupAvatarInitial");
+    if (initialEl) {
+      initialEl.textContent = nameVal ? getUserInitial(nameVal) : "✈️";
+    }
+  }
+
+  function clearGroupUploadedPhoto() {
+    const urlInput = document.getElementById("groupImageUrlInput");
+    const fileInput = document.getElementById("groupFileInput");
+    const previewImg = document.getElementById("groupAvatarPreviewImg");
+    const initialEl = document.getElementById("groupAvatarInitial");
+    const removeBtn = document.getElementById("groupRemovePhotoBtn");
+    const statusLabel = document.getElementById("groupUploadedPreview");
+
+    if (urlInput) urlInput.value = "";
+    if (fileInput) fileInput.value = "";
+    if (previewImg) {
+      previewImg.src = "";
+      previewImg.style.display = "none";
+    }
+    if (initialEl) initialEl.style.display = "flex";
+    if (removeBtn) removeBtn.style.display = "none";
+    if (statusLabel) statusLabel.textContent = "Click avatar or button to upload photo";
+    updateGroupModalPreview();
+  }
+
+  function appendGroupQuickTag(tagText) {
+    const descEl = document.getElementById("groupDescInput");
+    if (!descEl || !tagText) return;
+    const current = descEl.value.trim();
+    if (current.includes(tagText)) {
+      descEl.focus();
+      return;
+    }
+    descEl.value = current ? `${current} • ${tagText}` : `${tagText}: `;
+    descEl.focus();
   }
 
   async function handleGroupImageUpload(inputEl) {
     const file = inputEl.files?.[0];
     if (!file) return;
     const preview = document.getElementById("groupUploadedPreview");
-    preview.textContent = "Uploading...";
+    const previewImg = document.getElementById("groupAvatarPreviewImg");
+    const initialEl = document.getElementById("groupAvatarInitial");
+    const removeBtn = document.getElementById("groupRemovePhotoBtn");
+
+    if (preview) preview.textContent = "⏳ Uploading photo...";
     try {
       const fd = new FormData();
       fd.append("file", file);
       const res = await apiFetch("/api/upload", { method: "POST", body: fd });
       document.getElementById("groupImageUrlInput").value = res.url;
-      preview.textContent = "✅ Picture uploaded";
+      if (previewImg) {
+        previewImg.src = res.url;
+        previewImg.style.display = "block";
+      }
+      if (initialEl) initialEl.style.display = "none";
+      if (removeBtn) removeBtn.style.display = "inline-flex";
+      if (preview) preview.textContent = "✅ Group photo ready";
     } catch (err) {
-      preview.textContent = "Upload failed";
+      if (preview) preview.textContent = "Upload failed";
       showToast(err.message, true);
     }
   }
@@ -2292,8 +2497,7 @@ function renderClickableUserNameHtml(userObj, extraClass = "") {
       document.getElementById("groupNameInput").value = "";
       document.getElementById("groupLinkInput").value = "";
       document.getElementById("groupDescInput").value = "";
-      document.getElementById("groupImageUrlInput").value = "";
-      document.getElementById("groupUploadedPreview").textContent = "No image selected";
+      clearGroupUploadedPhoto();
       showToast("Telegram group published! ✈️");
       loadTelegramGroups(1);
     } catch (err) {
@@ -2770,10 +2974,55 @@ function renderClickableUserNameHtml(userObj, extraClass = "") {
      -------------------------------------------------------------------------- */
 
   let emojiPickerInitialized = false;
+  const DEFAULT_QUICK_EMOJIS = ["🔥", "❤️", "😂", "🙏", "😭", "💀", "✨", "🎉", "💯", "👍", "🇦🇲", "🎓"];
+
+  function getRecentQuickEmojis() {
+    try {
+      const raw = localStorage.getItem("aua_hub_recent_emojis");
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          return parsed.slice(0, 12);
+        }
+      }
+    } catch { }
+    return DEFAULT_QUICK_EMOJIS;
+  }
+
+  function recordRecentEmoji(emoji) {
+    if (!emoji) return;
+    try {
+      const list = getRecentQuickEmojis().filter((e) => e !== emoji);
+      list.unshift(emoji);
+      localStorage.setItem("aua_hub_recent_emojis", JSON.stringify(list.slice(0, 12)));
+      renderEmojiQuickBar();
+    } catch { }
+  }
+
+  function renderEmojiQuickBar() {
+    const bar = document.getElementById("emojiQuickBar");
+    if (!bar) return;
+    const emojis = getRecentQuickEmojis();
+    bar.innerHTML =
+      `<span class="emoji-quick-label">⚡ Quick</span>` +
+      emojis
+        .map(
+          (em) => `
+        <button
+          type="button"
+          class="emoji-quick-btn"
+          onclick="insertEmoji('${escapeHtml(em)}')"
+          title="Insert ${escapeHtml(em)}"
+        >${em}</button>
+      `
+        )
+        .join("");
+  }
 
   function initEmojiPicker() {
     if (emojiPickerInitialized) return;
     emojiPickerInitialized = true;
+    renderEmojiQuickBar();
     renderEmojiCategoryTabs();
     renderEmojiGrid(state.activeEmojiCategory || "smileys", "");
 
@@ -2920,7 +3169,7 @@ function renderClickableUserNameHtml(userObj, extraClass = "") {
     const container = document.querySelector(".spam-chat-container");
     if (!picker || !btn || !container) return;
 
-    if (window.innerWidth <= 640) {
+    if (window.innerWidth <= 768) {
       picker.style.left = "";
       picker.style.right = "";
       picker.style.bottom = "";
@@ -2931,7 +3180,7 @@ function renderClickableUserNameHtml(userObj, extraClass = "") {
 
     const btnRect = btn.getBoundingClientRect();
     const containerRect = container.getBoundingClientRect();
-    const pickerWidth = picker.offsetWidth || 360;
+    const pickerWidth = picker.offsetWidth || 376;
 
     // Align picker's left edge near the emoji toggle button
     let left = btnRect.left - containerRect.left - 4;
@@ -2942,8 +3191,8 @@ function renderClickableUserNameHtml(userObj, extraClass = "") {
     if (left < 14) left = 14;
 
     // Position vertically right above the emoji toggle button
-    const bottom = Math.max(70, containerRect.bottom - btnRect.top + 8);
-    const maxHeight = Math.max(260, Math.min(420, containerRect.height - bottom - 16));
+    const bottom = Math.max(70, containerRect.bottom - btnRect.top + 10);
+    const maxHeight = Math.max(280, Math.min(420, containerRect.height - bottom - 14));
 
     picker.style.left = `${Math.round(left)}px`;
     picker.style.right = "auto";
@@ -2954,8 +3203,11 @@ function renderClickableUserNameHtml(userObj, extraClass = "") {
   function openEmojiPicker() {
     initEmojiPicker();
     const picker = document.getElementById("chatEmojiPicker");
+    const toggleBtn = document.getElementById("chatEmojiToggleBtn");
     if (!picker) return;
+    renderEmojiQuickBar();
     picker.classList.remove("hidden");
+    if (toggleBtn) toggleBtn.classList.add("active");
     positionEmojiPicker();
     const searchInput = document.getElementById("emojiSearchInput");
     if (searchInput && window.innerWidth > 768) {
@@ -2965,32 +3217,58 @@ function renderClickableUserNameHtml(userObj, extraClass = "") {
 
   function closeEmojiPicker() {
     const picker = document.getElementById("chatEmojiPicker");
+    const toggleBtn = document.getElementById("chatEmojiToggleBtn");
     if (picker) picker.classList.add("hidden");
+    if (toggleBtn) toggleBtn.classList.remove("active");
   }
 
   function insertEmoji(emoji) {
     const input = document.getElementById("chatRichInput");
     if (!input) return;
-    input.focus();
+
+    restoreChatInputSelection();
 
     const sel = window.getSelection();
     if (sel && sel.rangeCount > 0) {
       const range = sel.getRangeAt(0);
-      range.deleteContents();
-      const textNode = document.createTextNode(emoji);
-      range.insertNode(textNode);
-      range.setStartAfter(textNode);
-      range.setEndAfter(textNode);
-      sel.removeAllRanges();
-      sel.addRange(range);
+      if (input.contains(range.commonAncestorContainer) || input === range.commonAncestorContainer) {
+        range.deleteContents();
+        const textNode = document.createTextNode(emoji);
+        range.insertNode(textNode);
+        range.setStartAfter(textNode);
+        range.setEndAfter(textNode);
+        sel.removeAllRanges();
+        sel.addRange(range);
+      } else {
+        input.appendChild(document.createTextNode(emoji));
+      }
     } else {
       input.appendChild(document.createTextNode(emoji));
     }
 
+    recordRecentEmoji(emoji);
+
     // Trigger input event to update state and placeholder
     input.dispatchEvent(new Event("input", { bubbles: true }));
-    closeEmojiPicker();
-    input.focus();
+    saveChatInputSelection();
+    updateFormatToolbarActiveStates();
+  }
+
+  function backspaceChatEmoji() {
+    const input = document.getElementById("chatRichInput");
+    if (!input) return;
+    restoreChatInputSelection();
+    try {
+      document.execCommand("delete", false, null);
+    } catch {
+      const text = input.textContent || "";
+      if (text.length > 0) {
+        const chars = Array.from(text);
+        chars.pop();
+        input.textContent = chars.join("");
+      }
+    }
+    input.dispatchEvent(new Event("input", { bubbles: true }));
     saveChatInputSelection();
     updateFormatToolbarActiveStates();
   }
@@ -5246,6 +5524,7 @@ function renderClickableUserNameHtml(userObj, extraClass = "") {
     }
 
     try {
+      closeEmojiPicker();
       if (input) {
         input.innerHTML = "";
         savedChatSelectionRange = null;

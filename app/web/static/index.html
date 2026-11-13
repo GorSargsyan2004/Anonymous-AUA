@@ -17,7 +17,7 @@
     href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;700;800&display=swap"
     rel="stylesheet">
   <link rel="icon" type="image/svg+xml" href="/static/bot-logo.svg" />
-  <link rel="stylesheet" href="/static/styles.css?v=20261108_2" />
+  <link rel="stylesheet" href="/static/styles.css?v=20261113_2" />
 </head>
 
 <body>
@@ -589,6 +589,33 @@
           </button>
         </div>
 
+        <!-- Searchable Categorized Emoji Picker Popover (Desktop) / Inline Docked Panel (Mobile) -->
+        <div id="chatEmojiPicker" class="chat-emoji-picker hidden" onclick="event.stopPropagation()">
+          <div class="emoji-picker-header">
+            <div class="emoji-search-box">
+              <span class="emoji-search-icon">🔍</span>
+              <input type="text" id="emojiSearchInput" class="emoji-search-input"
+                placeholder="Search emojis (smile, fire, heart, party)..." oninput="filterEmojis(this.value)" />
+              <button type="button" id="emojiClearSearchBtn" class="emoji-clear-btn hidden"
+                onclick="clearEmojiSearch()" title="Clear search">&times;</button>
+            </div>
+            <button type="button" class="emoji-backspace-btn" onclick="backspaceChatEmoji()" title="Backspace">⌫</button>
+            <button type="button" class="emoji-close-btn" onclick="closeEmojiPicker()" title="Close">&times;</button>
+          </div>
+
+          <div class="emoji-quick-bar" id="emojiQuickBar" aria-label="Quick emojis"></div>
+          <div class="emoji-category-tabs" id="emojiCategoryTabs"></div>
+          <div id="emojiGrid" class="emoji-grid"></div>
+
+          <div class="emoji-picker-footer" id="emojiPickerFooter">
+            <div class="emoji-preview-left">
+              <span class="emoji-preview-sample" id="emojiPreviewSample">😀</span>
+              <span class="emoji-preview-name" id="emojiPreviewName">Tap emojis to insert</span>
+            </div>
+            <button type="button" class="emoji-done-pill" onclick="closeEmojiPicker()">Done</button>
+          </div>
+        </div>
+
         <!-- Composer Form -->
         <form class="chat-composer" onsubmit="sendSpamChatMessage(event)">
           <!-- Telegram Reply Preview Banner -->
@@ -690,28 +717,6 @@
           </div>
         </form>
       </div>
-
-      <!-- Searchable Categorized Emoji Picker Popover / Drawer -->
-      <div id="chatEmojiPicker" class="chat-emoji-picker hidden" onclick="event.stopPropagation()">
-        <div class="emoji-picker-header">
-          <div class="emoji-search-box">
-            <span class="emoji-search-icon">🔍</span>
-            <input type="text" id="emojiSearchInput" class="emoji-search-input"
-              placeholder="Search emojis (smile, fire, heart, party)..." oninput="filterEmojis(this.value)" />
-            <button type="button" id="emojiClearSearchBtn" class="emoji-clear-btn hidden"
-              onclick="clearEmojiSearch()">&times;</button>
-          </div>
-          <button type="button" class="emoji-close-btn" onclick="closeEmojiPicker()" title="Close">&times;</button>
-        </div>
-
-        <div class="emoji-category-tabs" id="emojiCategoryTabs"></div>
-        <div id="emojiGrid" class="emoji-grid"></div>
-
-        <div class="emoji-picker-footer" id="emojiPickerFooter">
-          <span class="emoji-preview-sample" id="emojiPreviewSample">😀</span>
-          <span class="emoji-preview-name" id="emojiPreviewName">Grinning Face</span>
-        </div>
-      </div>
     </section>
 
     <!-- ======================================================================
@@ -735,7 +740,7 @@
   <!-- ========================================================================
        MODAL 1: Sign In / Register + 6-Digit OTP Verification
        ======================================================================== -->
-  <div id="authModal" class="modal-backdrop">
+  <div id="authModal" class="modal-backdrop" onclick="if(event.target===this) closeAuthModal()">
     <div class="glass-panel modal-card">
       <div class="modal-drag-handle"></div>
       <button class="modal-close" onclick="closeAuthModal()">&times;</button>
@@ -818,45 +823,77 @@
   <!-- ========================================================================
        MODAL 2: Post Telegram Group
        ======================================================================== -->
-  <div id="groupModal" class="modal-backdrop">
-    <div class="glass-panel modal-card">
+  <div id="groupModal" class="modal-backdrop" onclick="if(event.target===this) closeGroupModal()">
+    <div class="glass-panel modal-card group-modal-card">
       <div class="modal-drag-handle"></div>
-      <button class="modal-close" onclick="closeGroupModal()">&times;</button>
-      <h2 style="font-size: 20px; font-weight: 800; margin-bottom: 6px;">✈️ Post a Telegram Group</h2>
-      <p style="font-size: 13px; color: var(--text-secondary); margin-bottom: 18px;">
-        Share a campus club, study group, or student community with AUA Hub.
-      </p>
+      <button type="button" class="modal-close group-modal-close" onclick="closeGroupModal()" aria-label="Close">&times;</button>
 
-      <form onsubmit="submitNewGroup(event)">
-        <div style="margin-bottom: 14px;">
-          <label class="field-label">🏷️ Group Name</label>
-          <input type="text" id="groupNameInput" class="input-glass" placeholder="e.g. AUA CS Class of 2028" required />
+      <div class="group-modal-hero">
+        <div class="group-modal-icon-badge">✈️</div>
+        <div>
+          <h2 class="group-modal-title">Post a Telegram Group</h2>
+          <p class="group-modal-subtitle">
+            Share a study group, major chat, or campus club with the AUA community.
+          </p>
         </div>
-        <div style="margin-bottom: 14px;">
-          <label class="field-label">🔗 Telegram Invite Link</label>
-          <input type="text" id="groupLinkInput" class="input-glass"
-            placeholder="https://t.me/+AbCdEfGhIjK or https://t.me/groupname" required />
-        </div>
-        <div style="margin-bottom: 14px;">
-          <label class="field-label">🖼️ Group Picture (Optional)</label>
-          <div style="display:flex; align-items:center; gap:10px;">
-            <label class="btn-glass" style="cursor:pointer;">
-              📤 Upload Picture
-              <input type="file" accept="image/*" style="display:none;" onchange="handleGroupImageUpload(this)" />
-            </label>
-            <span id="groupUploadedPreview" style="font-size:12px; color:var(--neon-blue-bright);">No image
-              selected</span>
+      </div>
+
+      <form onsubmit="submitNewGroup(event)" class="group-modal-form">
+        <!-- Interactive Avatar Uploader + Group Name Identity Row -->
+        <div class="group-identity-row">
+          <label class="group-avatar-uploader" title="Upload Group Picture (Optional)">
+            <div id="groupAvatarLivePreview" class="group-avatar-live-preview">
+              <span id="groupAvatarInitial">G</span>
+              <img id="groupAvatarPreviewImg" src="" alt="Group preview" style="display:none;" />
+            </div>
+            <span class="group-avatar-cam-badge">📷</span>
+            <input type="file" id="groupImageFileInput" accept="image/*" style="display:none;" onchange="handleGroupImageUpload(this)" />
+          </label>
+
+          <div class="group-identity-fields">
+            <label class="field-label" style="margin-bottom:5px;">🏷️ Group Name</label>
+            <input type="text" id="groupNameInput" class="input-glass" placeholder="e.g. AUA CS Class of 2028"
+              oninput="updateGroupModalPreview()" required />
+            <div class="group-upload-status-row">
+              <span id="groupUploadedPreview" class="group-upload-status-text">Tap icon to add group photo (optional)</span>
+              <button type="button" id="groupRemovePhotoBtn" class="group-remove-photo-btn hidden" onclick="clearGroupUploadedPhoto()">Remove</button>
+            </div>
           </div>
           <input type="hidden" id="groupImageUrlInput" value="" />
         </div>
-        <div style="margin-bottom: 18px;">
-          <label class="field-label">📝 About the Group</label>
-          <textarea id="groupDescInput" class="textarea-glass" rows="3"
-            placeholder="What is this group about? Who should join?"></textarea>
+
+        <div class="group-field-block">
+          <label class="field-label">🔗 Telegram Invite Link</label>
+          <div class="group-link-input-wrap">
+            <span class="group-link-prefix">✈️</span>
+            <input type="text" id="groupLinkInput" class="input-glass group-link-input"
+              placeholder="https://t.me/+AbCdEfGhIjK or https://t.me/groupname" required />
+          </div>
         </div>
-        <button type="submit" class="btn-illuminated" style="width:100%;">
-          Publish Group 🚀
-        </button>
+
+        <div class="group-field-block">
+          <div style="display:flex; align-items:center; justify-content:space-between; gap:8px; margin-bottom:6px;">
+            <label class="field-label" style="margin-bottom:0;">📝 About the Group</label>
+            <span class="group-quick-tags-hint">Quick tags:</span>
+          </div>
+          <div class="group-quick-tags" role="group" aria-label="Quick category tags">
+            <button type="button" class="group-tag-chip" onclick="appendGroupQuickTag('📚 Study Group')">📚 Study Group</button>
+            <button type="button" class="group-tag-chip" onclick="appendGroupQuickTag('💻 Major / Class')">💻 Major / Class</button>
+            <button type="button" class="group-tag-chip" onclick="appendGroupQuickTag('🎉 Campus Club')">🎉 Campus Club</button>
+            <button type="button" class="group-tag-chip" onclick="appendGroupQuickTag('🏀 Sports &amp; Hobbies')">🏀 Sports &amp; Hobbies</button>
+          </div>
+          <textarea id="groupDescInput" class="textarea-glass" rows="3"
+            placeholder="What is this group about? Which students or courses is it for?"></textarea>
+        </div>
+
+        <div class="group-modal-actions">
+          <button type="button" class="btn-glass group-cancel-btn" onclick="closeGroupModal()">
+            Cancel
+          </button>
+          <button type="submit" class="btn-illuminated group-submit-btn">
+            ✈️ Publish Group
+          </button>
+        </div>
       </form>
     </div>
   </div>
@@ -1119,7 +1156,7 @@
     </div>
   </div>
 
-  <script src="/static/app.js?v=20261111_1"></script>
+  <script src="/static/app.js?v=20261113_2"></script>
 </body>
 
 </html>
