@@ -61,6 +61,7 @@ from app.database.web_crud import (
     get_active_semester_label,
     get_feedback_catalog,
     get_message_reactions,
+    get_reported_anon_post_ids,
     get_spam_chat_unread_count,
     get_synced_web_inbox,
     get_unread_notification_count,
@@ -76,6 +77,7 @@ from app.database.web_crud import (
     mark_notification_read,
     mark_spam_chat_read,
     record_web_analytics_event,
+    report_anonymous_public_post,
     search_courses,
     serialize_user_notification,
     toggle_spam_chat_reaction,
@@ -83,6 +85,7 @@ from app.database.web_crud import (
     update_telegram_group,
     update_web_user_profile,
     verify_web_otp_and_register,
+    ANON_POST_REPORT_HIDE_THRESHOLD,
 )
 from app.services.ai_agent import (
     MAX_PROMPTS_PER_SESSION,
@@ -1681,9 +1684,12 @@ async def api_list_anonymous_posts(request: web.Request) -> web.Response:
         page, per_page = 1, 20
 
     q = (request.query.get("q") or "").strip()[:100]
+    user = await get_current_web_user(request)
+    reporter_key = f"user:{user.id}" if user else f"ip:{get_client_ip(request)}"
 
     async with get_db_session() as session:
         posts, total = await list_anonymous_public_posts(session, search_query=q, page=page, per_page=per_page)
+        reported_ids = await get_reported_anon_post_ids(session, reporter_key, [p.id for p in posts])
 
     total_pages = max(1, (total + per_page - 1) // per_page)
     return web.json_response(
@@ -1692,6 +1698,8 @@ async def api_list_anonymous_posts(request: web.Request) -> web.Response:
                 {
                     "index": p.id,
                     "content_text": p.content_text,
+                    "report_count": int(p.report_count or 0),
+                    "reported_by_me": p.id in reported_ids,
                     "created_at": p.created_at.isoformat() if p.created_at else None,
                 }
                 for p in posts
@@ -1701,6 +1709,73 @@ async def api_list_anonymous_posts(request: web.Request) -> web.Response:
             "total": total,
             "total_pages": total_pages,
             "q": q,
+            "report_hide_threshold": ANON_POST_REPORT_HIDE_THRESHOLD,
+        }
+    )
+
+
+@routes.post("/api/anonymous/posts/{post_id}/report")
+async def api_report_anonymous_post(request: web.Request) -> web.Response:
+    try:
+        post_id = int(request.match_info["post_id"])
+    except (KeyError, ValueError):
+        return web.json_response({"error": "Invalid post ID."}, status=400)
+
+    user = await get_current_web_user(request)
+    reporter_key = f"user:{user.id}" if user else f"ip:{get_client_ip(request)}"
+
+    allowed, retry = check_rate_limit("report_anon_post", reporter_key, max_calls=15, window_sec=300)
+    if not allowed:
+        return web.json_response(
+            {"error": f"Too many report submissions. Please wait {retry}s."}, status=429
+        )
+
+    reason = None
+    try:
+        body = await request.json()
+        if isinstance(body, dict):
+            reason = (body.get("reason") or "").strip()[:250] or None
+    except Exception:
+        pass
+
+    async with get_db_session() as session:
+        res = await report_anonymous_public_post(
+            session=session,
+            post_id=post_id,
+            reporter_key=reporter_key,
+            web_user_id=user.id if user else None,
+            reason=reason,
+            hide_threshold=ANON_POST_REPORT_HIDE_THRESHOLD,
+        )
+
+    if not res.get("ok"):
+        return web.json_response({"error": res.get("error", "Post not found.")}, status=404)
+
+    # Notify administrators if this report crossed the auto-hide threshold
+    if res.get("newly_hidden") and _BOT_INSTANCE is not None:
+        post_obj = res.get("post")
+        preview_txt = html.escape((post_obj.content_text if post_obj else "")[:350])
+        alert_msg = (
+            f"🚩 <b>Anonymous Post #{post_id} Auto-Hidden (Tier 3 Moderation)</b>\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"• <b>Unique Community Reports:</b> {res.get('report_count')}/{ANON_POST_REPORT_HIDE_THRESHOLD}\n"
+            f"• <b>Status:</b> Hidden from live feed\n\n"
+            f"💬 <b>Post Content:</b>\n<i>{preview_txt}</i>"
+        )
+        for admin_id in settings.admin_ids:
+            try:
+                await _BOT_INSTANCE.send_message(chat_id=admin_id, text=alert_msg, parse_mode="HTML")
+            except Exception:
+                pass
+
+    return web.json_response(
+        {
+            "ok": True,
+            "post_id": post_id,
+            "already_reported": bool(res.get("already_reported")),
+            "report_count": int(res.get("report_count", 0)),
+            "auto_hidden": bool(res.get("auto_hidden")),
+            "threshold": ANON_POST_REPORT_HIDE_THRESHOLD,
         }
     )
 

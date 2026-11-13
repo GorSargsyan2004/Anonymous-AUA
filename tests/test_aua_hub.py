@@ -2,7 +2,7 @@
 
 from datetime import datetime, timezone
 import unittest
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from aiogram.filters import CommandObject
 from sqlalchemy import delete, select, text
@@ -635,10 +635,65 @@ class TestAuaHub(unittest.IsolatedAsyncioTestCase):
             mock_state.set_state.assert_called_once()
 
             mock_msg.answer.reset_mock()
-            await handle_post_text_input(mock_msg, mock_state)
+            with patch(
+                "app.handlers.web_bridge.gemini_moderator.evaluate_anonymous_post",
+                new=AsyncMock(return_value="VALID"),
+            ):
+                await handle_post_text_input(mock_msg, mock_state)
             mock_msg.answer.assert_called_once()
             reply_arg = mock_msg.answer.call_args[0][0]
             self.assertIn("Anonymous Post Published to AUA Hub!", reply_arg)
+
+            # 8b. Test 3-Tier Moderation Pipeline (Tier 1 Algorithmic, Tier 2 Gemini AI, Tier 3 Community Reporting)
+            from app.services.ai_moderator import TIER1_REJECTION_MESSAGE, validate_anonymous_post_tier1
+            from app.database.web_crud import report_anonymous_public_post
+
+            # Tier 1: Rejects short (<12 chars), zero-vowel ("fjjdkslmnpqr"), repetitive ("hhhhhhhhhhhh"), and keyboard smash ("asdfghjklzxcv")
+            for bad_input in ["hi", "fjjd", "hhh", "fjjdkslmnpqr", "hhhhhhhhhhhhhh", "asdfghjklzxcv", "asdasdasdasd"]:
+                t1_ok, t1_msg = validate_anonymous_post_tier1(bad_input)
+                self.assertFalse(t1_ok, f"Expected Tier 1 to reject: {bad_input}")
+                self.assertEqual(t1_msg, TIER1_REJECTION_MESSAGE)
+
+            mock_msg.answer.reset_mock()
+            mock_msg.text = "fjjd"
+            await handle_post_text_input(mock_msg, mock_state)
+            mock_msg.answer.assert_called_once_with(TIER1_REJECTION_MESSAGE)
+
+            # Tier 2: Rejects post when Gemini AI moderator returns 'SPAM'
+            mock_msg.answer.reset_mock()
+            mock_msg.text = "Random meaningless words that pass length check"
+            with patch(
+                "app.handlers.web_bridge.gemini_moderator.evaluate_anonymous_post",
+                new=AsyncMock(return_value="SPAM"),
+            ):
+                await handle_post_text_input(mock_msg, mock_state)
+            mock_msg.answer.assert_called_once()
+            self.assertIn("did not meet our community standards", mock_msg.answer.call_args[0][0])
+
+            # Tier 3: Community reporting hides post after 3 unique reports
+            rep1 = await report_anonymous_public_post(session, post_id=pub_post.id, reporter_key=f"user:{u1.id}", web_user_id=u1.id)
+            self.assertTrue(rep1["ok"])
+            self.assertFalse(rep1["already_reported"])
+            self.assertEqual(rep1["report_count"], 1)
+            self.assertFalse(rep1["auto_hidden"])
+
+            # Duplicate report by same user does not increment count
+            rep1_dup = await report_anonymous_public_post(session, post_id=pub_post.id, reporter_key=f"user:{u1.id}", web_user_id=u1.id)
+            self.assertTrue(rep1_dup["already_reported"])
+            self.assertEqual(rep1_dup["report_count"], 1)
+
+            rep2 = await report_anonymous_public_post(session, post_id=pub_post.id, reporter_key=f"user:{u2.id}", web_user_id=u2.id)
+            self.assertEqual(rep2["report_count"], 2)
+            self.assertFalse(rep2["auto_hidden"])
+
+            rep3 = await report_anonymous_public_post(session, post_id=pub_post.id, reporter_key="ip:203.0.113.99")
+            self.assertEqual(rep3["report_count"], 3)
+            self.assertTrue(rep3["auto_hidden"])
+            self.assertTrue(rep3["newly_hidden"])
+
+            # Verify hidden post no longer appears in public feed listing
+            visible_posts, _ = await list_anonymous_public_posts(session, search_query=f"#{pub_post.id}")
+            self.assertEqual(len(visible_posts), 0)
 
             # 9. Test Academic Feedbacks (Instructors & Courses)
             fb_inst = await create_academic_feedback(

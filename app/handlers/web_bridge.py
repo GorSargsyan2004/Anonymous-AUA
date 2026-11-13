@@ -23,6 +23,11 @@ from app.keyboards.inline import (
     get_gender_mismatch_keyboard,
     get_inbox_owner_keyboard,
 )
+from app.services.ai_moderator import (
+    TIER2_REJECTION_MESSAGE,
+    gemini_moderator,
+    validate_anonymous_post_tier1,
+)
 from app.services.gender_detector import infer_gender_from_email
 from app.services.link_shield import link_shield
 from app.states.states import WebBridgeState
@@ -32,14 +37,13 @@ router = Router(name="web_bridge_router")
 
 
 async def _process_public_post(message: Message, raw_text: str, state: FSMContext) -> None:
-    """Validate and publish an anonymous post to the AUA Hub Anonymous feed."""
+    """Validate (Tier 1 & Tier 2 moderation) and publish an anonymous post to the AUA Hub Anonymous feed."""
     text = (raw_text or "").strip()
-    if len(text) < 3:
-        await message.answer(
-            "⚠️ <b>Post Too Short</b>\n\n"
-            "Please enter at least 3 characters for your anonymous post (or send /cancel to abort):",
-            parse_mode="HTML",
-        )
+
+    # Tier 1: Deterministic Algorithmic Checks (Min length >= 12, vowel ratio, repetition, keyboard smash)
+    tier1_ok, tier1_err = validate_anonymous_post_tier1(text)
+    if not tier1_ok:
+        await message.answer(tier1_err)
         return
 
     if len(text) > 1200:
@@ -74,6 +78,18 @@ async def _process_public_post(message: Message, raw_text: str, state: FSMContex
             )
             return
 
+    # Tier 2: AI Content Moderation via Google Gemini API ('VALID' vs 'SPAM')
+    verdict = await gemini_moderator.evaluate_anonymous_post(text)
+    if verdict == "SPAM":
+        await state.clear()
+        logger.info("Dropped anonymous post from user %s due to Tier 2 Gemini SPAM verdict", user_id)
+        await message.answer(
+            TIER2_REJECTION_MESSAGE,
+            parse_mode="HTML",
+        )
+        return
+
+    async with get_db_session() as session:
         post = await create_anonymous_public_post(
             session=session,
             telegram_user_id=user_id,

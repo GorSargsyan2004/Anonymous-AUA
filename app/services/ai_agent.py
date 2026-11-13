@@ -425,13 +425,14 @@ async def search_anonymous_posts_and_inbox(
     if post_conds:
         stmt_posts = (
             select(AnonymousPublicPost)
-            .where(or_(*post_conds))
+            .where(AnonymousPublicPost.is_hidden == False, or_(*post_conds))
             .order_by(desc(AnonymousPublicPost.created_at))
             .limit(limit)
         )
     else:
         stmt_posts = (
             select(AnonymousPublicPost)
+            .where(AnonymousPublicPost.is_hidden == False)
             .order_by(desc(AnonymousPublicPost.created_at))
             .limit(5)
         )

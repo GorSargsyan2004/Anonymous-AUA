@@ -7,11 +7,12 @@ bidirectional accountability for both reporter and reported user.
 """
 
 import asyncio
-from collections import defaultdict, deque
+from collections import Counter, defaultdict, deque
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 import html
 import logging
+import re
 import time
 from typing import Any, Dict, List, Literal, Optional, Tuple
 
@@ -451,6 +452,189 @@ class GeminiModerator:
             illegal_perpetrator="None",
             anonymized_summary="Report evaluated; minor conduct penalty applied.",
         )
+
+    async def evaluate_anonymous_post(self, text: str) -> Literal["VALID", "SPAM"]:
+        """Tier 2 AI Content Moderation for anonymous student posts via Google Gemini API.
+
+        Returns 'VALID' if coherent/meaningful, or 'SPAM' if gibberish/test spam.
+        """
+        cleaned = (text or "").strip()
+        if not cleaned:
+            return "SPAM"
+
+        async with self._semaphore:
+            client = self._get_client()
+            if client is None or types is None:
+                return self._fallback_evaluate_anonymous_post(cleaned)
+
+            try:
+                config = types.GenerateContentConfig(
+                    system_instruction=ANON_POST_MODERATION_SYSTEM_INSTRUCTION,
+                    temperature=0.0,
+                    max_output_tokens=16,
+                )
+                response = await client.aio.models.generate_content(
+                    model="gemini-2.5-flash",
+                    contents=cleaned,
+                    config=config,
+                )
+                raw_reply = (getattr(response, "text", None) or "").strip().upper()
+                first_word = re.sub(r"[^A-Z]", "", raw_reply.split()[0] if raw_reply.split() else "")
+                if first_word == "SPAM" or "SPAM" in raw_reply:
+                    return "SPAM"
+                if first_word == "VALID" or "VALID" in raw_reply:
+                    return "VALID"
+                return self._fallback_evaluate_anonymous_post(cleaned)
+            except Exception as e:
+                logger.warning("Tier 2 Gemini post moderation call failed, using fallback: %s", e)
+                return self._fallback_evaluate_anonymous_post(cleaned)
+
+    def _fallback_evaluate_anonymous_post(self, text: str) -> Literal["VALID", "SPAM"]:
+        """Deterministic fallback for Tier 2 when Gemini API is unreachable or in offline tests."""
+        ok, _ = validate_anonymous_post_tier1(text)
+        if not ok:
+            return "SPAM"
+        lower = text.lower().strip()
+        spam_patterns = [
+            r"\b(?:test|testing)\s*(?:post|spam|123|1234|message)?\b$",
+            r"^(?:hello|hi|hey|test|testing|spam|asdf|qwerty|lol|lmao|bruh|ok|okay)[\s\d!?.]*$",
+            r"(?:asdf|qwer|zxcv|hjkl|fghj|dfgh|cvbn|jkl;)",
+        ]
+        for pat in spam_patterns:
+            if re.search(pat, lower):
+                return "SPAM"
+        return "VALID"
+
+
+# ---------------------------------------------------------------------------
+# Multi-Tiered Anonymous Public Post Moderation (Tier 1 & Tier 2 Constants)
+# ---------------------------------------------------------------------------
+
+TIER1_REJECTION_MESSAGE: str = (
+    "Your post is too short or appears to be test gibberish. Please write a meaningful message."
+)
+
+TIER2_REJECTION_MESSAGE: str = (
+    "⚠️ <b>Post Not Published</b>\n\n"
+    "Your post did not meet our community standards (detected as test spam or unmeaningful content). "
+    "Please write a coherent campus question, thought, announcement, or message."
+)
+
+ANON_POST_MODERATION_SYSTEM_INSTRUCTION: str = (
+    "Analyze the following anonymous student post. Determine if it is a coherent thought, "
+    "question, lost-and-found item, club announcement, or meaningful campus message, "
+    "OR if it is meaningless test spam, gibberish, or keyboard mashing. "
+    "Respond with EXACTLY one word: either 'VALID' or 'SPAM'."
+)
+
+# Vowels across Latin, Armenian, and Cyrillic scripts
+_LATIN_VOWELS = set("aeiouy")
+_ARMENIAN_VOWELS = set("աեէըիոօ")
+_CYRILLIC_VOWELS = set("аеёиоуыэюя")
+_ALL_VOWELS = _LATIN_VOWELS | _ARMENIAN_VOWELS | _CYRILLIC_VOWELS
+
+_KEYBOARD_MASH_SUBSTRINGS = (
+    "asdf", "sdfg", "dfgh", "fghj", "ghjk", "hjkl",
+    "qwer", "wert", "werty", "rtyu", "tyui", "yuio", "uiop",
+    "zxcv", "xcvb", "cvbn", "vbnm",
+    "lkjh", "kjhg", "jhgf", "hgfd", "gfds", "fdsa",
+    "poiu", "oiuy", "iuyt", "uytr", "ytre", "ytrew", "rewq",
+    "mnbv", "nbvc", "bvcx", "vcxz",
+)
+
+
+def validate_anonymous_post_tier1(raw_text: str) -> Tuple[bool, str]:
+    """Tier 1 Deterministic Algorithmic Checks (Fast & Zero-Cost) for anonymous posts.
+
+    Rules enforced:
+    1. Minimum Length Enforcement: Reject any message shorter than 12 characters.
+    2. Keyboard Smash / Character Analysis:
+       - Vowel presence (reject strings with zero vowels or bizarre consonant-to-vowel ratios).
+       - Repetitive characters, symbols, or n-gram loops.
+       - Keyboard row smashing or unbroken gibberish tokens.
+
+    Returns:
+        (is_valid: bool, error_message: str)
+    """
+    text = re.sub(r"\s+", " ", (raw_text or "").strip())
+
+    # 1. Minimum Length Enforcement (< 12 chars)
+    if len(text) < 12:
+        return False, TIER1_REJECTION_MESSAGE
+
+    non_ws = [c for c in text if not c.isspace()]
+    if len(non_ws) < 10:
+        return False, TIER1_REJECTION_MESSAGE
+
+    lower_text = text.lower()
+    no_space_lower = "".join(c for c in lower_text if not c.isspace())
+
+    # 2. Repetitive characters or symbols
+    # 5+ identical consecutive characters (e.g. "hhhhh", "aaaaa", "!!!!!", "11111")
+    if re.search(r"(.)\1{4,}", lower_text):
+        return False, TIER1_REJECTION_MESSAGE
+
+    # Repeating 2-5 character sequence 3+ times in a row (e.g. "asdasdasd", "jkjkjkjk", "fghfghfgh")
+    if re.search(r"(.{2,5})\1{2,}", no_space_lower):
+        return False, TIER1_REJECTION_MESSAGE
+
+    # Must contain enough alphabetic characters (not just numbers/symbols/emojis)
+    alpha_chars = [c for c in lower_text if c.isalpha()]
+    if len(alpha_chars) < 6 or (len(alpha_chars) / len(non_ws)) < 0.40:
+        return False, TIER1_REJECTION_MESSAGE
+
+    # Minimum unique character variety
+    if len(set(alpha_chars)) < 5:
+        return False, TIER1_REJECTION_MESSAGE
+
+    # Single letter dominating > 50% of all alphabetic characters (e.g. "hahahahaha", "jjjjkjjjj")
+    most_common_char, most_common_cnt = Counter(alpha_chars).most_common(1)[0]
+    if (most_common_cnt / len(alpha_chars)) > 0.50:
+        return False, TIER1_REJECTION_MESSAGE
+
+    # 3. Vowel presence & Consonant-to-Vowel Ratio
+    vowel_count = sum(1 for c in alpha_chars if c in _ALL_VOWELS)
+    if vowel_count == 0:
+        return False, TIER1_REJECTION_MESSAGE
+
+    vowel_ratio = vowel_count / len(alpha_chars)
+    # Natural text across English/Armlish/Armenian/Russian has vowel ratio ~0.20 - 0.65
+    if vowel_ratio < 0.15 or vowel_ratio > 0.82:
+        return False, TIER1_REJECTION_MESSAGE
+
+    # 6+ consecutive Latin consonants (e.g. "fjjdksl", "bcdfghj")
+    if re.search(r"[bcdfghjklmnpqrstvwxz]{6,}", lower_text):
+        return False, TIER1_REJECTION_MESSAGE
+
+    # 5+ consecutive Latin vowels (e.g. "aeioua", "ooaaee")
+    if re.search(r"[aeiouy]{5,}", lower_text):
+        return False, TIER1_REJECTION_MESSAGE
+
+    # Keyboard row mash substrings (e.g. "asdf", "qwer", "hjkl", "zxcv")
+    if any(mash in lower_text for mash in _KEYBOARD_MASH_SUBSTRINGS):
+        return False, TIER1_REJECTION_MESSAGE
+
+    # Word-level analysis
+    words = [w for w in re.split(r"\s+", lower_text) if w]
+    # Single unbroken string without spaces (e.g. 22+ chars in 1 token)
+    if len(words) < 2 and len(text) >= 18:
+        return False, TIER1_REJECTION_MESSAGE
+
+    # Check if words are just the same word repeated (e.g. "test test test", "hello hello hello")
+    cleaned_words = [re.sub(r"[^a-zа-яёա-ֆ0-9]", "", w) for w in words]
+    cleaned_words = [w for w in cleaned_words if w]
+    if len(cleaned_words) >= 3 and len(set(cleaned_words)) == 1:
+        return False, TIER1_REJECTION_MESSAGE
+
+    # Check individual alphabetic words of length >= 5 for zero vowels (e.g. "fjjdksl hello world")
+    alpha_words = re.findall(r"[a-zа-яёա-ֆ]+", lower_text)
+    for w in alpha_words:
+        if len(w) >= 5 and not any(c in _ALL_VOWELS for c in w):
+            return False, TIER1_REJECTION_MESSAGE
+        if len(w) > 24:
+            return False, TIER1_REJECTION_MESSAGE
+
+    return True, ""
 
 
 gemini_moderator = GeminiModerator()

@@ -653,8 +653,39 @@ class AnonymousPublicPost(Base):
         BigInteger, ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True
     )
     content_text: Mapped[str] = mapped_column(Text, nullable=False)
+    report_count: Mapped[int] = mapped_column(
+        Integer, default=0, nullable=False, server_default=text("0")
+    )
+    is_hidden: Mapped[bool] = mapped_column(
+        Boolean, default=False, nullable=False, server_default=text("false"), index=True
+    )
+    moderation_status: Mapped[str] = mapped_column(
+        String(32), default="valid", nullable=False, server_default=text("'valid'")
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+class AnonymousPublicPostReport(Base):
+    """Stores unique community reports on public anonymous posts for Tier 3 moderation."""
+    __tablename__ = "anonymous_public_post_reports"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    post_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("anonymous_public_posts.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    web_user_id: Mapped[Optional[int]] = mapped_column(
+        Integer, ForeignKey("web_users.id", ondelete="CASCADE"), nullable=True, index=True
+    )
+    reporter_key: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    reason: Mapped[Optional[str]] = mapped_column(String(256), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    __table_args__ = (
+        UniqueConstraint("post_id", "reporter_key", name="uq_anon_post_report_user"),
     )
 
 

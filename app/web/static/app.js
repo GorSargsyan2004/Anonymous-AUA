@@ -2019,15 +2019,31 @@ function renderClickableUserNameHtml(userObj, extraClass = "") {
 
       grid.innerHTML = posts
         .map(
-          (p) => `
-        <div class="glass-card anon-post-card">
+          (p) => {
+            const isReported = Boolean(p.reported_by_me);
+            const reportCount = Number(p.report_count || 0);
+            return `
+        <div class="glass-card anon-post-card" id="anon-post-card-${p.index}">
           <div class="anon-post-header">
             <span class="anon-index-badge">#${p.index}</span>
-            <span style="font-size:12px; color:var(--text-secondary);">🕒 ${formatDateTime(p.created_at)}</span>
+            <div class="anon-post-header-meta">
+              <span style="font-size:12px; color:var(--text-secondary);">🕒 ${formatDateTime(p.created_at)}</span>
+              <button
+                type="button"
+                class="anon-report-btn ${isReported ? "reported" : ""}"
+                onclick="reportAnonymousPost(${p.index}, this)"
+                ${isReported ? "disabled" : ""}
+                title="${isReported ? "You have reported this post" : "Report spam, gibberish, or inappropriate post"}"
+              >
+                <span class="anon-report-icon">🚩</span>
+                <span class="anon-report-label">${isReported ? "Reported" : "Report"}${reportCount > 0 ? ` (${reportCount})` : ""}</span>
+              </button>
+            </div>
           </div>
           <div style="font-size:15px; color:var(--text-white); white-space:pre-wrap; line-height:1.6;">${escapeHtml(p.content_text)}</div>
         </div>
-      `
+      `;
+          }
         )
         .join("");
 
@@ -2036,6 +2052,59 @@ function renderClickableUserNameHtml(userObj, extraClass = "") {
       showToast(err.message, true);
     }
   }
+
+  window.reportAnonymousPost = async function (postIndex, btnEl) {
+    if (!postIndex) return;
+    if (btnEl && btnEl.disabled) return;
+    if (btnEl) {
+      btnEl.disabled = true;
+    }
+    try {
+      const res = await apiFetch(`/api/anonymous/posts/${postIndex}/report`, {
+        method: "POST",
+        body: JSON.stringify({ reason: "community_flag" }),
+      });
+      const count = Number(res.report_count || 1);
+      const threshold = Number(res.threshold || 3);
+
+      if (res.auto_hidden) {
+        const card = document.getElementById(`anon-post-card-${postIndex}`);
+        if (card) {
+          card.style.transition = "opacity 0.28s ease, transform 0.28s ease";
+          card.style.opacity = "0";
+          card.style.transform = "scale(0.96)";
+          setTimeout(() => {
+            loadAnonymousPosts(state.anonPostsPage || 1);
+          }, 280);
+        } else {
+          loadAnonymousPosts(state.anonPostsPage || 1);
+        }
+        showToast(`Post #${postIndex} reached ${threshold} community reports and was hidden from the feed.`);
+        return;
+      }
+
+      if (btnEl) {
+        btnEl.classList.add("reported");
+        btnEl.disabled = true;
+        btnEl.title = "You have reported this post";
+        const labelEl = btnEl.querySelector(".anon-report-label");
+        if (labelEl) {
+          labelEl.textContent = `Reported (${count})`;
+        }
+      }
+
+      if (res.already_reported) {
+        showToast(`You have already reported Post #${postIndex}.`);
+      } else {
+        showToast(`Report submitted (${count}/${threshold}). Thank you for helping keep AUA Hub clean!`);
+      }
+    } catch (err) {
+      if (btnEl) {
+        btnEl.disabled = false;
+      }
+      showToast(err.message || "Failed to report post", true);
+    }
+  };
 
   async function loadAnonymousInbox() {
     const container = document.getElementById("anonInboxContainer");

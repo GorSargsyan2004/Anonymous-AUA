@@ -472,6 +472,26 @@ async def init_db() -> None:
                 "ALTER TABLE have_need_posts ADD COLUMN IF NOT EXISTS notify_email BOOLEAN NOT NULL DEFAULT true;"
             )
         )
+        await conn.execute(
+            text(
+                "ALTER TABLE anonymous_public_posts ADD COLUMN IF NOT EXISTS report_count INTEGER NOT NULL DEFAULT 0;"
+            )
+        )
+        await conn.execute(
+            text(
+                "ALTER TABLE anonymous_public_posts ADD COLUMN IF NOT EXISTS is_hidden BOOLEAN NOT NULL DEFAULT false;"
+            )
+        )
+        await conn.execute(
+            text(
+                "ALTER TABLE anonymous_public_posts ADD COLUMN IF NOT EXISTS moderation_status VARCHAR(32) NOT NULL DEFAULT 'valid';"
+            )
+        )
+        await conn.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS ix_anonymous_public_posts_is_hidden ON anonymous_public_posts (is_hidden);"
+            )
+        )
 
 
 

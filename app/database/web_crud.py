@@ -17,6 +17,7 @@ from app.database.models import (
     AcademicFeedback,
     AnonymousInbox,
     AnonymousPublicPost,
+    AnonymousPublicPostReport,
     Course,
     HaveNeedPost,
     InboxMessage,
@@ -462,18 +463,21 @@ async def get_last_public_post_time(
     return (await session.execute(stmt)).scalar_one_or_none()
 
 
+ANON_POST_REPORT_HIDE_THRESHOLD: int = 3
+
+
 async def list_anonymous_public_posts(
     session: AsyncSession,
     search_query: str = "",
     page: int = 1,
     per_page: int = 25,
 ) -> Tuple[List[AnonymousPublicPost], int]:
-    """Return paginated anonymous public posts ordered newest first, with fast ID or word search."""
+    """Return paginated visible anonymous public posts ordered newest first, with fast ID or word search."""
     page = max(1, page)
     q = (search_query or "").strip()
 
-    stmt = select(AnonymousPublicPost)
-    count_stmt = select(func.count(AnonymousPublicPost.id))
+    stmt = select(AnonymousPublicPost).where(AnonymousPublicPost.is_hidden == False)
+    count_stmt = select(func.count(AnonymousPublicPost.id)).where(AnonymousPublicPost.is_hidden == False)
 
     if q:
         # Check if query targets an exact post ID (e.g. "#16", "# 16", "16", "post 16")
@@ -505,6 +509,100 @@ async def list_anonymous_public_posts(
     stmt = stmt.order_by(AnonymousPublicPost.id.desc()).offset((page - 1) * per_page).limit(per_page)
     posts = list((await session.execute(stmt)).scalars().all())
     return posts, int(total)
+
+
+async def get_reported_anon_post_ids(
+    session: AsyncSession,
+    reporter_key: str,
+    post_ids: List[int],
+) -> set:
+    """Return the set of post IDs from `post_ids` already reported by `reporter_key`."""
+    if not reporter_key or not post_ids:
+        return set()
+    stmt = select(AnonymousPublicPostReport.post_id).where(
+        and_(
+            AnonymousPublicPostReport.reporter_key == reporter_key,
+            AnonymousPublicPostReport.post_id.in_(post_ids),
+        )
+    )
+    rows = (await session.execute(stmt)).scalars().all()
+    return set(rows)
+
+
+async def report_anonymous_public_post(
+    session: AsyncSession,
+    post_id: int,
+    reporter_key: str,
+    web_user_id: Optional[int] = None,
+    reason: Optional[str] = None,
+    hide_threshold: int = ANON_POST_REPORT_HIDE_THRESHOLD,
+) -> Dict[str, Any]:
+    """Record a unique community report on an anonymous public post (Tier 3 Moderation).
+
+    Automatically hides the post (`is_hidden = True`, `moderation_status = 'flagged_by_reports'`)
+    once it reaches `hide_threshold` (default: 3) unique user reports.
+    """
+    post = (
+        await session.execute(select(AnonymousPublicPost).where(AnonymousPublicPost.id == post_id))
+    ).scalar_one_or_none()
+    if not post:
+        return {"ok": False, "error": "Anonymous post not found."}
+
+    # Check if this reporter already reported this post
+    existing = (
+        await session.execute(
+            select(AnonymousPublicPostReport).where(
+                and_(
+                    AnonymousPublicPostReport.post_id == post_id,
+                    AnonymousPublicPostReport.reporter_key == reporter_key,
+                )
+            )
+        )
+    ).scalar_one_or_none()
+
+    if existing:
+        return {
+            "ok": True,
+            "already_reported": True,
+            "report_count": int(post.report_count or 0),
+            "auto_hidden": bool(post.is_hidden),
+            "post": post,
+        }
+
+    report_row = AnonymousPublicPostReport(
+        post_id=post_id,
+        web_user_id=web_user_id,
+        reporter_key=reporter_key,
+        reason=(reason or "").strip()[:250] or None,
+    )
+    session.add(report_row)
+    await session.flush()
+
+    total_reports = (
+        await session.execute(
+            select(func.count(AnonymousPublicPostReport.id)).where(
+                AnonymousPublicPostReport.post_id == post_id
+            )
+        )
+    ).scalar_one() or 0
+
+    post.report_count = int(total_reports)
+    newly_hidden = False
+    if post.report_count >= hide_threshold and not post.is_hidden:
+        post.is_hidden = True
+        post.moderation_status = "flagged_by_reports"
+        newly_hidden = True
+
+    await session.commit()
+    await session.refresh(post)
+    return {
+        "ok": True,
+        "already_reported": False,
+        "report_count": int(post.report_count),
+        "auto_hidden": bool(post.is_hidden),
+        "newly_hidden": newly_hidden,
+        "post": post,
+    }
 
 
 async def get_synced_web_inbox(
