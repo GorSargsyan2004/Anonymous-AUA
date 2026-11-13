@@ -17,7 +17,7 @@
     href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;700;800&display=swap"
     rel="stylesheet">
   <link rel="icon" type="image/svg+xml" href="/static/bot-logo.svg" />
-  <link rel="stylesheet" href="/static/styles.css?v=20261113_2" />
+  <link rel="stylesheet" href="/static/styles.css?v=20261113_3" />
 </head>
 
 <body>
@@ -829,10 +829,10 @@
       <button type="button" class="modal-close group-modal-close" onclick="closeGroupModal()" aria-label="Close">&times;</button>
 
       <div class="group-modal-hero">
-        <div class="group-modal-icon-badge">✈️</div>
+        <div id="groupModalIconBadge" class="group-modal-icon-badge">✈️</div>
         <div>
-          <h2 class="group-modal-title">Post a Telegram Group</h2>
-          <p class="group-modal-subtitle">
+          <h2 id="groupModalTitle" class="group-modal-title">Post a Telegram Group</h2>
+          <p id="groupModalSubtitle" class="group-modal-subtitle">
             Share a study group, major chat, or campus club with the AUA community.
           </p>
         </div>
@@ -890,7 +890,7 @@
           <button type="button" class="btn-glass group-cancel-btn" onclick="closeGroupModal()">
             Cancel
           </button>
-          <button type="submit" class="btn-illuminated group-submit-btn">
+          <button type="submit" id="groupModalSubmitBtn" class="btn-illuminated group-submit-btn">
             ✈️ Publish Group
           </button>
         </div>
@@ -1156,7 +1156,7 @@
     </div>
   </div>
 
-  <script src="/static/app.js?v=20261113_2"></script>
+  <script src="/static/app.js?v=20261113_3"></script>
 </body>
 
 </html>

@@ -852,6 +852,38 @@ async def list_telegram_groups(
     return groups, total, total_pages
 
 
+async def update_telegram_group(
+    session: AsyncSession,
+    group_id: int,
+    web_user_id: int,
+    name: str,
+    invite_link: str,
+    description: Optional[str] = None,
+    image_url: Optional[str] = None,
+) -> Optional[TelegramGroup]:
+    """Update an existing Telegram group owned by the specified user."""
+    stmt = (
+        select(TelegramGroup)
+        .options(selectinload(TelegramGroup.web_user))
+        .where(
+            TelegramGroup.id == group_id,
+            TelegramGroup.web_user_id == web_user_id,
+        )
+    )
+    group = (await session.execute(stmt)).scalar_one_or_none()
+    if not group:
+        return None
+
+    group.name = name.strip()[:128]
+    group.invite_link = invite_link.strip()[:256]
+    group.description = description.strip()[:600] if (description and description.strip()) else None
+    group.image_url = image_url.strip()[:512] if (image_url and image_url.strip()) else None
+
+    await session.commit()
+    await session.refresh(group)
+    return group
+
+
 async def delete_telegram_group(
     session: AsyncSession,
     group_id: int,

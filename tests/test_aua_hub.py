@@ -65,6 +65,7 @@ from app.database.web_crud import (
     serialize_user_notification,
     toggle_spam_chat_reaction,
     update_have_need_post,
+    update_telegram_group,
     update_web_user_profile,
     verify_web_otp_and_register,
 )
@@ -458,7 +459,7 @@ class TestAuaHub(unittest.IsolatedAsyncioTestCase):
             deleted_hn = await delete_have_need_post(session, post_id=hn_post.id, web_user_id=u1.id)
             self.assertTrue(deleted_hn)
 
-            # 6. Telegram Groups CRUD & Search
+            # 6. Telegram Groups CRUD, Edit & Search
             grp = await create_telegram_group(
                 session=session,
                 web_user_id=u1.id,
@@ -468,6 +469,29 @@ class TestAuaHub(unittest.IsolatedAsyncioTestCase):
             )
             grps, total_grps, _ = await list_telegram_groups(session, search_query="Robotics")
             self.assertGreaterEqual(total_grps, 1)
+
+            updated_grp = await update_telegram_group(
+                session=session,
+                group_id=grp.id,
+                web_user_id=u1.id,
+                name="AUA Robotics & AI Club",
+                invite_link="https://t.me/aua_robotics_ai",
+                description="Updated description for Robotics & AI",
+            )
+            self.assertIsNotNone(updated_grp)
+            self.assertEqual(updated_grp.name, "AUA Robotics & AI Club")
+            self.assertEqual(updated_grp.invite_link, "https://t.me/aua_robotics_ai")
+
+            # Another user cannot edit User 1's group
+            forbidden_grp_edit = await update_telegram_group(
+                session=session,
+                group_id=grp.id,
+                web_user_id=u1.id + 999999,
+                name="Hijacked Group",
+                invite_link="https://t.me/hijacked",
+            )
+            self.assertIsNone(forbidden_grp_edit)
+
             self.assertTrue(await delete_telegram_group(session, group_id=grp.id, web_user_id=u1.id))
 
             # 7. Spam Chat & Unread Counter for a second user

@@ -45,6 +45,8 @@ const state = {
   roomAvailFilter: "all",
   // Telegram Groups state
   groupsPage: 1,
+  groupsList: [],
+  editingGroupId: null,
   // Campus Chat state
   unreadSpamCount: 0,
   chatPendingMediaUrl: "",
@@ -2330,6 +2332,7 @@ function renderClickableUserNameHtml(userObj, extraClass = "") {
     try {
       const data = await apiFetch(`/api/groups?q=${encodeURIComponent(q)}&page=${page}&per_page=9`);
       const groups = data.groups || [];
+      state.groupsList = groups;
       if (groups.length === 0) {
         grid.innerHTML = `
         <div class="glass-card" style="grid-column:1/-1; text-align:center; padding:42px 20px;">
@@ -2377,12 +2380,15 @@ function renderClickableUserNameHtml(userObj, extraClass = "") {
               </p>
             </div>
 
-            <div style="display:flex; align-items:center; justify-content:space-between; gap:10px; margin-top:6px;">
+            <div style="display:flex; align-items:center; justify-content:space-between; gap:8px; margin-top:6px;">
               <a href="${escapeHtml(g.invite_link)}" target="_blank" rel="noopener noreferrer" class="btn-illuminated" style="flex:1;" onclick="trackWebEvent('join_group', '${encodeJsAttr(g.name)}')">
                 ✈️ Join Group
               </a>
               ${g.is_owner
-              ? `<button class="btn-danger-glass" onclick="deleteGroup(${g.id})" title="Delete Group">🗑️</button>`
+              ? `
+                <button class="btn-glass" style="padding:8px 12px; font-size:12.5px;" onclick="startEditGroup(${g.id})" title="Edit Group">✏️ Edit</button>
+                <button class="btn-danger-glass" onclick="deleteGroup(${g.id})" title="Delete Group">🗑️</button>
+              `
               : ""
             }
             </div>
@@ -2397,14 +2403,96 @@ function renderClickableUserNameHtml(userObj, extraClass = "") {
     }
   }
 
+  function setGroupModalMode(isEditing) {
+    const iconBadge = document.getElementById("groupModalIconBadge");
+    const titleEl = document.getElementById("groupModalTitle");
+    const subEl = document.getElementById("groupModalSubtitle");
+    const submitBtn = document.getElementById("groupModalSubmitBtn");
+
+    if (isEditing) {
+      if (iconBadge) iconBadge.textContent = "✏️";
+      if (titleEl) titleEl.textContent = "Edit Telegram Group";
+      if (subEl) subEl.textContent = "Update your group's name, invite link, photo, or description.";
+      if (submitBtn) submitBtn.textContent = "💾 Save Changes";
+    } else {
+      if (iconBadge) iconBadge.textContent = "✈️";
+      if (titleEl) titleEl.textContent = "Post a Telegram Group";
+      if (subEl) subEl.textContent = "Share a study group, major chat, or campus club with the AUA community.";
+      if (submitBtn) submitBtn.textContent = "✈️ Publish Group";
+    }
+  }
+
+  function resetGroupModalFields() {
+    const nameInput = document.getElementById("groupNameInput");
+    const linkInput = document.getElementById("groupLinkInput");
+    const descInput = document.getElementById("groupDescInput");
+    if (nameInput) nameInput.value = "";
+    if (linkInput) linkInput.value = "";
+    if (descInput) descInput.value = "";
+    clearGroupUploadedPhoto();
+  }
+
   function openGroupModal() {
     if (!state.user) {
       showToast("Please sign in to post a Telegram group.", true);
       openAuthModal("login");
       return;
     }
+    if (state.editingGroupId !== null) {
+      state.editingGroupId = null;
+      resetGroupModalFields();
+    }
+    setGroupModalMode(false);
     updateGroupModalPreview();
-    document.getElementById("groupModal").classList.add("open");
+    document.getElementById("groupModal")?.classList.add("open");
+    if (window.innerWidth > 768) {
+      setTimeout(() => document.getElementById("groupNameInput")?.focus(), 80);
+    }
+  }
+
+  function startEditGroup(groupId) {
+    if (!state.user) {
+      showToast("Please sign in to edit your Telegram group.", true);
+      openAuthModal("login");
+      return;
+    }
+    const g = (state.groupsList || []).find((item) => Number(item.id) === Number(groupId));
+    if (!g) return;
+
+    state.editingGroupId = Number(g.id);
+    setGroupModalMode(true);
+
+    const nameInput = document.getElementById("groupNameInput");
+    const linkInput = document.getElementById("groupLinkInput");
+    const descInput = document.getElementById("groupDescInput");
+    const urlInput = document.getElementById("groupImageUrlInput");
+    const previewImg = document.getElementById("groupAvatarPreviewImg");
+    const initialEl = document.getElementById("groupAvatarInitial");
+    const removeBtn = document.getElementById("groupRemovePhotoBtn");
+    const statusLabel = document.getElementById("groupUploadedPreview");
+
+    if (nameInput) nameInput.value = g.name || "";
+    if (linkInput) linkInput.value = g.invite_link || "";
+    if (descInput) descInput.value = g.description || "";
+
+    if (g.image_url) {
+      if (urlInput) urlInput.value = g.image_url;
+      if (previewImg) {
+        previewImg.src = g.image_url;
+        previewImg.style.display = "block";
+      }
+      if (initialEl) initialEl.style.display = "none";
+      if (removeBtn) {
+        removeBtn.classList.remove("hidden");
+        removeBtn.style.display = "inline-flex";
+      }
+      if (statusLabel) statusLabel.textContent = "✅ Current group photo";
+    } else {
+      clearGroupUploadedPhoto();
+    }
+
+    updateGroupModalPreview();
+    document.getElementById("groupModal")?.classList.add("open");
     if (window.innerWidth > 768) {
       setTimeout(() => document.getElementById("groupNameInput")?.focus(), 80);
     }
@@ -2424,7 +2512,7 @@ function renderClickableUserNameHtml(userObj, extraClass = "") {
 
   function clearGroupUploadedPhoto() {
     const urlInput = document.getElementById("groupImageUrlInput");
-    const fileInput = document.getElementById("groupFileInput");
+    const fileInput = document.getElementById("groupImageFileInput") || document.getElementById("groupFileInput");
     const previewImg = document.getElementById("groupAvatarPreviewImg");
     const initialEl = document.getElementById("groupAvatarInitial");
     const removeBtn = document.getElementById("groupRemovePhotoBtn");
@@ -2437,8 +2525,11 @@ function renderClickableUserNameHtml(userObj, extraClass = "") {
       previewImg.style.display = "none";
     }
     if (initialEl) initialEl.style.display = "flex";
-    if (removeBtn) removeBtn.style.display = "none";
-    if (statusLabel) statusLabel.textContent = "Click avatar or button to upload photo";
+    if (removeBtn) {
+      removeBtn.classList.add("hidden");
+      removeBtn.style.display = "none";
+    }
+    if (statusLabel) statusLabel.textContent = "Tap icon to add group photo (optional)";
     updateGroupModalPreview();
   }
 
@@ -2473,7 +2564,10 @@ function renderClickableUserNameHtml(userObj, extraClass = "") {
         previewImg.style.display = "block";
       }
       if (initialEl) initialEl.style.display = "none";
-      if (removeBtn) removeBtn.style.display = "inline-flex";
+      if (removeBtn) {
+        removeBtn.classList.remove("hidden");
+        removeBtn.style.display = "inline-flex";
+      }
       if (preview) preview.textContent = "✅ Group photo ready";
     } catch (err) {
       if (preview) preview.textContent = "Upload failed";
@@ -2487,19 +2581,30 @@ function renderClickableUserNameHtml(userObj, extraClass = "") {
     const invite_link = document.getElementById("groupLinkInput").value.trim();
     const description = document.getElementById("groupDescInput").value.trim();
     const image_url = document.getElementById("groupImageUrlInput").value.trim();
+    const editingId = state.editingGroupId;
 
     try {
-      await apiFetch("/api/groups", {
-        method: "POST",
-        body: JSON.stringify({ name, invite_link, description, image_url }),
-      });
-      closeGroupModal();
-      document.getElementById("groupNameInput").value = "";
-      document.getElementById("groupLinkInput").value = "";
-      document.getElementById("groupDescInput").value = "";
-      clearGroupUploadedPhoto();
-      showToast("Telegram group published! ✈️");
-      loadTelegramGroups(1);
+      if (editingId) {
+        await apiFetch(`/api/groups/${editingId}`, {
+          method: "PUT",
+          body: JSON.stringify({ name, invite_link, description, image_url }),
+        });
+        state.editingGroupId = null;
+        closeGroupModal();
+        resetGroupModalFields();
+        setGroupModalMode(false);
+        showToast("Telegram group updated! ✨");
+        loadTelegramGroups(state.groupsPage || 1);
+      } else {
+        await apiFetch("/api/groups", {
+          method: "POST",
+          body: JSON.stringify({ name, invite_link, description, image_url }),
+        });
+        closeGroupModal();
+        resetGroupModalFields();
+        showToast("Telegram group published! ✈️");
+        loadTelegramGroups(1);
+      }
     } catch (err) {
       showToast(err.message, true);
     }

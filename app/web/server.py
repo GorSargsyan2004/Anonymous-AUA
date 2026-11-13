@@ -79,6 +79,7 @@ from app.database.web_crud import (
     serialize_user_notification,
     toggle_spam_chat_reaction,
     update_have_need_post,
+    update_telegram_group,
     update_web_user_profile,
     verify_web_otp_and_register,
 )
@@ -1891,6 +1892,69 @@ async def api_create_group(request: web.Request) -> web.Response:
             description=description,
             image_url=image_url or None,
         )
+        return web.json_response({"ok": True, "group": serialize_group(group, current_user_id=user.id)})
+
+
+@routes.put("/api/groups/{group_id}")
+async def api_update_group(request: web.Request) -> web.Response:
+    user = await get_current_web_user(request)
+    if not user:
+        return web.json_response({"error": "Authentication required."}, status=401)
+
+    allowed, retry = check_rate_limit("groups_write", str(user.id), max_calls=10, window_sec=60)
+    if not allowed:
+        return web.json_response({"error": f"Rate limit reached. Please wait {retry}s."}, status=429)
+
+    try:
+        group_id = int(request.match_info["group_id"])
+    except ValueError:
+        return web.json_response({"error": "Invalid group ID."}, status=400)
+
+    try:
+        data = await request.json()
+    except Exception:
+        return web.json_response({"error": "Invalid JSON body."}, status=400)
+
+    name = (data.get("name") or "").strip()
+    invite_link = (data.get("invite_link") or "").strip()
+    description = (data.get("description") or "").strip()
+    image_url = (data.get("image_url") or "").strip()
+
+    if len(name) < 2 or len(name) > 120:
+        return web.json_response({"error": "Group name must be between 2 and 120 characters."}, status=400)
+
+    if image_url and not is_safe_upload_url(image_url):
+        return web.json_response(
+            {"error": "Invalid group image URL. Please upload an image directly on AUA Hub."},
+            status=400,
+        )
+
+    if invite_link.startswith("t.me/") or invite_link.startswith("telegram.me/"):
+        invite_link = f"https://{invite_link}"
+
+    if not re.match(r"^https?://(t\.me|telegram\.me)/[A-Za-z0-9_+/-]+$", invite_link, re.IGNORECASE):
+        return web.json_response(
+            {"error": "Please provide a valid Telegram invite link starting with https://t.me/..."},
+            status=400,
+        )
+
+    link_err = scan_web_text_for_malicious_links(f"{name} {description}")
+    if link_err:
+        return web.json_response({"error": link_err}, status=400)
+
+    async with get_db_session() as session:
+        group = await update_telegram_group(
+            session=session,
+            group_id=group_id,
+            web_user_id=user.id,
+            name=name,
+            invite_link=invite_link,
+            description=description,
+            image_url=image_url or None,
+        )
+        if not group:
+            return web.json_response({"error": "Group not found or not owned by you."}, status=404)
+
         return web.json_response({"ok": True, "group": serialize_group(group, current_user_id=user.id)})
 
 
