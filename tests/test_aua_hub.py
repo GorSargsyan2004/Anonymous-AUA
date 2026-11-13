@@ -1355,6 +1355,84 @@ class TestAuaHub(unittest.IsolatedAsyncioTestCase):
             await session.execute(delete(WebUser).where(WebUser.id == sync_user.id))
             await session.commit()
 
+    async def test_ai_assistant_transliteration_followup_and_source_filtering(self) -> None:
+        """Verify Armenian -yan/-ian transliteration, stopword safety, follow-up resolution, and zero random instructor sources."""
+        from app.services.ai_agent import (
+            AIChatSessionState,
+            AIChatTurn,
+            AUAAssistantOrchestrator,
+            classify_tools_heuristic,
+            extract_person_name_candidate,
+            search_course_and_professor_feedbacks,
+        )
+
+        self.assertEqual(
+            extract_person_name_candidate("are you sure there is no student feedbacks about Apig ?"),
+            "Apig",
+        )
+
+        # Follow-up single-name & pronoun resolution from conversation turns
+        prior_turns = [
+            AIChatTurn(role="user", content="Tell me about Apig Aramyan"),
+            AIChatTurn(role="assistant", content="Apig Aramian is an Adjunct Lecturer in ACSE."),
+        ]
+        plan_single = classify_tools_heuristic(
+            "are you sure there is no student feedbacks about Apig ?",
+            prior_turns=prior_turns,
+        )
+        self.assertEqual(plan_single.search_query_override, "Apig Aramyan")
+        self.assertTrue(plan_single.use_feedbacks)
+        self.assertTrue(plan_single.use_directory)
+
+        plan_pronoun = classify_tools_heuristic(
+            "what courses does he teach?",
+            prior_turns=prior_turns,
+        )
+        self.assertEqual(plan_pronoun.search_query_override, "Apig Aramyan")
+        self.assertTrue(plan_pronoun.use_feedbacks)
+
+        async with get_db_session() as session:
+            # 1. Query using -yan spelling ("Apig Aramyan") finds Apig Aramian & both reviews, no random profs
+            res_yan, src_yan = await search_course_and_professor_feedbacks(
+                session, "Tell me about Apig Aramyan and student feedbacks about him"
+            )
+            prof_summaries = [r for r in res_yan if r.get("type") == "professor_feedback_summary"]
+            self.assertEqual([r["professor_name"] for r in prof_summaries], ["Apig Aramian"])
+            self.assertEqual(prof_summaries[0]["review_count"], 2)
+            self.assertEqual([s["title"] for s in src_yan], ["Feedbacks: Apig Aramian"])
+
+            # 2. Conversational stopword-heavy follow-up query must still match Apig Aramian cleanly
+            res_q2, src_q2 = await search_course_and_professor_feedbacks(
+                session, "are you sure there is no student feedbacks about Apig ?"
+            )
+            prof_q2 = [r for r in res_q2 if r.get("type") == "professor_feedback_summary"]
+            self.assertEqual([r["professor_name"] for r in prof_q2], ["Apig Aramian"])
+            self.assertEqual([s["title"] for s in src_q2], ["Feedbacks: Apig Aramian"])
+
+            # 3. Unmatched First+Last name with a shared Armenian first name must NOT pull wrong surnames
+            res_fake, src_fake = await search_course_and_professor_feedbacks(
+                session, "Tell me about Aram ZzzNonexistent"
+            )
+            self.assertEqual(res_fake, [])
+            self.assertEqual(src_fake, [])
+
+            # 4. Deterministic orchestrator follow-up with pronoun carries entity context into DB search
+            orch = AUAAssistantOrchestrator(api_key="")
+            st = AIChatSessionState(session_id="followup_test_sid", turns=list(prior_turns))
+            # Turn off directory URL fetch by verifying heuristic+feedback retrieval directly via pronoun query
+            # Wait: call answer_prompt without external hang and clean AIUsageLog
+            ans = await orch.answer_prompt(
+                db_session=session,
+                user_prompt="what courses and feedbacks exist for him?",
+                chat_state=st,
+            )
+            self.assertTrue(ans["ok"])
+            self.assertIn("Apig Aramian", ans["answer"])
+            fb_titles = [s["title"] for s in ans["sources"] if str(s.get("title", "")).startswith("Feedbacks:")]
+            self.assertEqual(fb_titles, ["Feedbacks: Apig Aramian"])
+            await session.execute(delete(AIUsageLog).where(AIUsageLog.session_id == "followup_test_sid"))
+            await session.commit()
+
 
 if __name__ == "__main__":
     unittest.main()

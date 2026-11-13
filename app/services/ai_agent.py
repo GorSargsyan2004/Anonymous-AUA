@@ -16,6 +16,7 @@ identifiers from internal community data before synthesis.
 import asyncio
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+import difflib
 import html
 import json
 import logging
@@ -75,13 +76,34 @@ STOPWORDS = {
     "about", "from", "into", "during", "including", "until", "against", "among",
     "throughout", "despite", "towards", "upon", "concerning", "for", "with",
     "without", "at", "by", "to", "in", "on", "of", "off", "over", "under",
-    "tell", "me", "please", "find", "search", "show", "give", "any", "there",
+    "you", "your", "yours", "yourself", "i", "me", "my", "mine", "myself",
+    "we", "us", "our", "ours", "they", "them", "their", "theirs",
+    "he", "him", "his", "himself", "she", "her", "hers", "herself", "it", "its",
+    "yes", "no", "not", "nor", "sure", "really", "actually", "very", "just",
+    "also", "only", "even", "still", "ever", "never", "always", "often",
+    "some", "any", "many", "much", "few", "more", "most", "all", "both",
+    "each", "every", "other", "another", "such", "same", "different",
+    "this", "that", "these", "those", "here", "there", "now", "well", "too",
+    "so", "than", "first", "last", "new", "old", "available", "exist", "exists",
+    "good", "great", "best", "bad", "worst", "nice", "fine", "okay", "ok",
+    "tell", "tells", "told", "please", "find", "found", "search", "show",
+    "give", "gave", "ask", "asked", "know", "knew", "known", "think", "thought",
+    "say", "says", "said", "want", "need", "get", "got", "make", "made",
+    "see", "saw", "look", "check", "help", "try", "use", "used",
+    "take", "took", "taking", "taken", "teach", "teaches", "teaching", "taught",
+    "student", "students", "people", "person", "someone", "anyone", "everyone",
+    "nobody", "nothing", "something", "everything", "mr", "mrs", "ms", "miss",
     "aua", "american", "university", "armenia", "professor", "prof", "dr",
-    "instructor", "teacher", "course", "courses", "class", "classes",
-    "events", "event", "upcoming", "week", "today", "month", "article",
-    "articles", "highlander", "newsroom", "directory", "chat", "discussions",
-    "feedback", "feedbacks", "review", "reviews", "grading", "policy",
+    "doctor", "instructor", "teacher", "course", "courses", "class", "classes",
+    "section", "sections", "events", "event", "upcoming", "week", "today",
+    "month", "article", "articles", "highlander", "newsroom", "directory",
+    "chat", "discussions", "discussion", "feedback", "feedbacks", "review",
+    "reviews", "comment", "comments", "rating", "ratings", "score", "scores",
+    "grading", "grade", "grades", "policy", "syllabus", "info", "information",
+    "detail", "details", "question", "questions", "answer", "answers",
 }
+
+DOMAIN_SHORT_TOKENS = {"cs", "ds", "ec", "ba", "ma", "ee", "me", "en", "hu", "ai", "mb", "it", "hr", "pr"}
 
 
 # ---------------------------------------------------------------------------
@@ -131,12 +153,150 @@ def strip_html_tags(raw_html: str) -> str:
 def extract_keywords(query: str, min_len: int = 2) -> List[str]:
     """Extract meaningful search keywords from a natural-language user prompt."""
     cleaned = re.sub(r"[^\w\s+-]", " ", (query or "").lower())
-    tokens = [t.strip() for t in cleaned.split() if len(t.strip()) >= min_len]
-    keywords = [t for t in tokens if t not in STOPWORDS]
-    if not keywords and tokens:
-        keywords = tokens[:4]
+    keywords: List[str] = []
+    for raw_t in cleaned.split():
+        t = raw_t.strip("-+")
+        if len(t) < min_len or t in STOPWORDS:
+            continue
+        # Reject short 2-char filler tokens unless domain acronym or contains digit (e.g. cs, cs10)
+        if len(t) < 3 and t not in DOMAIN_SHORT_TOKENS and not any(ch.isdigit() for ch in t):
+            continue
+        keywords.append(t)
     # Preserve order while deduplicating
     return list(dict.fromkeys(keywords))[:8]
+
+
+def _canonical_arm_token(token: str) -> str:
+    """Normalize common Armenian transliteration & Eastern/Western consonant pairs."""
+    t = re.sub(r"[^a-z0-9]", "", (token or "").lower())
+    if len(t) > 4 and t.endswith("yan"):
+        t = t[:-3] + "ian"
+    elif len(t) > 4 and t.endswith("ian"):
+        pass
+    t = t.replace("b", "p").replace("g", "k").replace("d", "t").replace("gh", "q")
+    return t
+
+
+def _generate_token_variants(token: str) -> List[str]:
+    """Generate safe spelling variants (e.g., Armenian -yan <-> -ian, -p- <-> -b-) for a name/word."""
+    t = (token or "").strip()
+    if not t:
+        return []
+    variants = [t]
+    low = t.lower()
+    if len(low) > 4 and low.endswith("yan"):
+        variants.append(t[:-3] + ("IAN" if t[-3:].isupper() else "ian"))
+    elif len(low) > 4 and low.endswith("ian"):
+        variants.append(t[:-3] + ("YAN" if t[-3:].isupper() else "yan"))
+    return list(dict.fromkeys(variants))
+
+
+def generate_name_variants(name_or_phrase: str) -> List[str]:
+    """Expand a full name or keyword phrase with Armenian `-yan`/`-ian` transliteration variants."""
+    phrase = " ".join((name_or_phrase or "").split())
+    if not phrase:
+        return []
+    words = phrase.split()
+    variants = [phrase]
+    last_vars = _generate_token_variants(words[-1])
+    for lv in last_vars:
+        cand = " ".join(words[:-1] + [lv])
+        if cand not in variants:
+            variants.append(cand)
+    # Individual meaningful words + their variants (last name first, then first name)
+    for w in reversed(words):
+        if len(w) >= 3 and w.lower() not in STOPWORDS:
+            for wv in _generate_token_variants(w):
+                if wv not in variants:
+                    variants.append(wv)
+    return variants
+
+
+def _score_name_against_query(
+    candidate_name: str,
+    name_cand: str,
+    query_tokens: List[str],
+) -> int:
+    """Score how strongly a professor/instructor name matches the query (supports -yan/-ian & minor phonetic diffs)."""
+    if not candidate_name:
+        return 0
+    cand_low = " ".join(candidate_name.lower().split())
+    cand_words = [w for w in re.findall(r"[a-z0-9]+", cand_low) if len(w) >= 2]
+    cand_canon_words = [_canonical_arm_token(w) for w in cand_words]
+
+    score = 0
+    if name_cand:
+        nc_clean = " ".join(re.findall(r"[a-z0-9]+", name_cand.lower()))
+        nc_words = nc_clean.split()
+        # Only check full phrase & full-phrase -yan/-ian variants here (word loop handles tokens safely)
+        phrase_vars = [nc_clean]
+        if nc_words and len(nc_words[-1]) > 4:
+            for lv in _generate_token_variants(nc_words[-1]):
+                phrase_vars.append(" ".join(nc_words[:-1] + [lv.lower()]))
+        for ncv in dict.fromkeys(phrase_vars):
+            if not ncv:
+                continue
+            if cand_low == ncv:
+                return 200
+            if len(nc_words) >= 2 and re.search(rf"\b{re.escape(ncv)}\b", cand_low):
+                score = max(score, 150)
+
+        nc_canon = " ".join(_canonical_arm_token(w) for w in nc_words)
+        cand_canon = " ".join(cand_canon_words)
+        if nc_canon and cand_canon and nc_canon == cand_canon:
+            return 190
+        if len(nc_words) >= 2 and nc_canon and cand_canon and re.search(rf"\b{re.escape(nc_canon)}\b", cand_canon):
+            score = max(score, 145)
+
+    seen_qt = set()
+    matched_distinct = 0
+    for qt in query_tokens:
+        qt_low = qt.lower()
+        if qt_low in seen_qt or len(qt_low) < 3 or qt_low in STOPWORDS or qt_low in DOMAIN_SHORT_TOKENS:
+            continue
+        seen_qt.add(qt_low)
+        qt_vars = [v.lower() for v in _generate_token_variants(qt_low)]
+        qt_canon = _canonical_arm_token(qt_low)
+
+        # 1. Exact whole-word match (or -yan/-ian equivalent)
+        if any(qv in cand_words for qv in qt_vars):
+            score += 75
+            matched_distinct += 1
+            continue
+        # 2. Phonetic/canonical exact word match (e.g. "apig" vs "abik", "aramyan" vs "aramian")
+        if qt_canon and len(qt_canon) >= 3 and qt_canon in cand_canon_words:
+            score += 65
+            matched_distinct += 1
+            continue
+        # 3. Prefix match on >=4 char token
+        if len(qt_low) >= 4 and any(cw.startswith(qv) for cw in cand_words for qv in qt_vars):
+            score += 45
+            matched_distinct += 1
+            continue
+        # 4. High fuzzy phonetic similarity on same-scale words
+        if qt_canon and len(qt_canon) >= 4:
+            best_sim = max(
+                (difflib.SequenceMatcher(None, qt_canon, ccw).ratio() for ccw in cand_canon_words if len(ccw) >= 4),
+                default=0.0,
+            )
+            if best_sim >= 0.82:
+                score += int(50 * best_sim)
+                matched_distinct += 1
+
+    if matched_distinct >= 2:
+        score += 40
+
+    # If the user supplied a full First + Last name candidate (2+ non-stopword tokens),
+    # do not match professors that share only 1 word (e.g., 'Aram Minasyan' != 'Aram Hajian').
+    if name_cand:
+        nc_sig = [
+            w for w in re.findall(r"[a-z0-9]+", name_cand.lower())
+            if len(w) >= 3 and w not in STOPWORDS and w not in DOMAIN_SHORT_TOKENS
+        ]
+        if len(nc_sig) >= 2 and matched_distinct < 2:
+            return min(score, 20)
+
+    return score
 
 
 def extract_person_name_candidate(query: str) -> str:
@@ -144,7 +304,7 @@ def extract_person_name_candidate(query: str) -> str:
     q = (query or "").strip()
     patterns = [
         r"(?:[Pp]rofessor|[Pp]rof\.?|[Dd]octor|[Dd]r\.?|[Ii]nstructor|[Dd]ean)\s+([A-Z][a-zA-Z\-]+(?:\s+[A-Z][a-zA-Z\-]+){0,2})",
-        r"(?:[Ww]ho\s+is|[Aa]bout|[Cc]ontact|[Ee]mail\s+for|[Oo]ffice\s+of|[Ff]ind)\s+([A-Z][a-zA-Z\-]+(?:\s+[A-Z][a-zA-Z\-]+){1,2})",
+        r"(?:[Ww]ho\s+is|[Aa]bout|[Cc]ontact|[Ee]mail\s+for|[Oo]ffice\s+of|[Ff]ind|[Ff]eedbacks?\s+(?:on|for|about)|[Rr]eviews?\s+(?:on|for|about))\s+([A-Z][a-zA-Z\-]+(?:\s+[A-Z][a-zA-Z\-]+){0,2})",
         r"([A-Z][a-zA-Z\-]+(?:\s+[A-Z][a-zA-Z\-]+){1,2})'s\b",
     ]
     for pat in patterns:
@@ -158,20 +318,30 @@ def extract_person_name_candidate(query: str) -> str:
                 candidate,
                 flags=re.IGNORECASE,
             ).strip()
+            parts = [p for p in candidate.split() if p.lower() not in STOPWORDS]
+            candidate = " ".join(parts)
             if candidate and candidate.lower() not in STOPWORDS:
                 return candidate
 
     # Fallback: capitalized words not at the very start of question words
     words = re.findall(r"\b[A-Za-z][a-zA-Z\-]+\b", q)
-    cap_words = [
-        w for w in words
-        if w[0].isupper() and w.lower() not in STOPWORDS and w.upper() not in ("CS", "AUA", "PAB", "MB", "AI", "GPA")
-    ]
+    cap_words: List[str] = []
+    seen_cap = set()
+    for w in words:
+        w_low = w.lower()
+        if (
+            w[0].isupper()
+            and w_low not in STOPWORDS
+            and w_low not in seen_cap
+            and w.upper() not in ("CS", "DS", "EC", "BA", "MA", "EE", "ME", "AUA", "PAB", "MB", "AI", "GPA")
+        ):
+            seen_cap.add(w_low)
+            cap_words.append(w)
     if cap_words:
         return " ".join(cap_words[:3])
 
-    kws = extract_keywords(q)
-    return " ".join(kws[:3]) if kws else q[:60]
+    kws = extract_keywords(q, min_len=3)
+    return " ".join(kws[:3]) if kws else ""
 
 
 # ---------------------------------------------------------------------------
@@ -183,34 +353,53 @@ async def search_course_and_professor_feedbacks(
     query: str,
     limit: int = 8,
 ) -> Tuple[List[Dict[str, Any]], List[Dict[str, str]]]:
-    """Search local jenzareviews mirror (`JenzaProfessor`, `JenzaReview`) and `AcademicFeedback`."""
+    """Search local jenzareviews mirror (`JenzaProfessor`, `JenzaReview`) and `AcademicFeedback`
+    with exact/Armenian-transliteration/phonetic ranking so unrelated instructors are never surfaced.
+    """
     results: List[Dict[str, Any]] = []
     sources: List[Dict[str, str]] = []
 
-    keywords = extract_keywords(query)
+    keywords = extract_keywords(query, min_len=2)
     name_cand = extract_person_name_candidate(query)
-    search_terms = list(dict.fromkeys(([name_cand] if name_cand else []) + keywords))
-    if not search_terms:
-        search_terms = [query.strip()[:50]]
+    raw_tokens = re.findall(r"[A-Za-z0-9\-]+", query or "")
+    course_codes = list(
+        dict.fromkeys(
+            c.upper().replace(" ", "").replace("-", "")
+            for c in re.findall(r"\b[A-Za-z]{2,4}\s?-?\d{3}[A-Za-z]?\b", query or "")
+        )
+    )
+    query_name_tokens = list(
+        dict.fromkeys(
+            [t for t in re.findall(r"[A-Za-z]+", name_cand or "") if t.lower() not in STOPWORDS]
+            + [t for t in keywords if t.isalpha() and len(t) >= 3]
+        )
+    )
 
-    # 1. Search JenzaProfessor & JenzaReview
-    prof_conds = []
-    for term in search_terms[:5]:
-        if len(term) >= 2:
-            prof_conds.append(JenzaProfessor.name.ilike(f"%{term}%"))
-            prof_conds.append(JenzaProfessor.department.ilike(f"%{term}%"))
+    # 1. Rank ALL JenzaProfessor rows in Python (~330 rows, < 2ms) to prevent table-order truncation
+    # and seamlessly handle Armenian spelling variants (-yan/-ian, Apig/Abik).
+    all_profs = list((await session.execute(select(JenzaProfessor))).scalars().all())
+    scored_profs: List[Tuple[int, JenzaProfessor]] = []
+    for prof in all_profs:
+        sc = _score_name_against_query(prof.name or "", name_cand, query_name_tokens)
+        if sc >= 45:
+            scored_profs.append((sc, prof))
+    scored_profs.sort(key=lambda pair: (-pair[0], prof_sort_key(pair[1])))
 
+    # Filter out weak secondary matches when we already have a strong primary professor match
     matched_profs: List[JenzaProfessor] = []
-    if prof_conds:
-        stmt_prof = select(JenzaProfessor).where(or_(*prof_conds)).limit(5)
-        matched_profs = list((await session.execute(stmt_prof)).scalars().all())
+    if scored_profs:
+        top_score = scored_profs[0][0]
+        min_keep = 90 if top_score >= 120 else 45
+        matched_profs = [p for sc, p in scored_profs if sc >= min_keep][:3]
 
+    matched_prof_name_variants: List[str] = []
     for prof in matched_profs:
+        matched_prof_name_variants.extend(generate_name_variants(prof.name or ""))
         stmt_rev = (
             select(JenzaReview)
             .where(JenzaReview.professor_id == prof.id)
             .order_by(desc(JenzaReview.created_at))
-            .limit(6)
+            .limit(20)
         )
         revs = list((await session.execute(stmt_rev)).scalars().all())
         rated_revs = [r for r in revs if r.rating is not None]
@@ -219,24 +408,67 @@ async def search_course_and_professor_feedbacks(
             if rated_revs
             else None
         )
+
+        # Also pull local AcademicFeedback written for this professor (excluding duplicates of JenzaReview)
+        prof_vars = [v for v in generate_name_variants(prof.name or "") if len(v) >= 4]
+        local_fb_conds = [AcademicFeedback.target_title.ilike(f"%{v}%") for v in prof_vars[:4]]
+        local_fbs: List[AcademicFeedback] = []
+        if local_fb_conds:
+            local_fbs = list(
+                (
+                    await session.execute(
+                        select(AcademicFeedback)
+                        .where(or_(*local_fb_conds))
+                        .order_by(desc(AcademicFeedback.created_at))
+                        .limit(20)
+                    )
+                )
+                .scalars()
+                .all()
+            )
+
+        seen_comments = set()
+        merged_reviews: List[Dict[str, Any]] = []
+        for r in revs:
+            c_txt = (r.comment or "").strip()
+            c_key = c_txt[:140].lower()
+            if c_key:
+                seen_comments.add(c_key)
+            merged_reviews.append(
+                {
+                    "course_code": r.course or "General",
+                    "overall_rating": float(r.rating) if r.rating is not None else None,
+                    "would_take_again": r.would_take_again,
+                    "upvotes": r.upvotes,
+                    "downvotes": r.downvotes,
+                    "comment": c_txt[:450],
+                }
+            )
+        for fb in local_fbs:
+            c_txt = (fb.comment or "").strip()
+            c_key = c_txt[:140].lower()
+            if c_key and c_key in seen_comments:
+                continue
+            if c_key:
+                seen_comments.add(c_key)
+            merged_reviews.append(
+                {
+                    "course_code": fb.target_subtitle or fb.target_title or "General",
+                    "overall_rating": float(fb.rating) if fb.rating is not None else None,
+                    "would_take_again": None,
+                    "comment": c_txt[:450],
+                    "created_at": fb.created_at.strftime("%Y-%m-%d") if fb.created_at else "",
+                }
+            )
+
         results.append(
             {
                 "type": "professor_feedback_summary",
                 "professor_name": prof.name,
                 "department": prof.department or "AUA Faculty",
-                "review_count_sampled": len(revs),
+                "review_count": len(merged_reviews),
                 "avg_overall_rating": avg_overall,
-                "reviews": [
-                    {
-                        "course_code": r.course or "General",
-                        "overall_rating": float(r.rating) if r.rating is not None else None,
-                        "would_take_again": r.would_take_again,
-                        "upvotes": r.upvotes,
-                        "downvotes": r.downvotes,
-                        "comment": (r.comment or "")[:450],
-                    }
-                    for r in revs
-                ],
+                "reviews": merged_reviews,
             }
         )
         sources.append(
@@ -247,74 +479,134 @@ async def search_course_and_professor_feedbacks(
             }
         )
 
-    # 2. Search JenzaReview directly by course or comment keywords
-    rev_conds = []
-    for term in search_terms[:5]:
-        if len(term) >= 2:
-            rev_conds.append(JenzaReview.course.ilike(f"%{term}%"))
-            rev_conds.append(JenzaReview.comment.ilike(f"%{term}%"))
+    # 2. If NO specific professor matched OR the prompt includes a course code/topic,
+    # search JenzaReview & AcademicFeedback strictly by course codes / specific >=3-char keywords
+    nc_sig_words = [
+        w for w in re.findall(r"[A-Za-z0-9]+", name_cand or "")
+        if len(w) >= 3 and w.lower() not in STOPWORDS and w.lower() not in DOMAIN_SHORT_TOKENS
+    ]
+    is_unmatched_full_person = (not matched_profs) and (len(nc_sig_words) >= 2) and (not course_codes)
 
-    if rev_conds and len(results) < limit:
-        stmt_direct_rev = (
-            select(JenzaReview, JenzaProfessor.name)
-            .join(JenzaProfessor, JenzaReview.professor_id == JenzaProfessor.id)
-            .where(or_(*rev_conds))
-            .order_by(desc(JenzaReview.created_at))
-            .limit(6)
-        )
-        rows = (await session.execute(stmt_direct_rev)).all()
-        for rev, prof_name in rows:
-            results.append(
-                {
-                    "type": "course_or_professor_review",
-                    "professor_name": prof_name,
-                    "course_code": rev.course or "General",
-                    "overall_rating": float(rev.rating) if rev.rating is not None else None,
-                    "would_take_again": rev.would_take_again,
-                    "comment": (rev.comment or "")[:400],
-                }
-            )
-
-    # 3. Search local AcademicFeedback table
-    fb_conds = []
-    for term in search_terms[:5]:
-        if len(term) >= 2:
-            fb_conds.append(AcademicFeedback.target_title.ilike(f"%{term}%"))
-            fb_conds.append(AcademicFeedback.target_key.ilike(f"%{term}%"))
-            fb_conds.append(AcademicFeedback.comment.ilike(f"%{term}%"))
-
-    if fb_conds:
-        stmt_fb = (
-            select(AcademicFeedback)
-            .where(or_(*fb_conds))
-            .order_by(desc(AcademicFeedback.created_at))
-            .limit(6)
-        )
-        fbs = list((await session.execute(stmt_fb)).scalars().all())
-        for fb in fbs:
-            results.append(
-                {
-                    "type": f"local_{fb.target_type}_feedback",
-                    "target": fb.target_title,
-                    "subtitle": fb.target_subtitle or "",
-                    "rating": fb.rating,
-                    "comment": (fb.comment or "")[:400],
-                    "created_at": fb.created_at.strftime("%Y-%m-%d") if fb.created_at else "",
-                }
-            )
-            if not any(s["title"] == f"Feedbacks: {fb.target_title}" for s in sources):
-                sources.append(
-                    {
-                        "title": f"Feedbacks: {fb.target_title}",
-                        "url": "#feedbacks",
-                        "source_type": "AUA Hub Feedbacks",
-                    }
+    if not matched_profs or course_codes:
+        if matched_profs:
+            # Professor(s) already matched: only supplement with explicit course codes from prompt
+            specific_terms = list(course_codes)
+        elif is_unmatched_full_person:
+            # Full First+Last name had no match in JenzaProfessor: only check exact phrase & -yan/-ian phrase
+            full_phrase_vars = [name_cand]
+            parts_nc = name_cand.split()
+            if len(parts_nc) >= 2 and len(parts_nc[-1]) > 4:
+                for lv in _generate_token_variants(parts_nc[-1]):
+                    full_phrase_vars.append(" ".join(parts_nc[:-1] + [lv]))
+            specific_terms = list(dict.fromkeys(full_phrase_vars))
+        else:
+            specific_terms = list(
+                dict.fromkeys(
+                    course_codes
+                    + [kw for kw in keywords if len(kw) >= 3 or kw in DOMAIN_SHORT_TOKENS]
+                    + [v for v in generate_name_variants(name_cand) if len(v) >= 4]
                 )
+            )
+        if specific_terms:
+            rev_conds = []
+            rev_terms = list(course_codes[:4]) if matched_profs else (course_codes[:4] + [t for t in specific_terms if len(t) >= 3][:4])
+            for term in rev_terms:
+                rev_conds.append(JenzaReview.course.ilike(f"%{term}%"))
+                if not matched_profs and not is_unmatched_full_person and len(term) >= 4:
+                    rev_conds.append(JenzaReview.comment.ilike(f"%{term}%"))
 
-    # 4. Also check official Sonis Course schedule if course/instructor matches
+            if rev_conds and len(results) < limit:
+                stmt_direct_rev = (
+                    select(JenzaReview, JenzaProfessor.name)
+                    .join(JenzaProfessor, JenzaReview.professor_id == JenzaProfessor.id)
+                    .where(or_(*rev_conds))
+                    .order_by(desc(JenzaReview.created_at))
+                    .limit(8)
+                )
+                rows = (await session.execute(stmt_direct_rev)).all()
+                seen_rev_keys = {
+                    (r.get("professor_name", "").lower(), rev.get("comment", "")[:120].lower())
+                    for r in results
+                    if r.get("type") == "professor_feedback_summary"
+                    for rev in r.get("reviews", [])
+                }
+                for rev, prof_name in rows:
+                    c_snip = (rev.comment or "")[:400]
+                    rk = (prof_name.lower(), c_snip[:120].lower())
+                    if rk in seen_rev_keys:
+                        continue
+                    seen_rev_keys.add(rk)
+                    results.append(
+                        {
+                            "type": "course_or_professor_review",
+                            "professor_name": prof_name,
+                            "course_code": rev.course or "General",
+                            "overall_rating": float(rev.rating) if rev.rating is not None else None,
+                            "would_take_again": rev.would_take_again,
+                            "comment": c_snip,
+                        }
+                    )
+                    if not any(s["title"] == f"Feedbacks: {prof_name}" for s in sources):
+                        sources.append(
+                            {
+                                "title": f"Feedbacks: {prof_name}",
+                                "url": "#feedbacks",
+                                "source_type": "AUA Feedbacks (JenzaReviews)",
+                            }
+                        )
+
+        if not matched_profs:
+            fb_conds = []
+            for term in specific_terms[:6]:
+                if len(term) >= 3:
+                    fb_conds.append(AcademicFeedback.target_title.ilike(f"%{term}%"))
+                    fb_conds.append(AcademicFeedback.target_key.ilike(f"%{term}%"))
+                    if not is_unmatched_full_person and len(term) >= 4:
+                        fb_conds.append(AcademicFeedback.comment.ilike(f"%{term}%"))
+            if fb_conds:
+                stmt_fb = (
+                    select(AcademicFeedback)
+                    .where(or_(*fb_conds))
+                    .order_by(desc(AcademicFeedback.created_at))
+                    .limit(8)
+                )
+                fbs = list((await session.execute(stmt_fb)).scalars().all())
+                for fb in fbs:
+                    results.append(
+                        {
+                            "type": f"local_{fb.target_type}_feedback",
+                            "target": fb.target_title,
+                            "subtitle": fb.target_subtitle or "",
+                            "rating": fb.rating,
+                            "comment": (fb.comment or "")[:400],
+                            "created_at": fb.created_at.strftime("%Y-%m-%d") if fb.created_at else "",
+                        }
+                    )
+                    if not any(s["title"] == f"Feedbacks: {fb.target_title}" for s in sources):
+                        sources.append(
+                            {
+                                "title": f"Feedbacks: {fb.target_title}",
+                                "url": "#feedbacks",
+                                "source_type": "AUA Hub Feedbacks",
+                            }
+                        )
+
+    # 3. Also check official Sonis Course schedule for matched professors, course codes, or clean keywords
     course_conds = []
-    for term in search_terms[:4]:
-        if len(term) >= 2:
+    if matched_profs:
+        for p in matched_profs:
+            for pv in generate_name_variants(p.name or "")[:3]:
+                if len(pv) >= 4:
+                    course_conds.append(Course.instructor.ilike(f"%{pv}%"))
+        for cc in course_codes:
+            course_conds.append(Course.course_code.ilike(f"%{cc}%"))
+    elif is_unmatched_full_person:
+        for term in specific_terms[:4]:
+            if len(term) >= 4:
+                course_conds.append(Course.instructor.ilike(f"%{term}%"))
+                course_conds.append(Course.course_title.ilike(f"%{term}%"))
+    else:
+        for term in (course_codes + [t for t in keywords if len(t) >= 3])[:5]:
             course_conds.append(Course.course_code.ilike(f"%{term}%"))
             course_conds.append(Course.course_title.ilike(f"%{term}%"))
             course_conds.append(Course.instructor.ilike(f"%{term}%"))
@@ -335,8 +627,20 @@ async def search_course_and_professor_feedbacks(
                     "location": c.location,
                 }
             )
+            if not sources:
+                sources.append(
+                    {
+                        "title": f"Course Schedule: {c.course_code} ({c.instructor or 'TBA'})",
+                        "url": "#have-need",
+                        "source_type": "AUA Course Catalog",
+                    }
+                )
 
     return results[:14], sources[:4]
+
+
+def prof_sort_key(prof: JenzaProfessor) -> Tuple[str, int]:
+    return ((prof.name or "").lower(), int(prof.id or 0))
 
 
 # ---------------------------------------------------------------------------
@@ -371,15 +675,6 @@ async def search_global_chat_history(
             .limit(min(limit, 6))
         )
         msgs = list((await session.execute(stmt)).scalars().all())
-
-    # If keyword search returned nothing, fall back to most recent chat discussions
-    if not msgs:
-        stmt_recent = (
-            select(SpamChatMessage)
-            .order_by(desc(SpamChatMessage.created_at))
-            .limit(6)
-        )
-        msgs = list((await session.execute(stmt_recent)).scalars().all())
 
     results: List[Dict[str, Any]] = []
     for m in msgs:
@@ -423,21 +718,24 @@ async def search_anonymous_posts_and_inbox(
         for kw in keywords[:6]
         if len(kw) >= 2
     ]
-    if post_conds:
+    if conds_any := post_conds:
         stmt_posts = (
             select(AnonymousPublicPost)
-            .where(AnonymousPublicPost.is_hidden == False, or_(*post_conds))
+            .where(AnonymousPublicPost.is_hidden == False, or_(*conds_any))
             .order_by(desc(AnonymousPublicPost.created_at))
             .limit(limit)
         )
-    else:
+    elif not keywords:
         stmt_posts = (
             select(AnonymousPublicPost)
             .where(AnonymousPublicPost.is_hidden == False)
             .order_by(desc(AnonymousPublicPost.created_at))
             .limit(5)
         )
-    anon_posts = list((await session.execute(stmt_posts)).scalars().all())
+    else:
+        stmt_posts = None
+
+    anon_posts = list((await session.execute(stmt_posts)).scalars().all()) if stmt_posts is not None else []
     for p in anon_posts:
         results.append(
             {
@@ -762,11 +1060,14 @@ async def lookup_aua_directory_and_people(
     if not person_query:
         person_query = " ".join(extract_keywords(query)[:3]) or query.strip()[:50]
 
-    # Try both full candidate name and individual last/first name tokens if multi-word
+    # Expand with Armenian `-yan`/`-ian` transliteration variants and individual name tokens
     tokens = [t for t in re.findall(r"[A-Za-z\-]{2,}", person_query) if t.lower() not in STOPWORDS]
-    search_variants = list(dict.fromkeys([person_query] + (tokens[::-1][:2] if len(tokens) > 1 else [])))
+    search_variants = generate_name_variants(person_query)
+    if not search_variants:
+        search_variants = [person_query]
 
     discovered_profile_urls: List[str] = []
+    candidate_profiles: List[Tuple[int, str, str]] = []  # (score, profile_url, snippet)
 
     try:
         async with httpx.AsyncClient(
@@ -775,7 +1076,9 @@ async def lookup_aua_directory_and_people(
             # ------------------------------------------------------------------
             # TIER 1A: `https://directory.aua.am/` (Phone, Email, Room, Dept, Role)
             # ------------------------------------------------------------------
-            for q_var in search_variants[:2]:
+            for q_var in search_variants[:4]:
+                if len(q_var.strip()) < 3:
+                    continue
                 try:
                     dir_resp = await client.post(
                         "https://directory.aua.am/",
@@ -797,6 +1100,9 @@ async def lookup_aua_directory_and_people(
                             flags=re.IGNORECASE,
                         ).strip()
                         if clean_dir and len(clean_dir) > 15 and "no results" not in clean_dir.lower():
+                            # Validate directory output actually relates to requested name
+                            if tokens and _score_name_against_query(clean_dir[:160], person_query, tokens) < 30:
+                                continue
                             results.append(
                                 {
                                     "source_tier": "Tier 1 (directory.aua.am)",
@@ -819,7 +1125,9 @@ async def lookup_aua_directory_and_people(
             # ------------------------------------------------------------------
             # TIER 1B: `https://people.aua.am/?s=<Name>`
             # ------------------------------------------------------------------
-            for q_var in search_variants[:2]:
+            for q_var in search_variants[:4]:
+                if len(q_var.strip()) < 3:
+                    continue
                 try:
                     people_search_url = f"https://people.aua.am/?s={quote_plus(q_var)}"
                     p_resp = await client.get(people_search_url)
@@ -836,23 +1144,44 @@ async def lookup_aua_directory_and_people(
                                 flags=re.IGNORECASE,
                             )
                             prof_url = link_m.group(1).strip() if link_m else ""
-                            snippet = strip_html_tags(block)
-                            head_check = f"{prof_url} {snippet[:120]}".lower()
-                            if tokens and not any(t.lower() in head_check for t in tokens):
-                                continue
-                            if prof_url and prof_url not in discovered_profile_urls:
-                                discovered_profile_urls.append(prof_url)
-                            results.append(
-                                {
-                                    "source_tier": "Tier 1 (people.aua.am search)",
-                                    "summary": snippet[:400],
-                                    "profile_url": prof_url,
-                                }
+                            title_m = re.search(
+                                r"<h[1-4][^>]*>(.*?)</h[1-4]>",
+                                block,
+                                flags=re.IGNORECASE | re.DOTALL,
                             )
-                        if discovered_profile_urls:
+                            card_name = strip_html_tags(title_m.group(1)) if title_m else ""
+                            snippet = strip_html_tags(block)
+                            slug_name = prof_url.rstrip("/").split("/")[-1].replace("-", " ")
+                            name_for_score = card_name or slug_name or snippet[:80]
+                            sc = _score_name_against_query(name_for_score, person_query, tokens)
+                            if tokens and sc < 45:
+                                continue
+                            candidate_profiles.append((sc, prof_url, snippet))
+                        if any(sc >= 90 for sc, _, _ in candidate_profiles):
                             break
                 except Exception as exc:
                     logger.debug("Tier 1B people.aua.am search warning: %s", exc)
+
+            if candidate_profiles:
+                candidate_profiles.sort(key=lambda item: item[0], reverse=True)
+                best_sc = candidate_profiles[0][0]
+                min_card_sc = 90 if best_sc >= 120 else 45
+                seen_urls = set()
+                for sc, prof_url, snippet in candidate_profiles:
+                    if sc < min_card_sc:
+                        continue
+                    if prof_url and prof_url not in seen_urls:
+                        seen_urls.add(prof_url)
+                        discovered_profile_urls.append(prof_url)
+                    results.append(
+                        {
+                            "source_tier": "Tier 1 (people.aua.am search)",
+                            "summary": snippet[:400],
+                            "profile_url": prof_url,
+                        }
+                    )
+                    if len(discovered_profile_urls) >= 2:
+                        break
 
             # ------------------------------------------------------------------
             # TIER 3: Web Search Fallback + Slug Probing if Tier 1 found no profile URL
@@ -1308,12 +1637,58 @@ class ToolSelectionPlan(BaseModel):
     )
 
 
-def classify_tools_heuristic(prompt: str) -> ToolSelectionPlan:
+def _resolve_followup_entity(
+    prompt: str,
+    prior_turns: Optional[List[AIChatTurn]] = None,
+) -> Optional[str]:
+    """Resolve follow-up references (pronouns or single first names like 'Apig')
+    from recent conversation turns so RAG retrieval keeps full entity context.
+    """
+    if not prior_turns:
+        return None
+    q_low = (prompt or "").lower()
+    cand_now = extract_person_name_candidate(prompt)
+    cand_words = cand_now.split() if cand_now else []
+
+    # Check prior user prompts (most recent first), then prior assistant answers
+    recent_texts = [t.content for t in reversed(prior_turns[-6:]) if t.role == "user"] + [
+        t.content for t in reversed(prior_turns[-4:]) if t.role == "assistant"
+    ]
+
+    # Case A: Single-token name follow-up (e.g., "about Apig ?" after "Apig Aramyan")
+    if len(cand_words) == 1 and len(cand_words[0]) >= 3:
+        tok_low = cand_words[0].lower()
+        for txt in recent_texts:
+            for full_m in re.finditer(r"\b([A-Z][a-zA-Z\-]{2,}\s+[A-Z][a-zA-Z\-]{2,})\b", txt):
+                full_name = full_m.group(1).strip()
+                parts_low = [p.lower() for p in full_name.split()]
+                if any(p not in STOPWORDS for p in parts_low) and tok_low in parts_low:
+                    return full_name
+
+    # Case B: Pronoun follow-up ("he", "him", "his", "she", "her", "this professor")
+    has_pronoun = bool(re.search(r"\b(he|him|his|she|her|hers|they|them|their|this professor|that professor|that course|this course)\b", q_low))
+    if has_pronoun or not extract_keywords(prompt):
+        for txt in recent_texts:
+            prior_cand = extract_person_name_candidate(txt)
+            if prior_cand and len(prior_cand.split()) >= 2:
+                return prior_cand
+            cc = re.search(r"\b[A-Za-z]{2,4}\s?-?\d{3}[A-Za-z]?\b", txt)
+            if cc:
+                return cc.group(0).strip()
+    return None
+
+
+def classify_tools_heuristic(
+    prompt: str,
+    prior_turns: Optional[List[AIChatTurn]] = None,
+) -> ToolSelectionPlan:
     """Fast, deterministic multi-tool intent router combined with LLM planner."""
     q = (prompt or "").lower()
+    resolved_entity = _resolve_followup_entity(prompt, prior_turns=prior_turns)
+    combined_q = f"{resolved_entity} {q}".lower() if resolved_entity else q
 
     use_feedbacks = any(
-        w in q
+        w in combined_q
         for w in (
             "professor", "prof", "dr.", "dr ", "instructor", "teacher", "grading",
             "grade", "policy", "workload", "exam", "midterm", "final", "quiz",
@@ -1323,7 +1698,7 @@ def classify_tools_heuristic(prompt: str) -> ToolSelectionPlan:
         )
     )
     use_directory = any(
-        w in q
+        w in combined_q
         for w in (
             "professor", "prof", "dr.", "dr ", "dean", "chair", "director",
             "faculty", "staff", "office", "room", "phone", "email", "contact",
@@ -1360,17 +1735,18 @@ def classify_tools_heuristic(prompt: str) -> ToolSelectionPlan:
         w in q
         for w in (
             "anonymous", "inbox", "confession", "post", "posts", "secret",
-            "rumor", "question", "questions", "telegram group", "groups", "club",
+            "rumor", "telegram group", "groups", "club",
         )
     )
 
-    # If the user asks about a person by capitalized name (e.g. "Aram Hajian"), enable directory + feedbacks
-    person_cand = extract_person_name_candidate(prompt)
-    if person_cand and len(person_cand.split()) >= 2:
-        use_directory = True
+    person_cand = resolved_entity or extract_person_name_candidate(prompt)
+    if person_cand and (
+        len(person_cand.split()) >= 2
+        or re.search(r"\b(?:about|who is|feedbacks?|reviews?|professor|prof|instructor)\b", q)
+    ):
         use_feedbacks = True
+        use_directory = True
 
-    # Ensure at least 2 relevant sources are checked if nothing specific matched
     if not any([use_feedbacks, use_directory, use_newsroom, use_highlander, use_chat, use_anon]):
         use_feedbacks = True
         use_chat = True
@@ -1398,13 +1774,14 @@ You have direct access to real-time retrieved context from 6 official and commun
 6. **Anonymous Campus Posts & Student Telegram Groups**: Public anonymous posts, Q&As, and student group invite links.
 
 GUIDELINES:
-- Base your response directly on the **Retrieved Campus Context** provided below.
+- Base your response strictly and accurately on the **Retrieved Campus Context** provided below.
+- Pay careful attention to spelling variations (e.g. Armenian transliterations like `-yan` vs `-ian` or `Apig` vs `Abik` refer to the same faculty member when retrieved).
+- Whenever `course_and_professor_feedbacks` contains reviews or summary data for the requested professor or course, summarize ALL retrieved reviews, ratings, course names, and key themes accurately — never claim there are no reviews if reviews are present in the retrieved JSON.
 - Format your response cleanly using **Markdown** (bullet points, bold key facts like ratings/office rooms/dates/emails, and clear section headers when appropriate).
-- When citing professor ratings, mention the numerical ratings (e.g. Overall Rating, Difficulty) and summarize consensus from student comments客观 and constructively.
 - When citing events, include the exact **Date, Time, Building/Room** (e.g. PAB, Main Building, Akian Art Gallery), and a brief summary.
 - When citing faculty directory info, include their **Title/Role, Department, Office Room, Phone, Email**, and **Higher Education** background if available.
 - Protect student privacy: never invent or expose private student identities from anonymous reviews or chat logs.
-- If a specific piece of information is not found in the retrieved context, state that transparently and offer the closest verified AUA details available.
+- If a specific piece of information is genuinely absent from all retrieved records, state that transparently without inventing or conflating unrelated people.
 """
 
 
@@ -1412,16 +1789,69 @@ class AUAAssistantOrchestrator:
     """Orchestrates multi-source RAG tool execution and Gemini synthesis."""
 
     def __init__(self, api_key: Optional[str] = None) -> None:
-        self.api_key = api_key or settings.GEMINI_API_KEY
+        self.api_key = settings.GEMINI_API_KEY if api_key is None else api_key
         self._client: Any = None
 
     def _get_client(self) -> Any:
         if self._client is None:
-            key = self.api_key or settings.GEMINI_API_KEY
+            key = self.api_key
             if not key or genai is None:
                 return None
             self._client = genai.Client(api_key=key)
         return self._client
+
+    async def _plan_tools_with_gemini(
+        self,
+        user_prompt: str,
+        chat_state: AIChatSessionState,
+        heuristic_plan: ToolSelectionPlan,
+    ) -> ToolSelectionPlan:
+        """Use Gemini structured output (fast 4s timeout) to resolve follow-up entities & tool selection."""
+        client = self._get_client()
+        if client is None or types is None:
+            return heuristic_plan
+        try:
+            hist_lines = []
+            for t in chat_state.turns[-4:]:
+                role_lbl = "Student" if t.role == "user" else "Assistant"
+                hist_lines.append(f"{role_lbl}: {t.content[:280]}")
+            hist_str = "\n".join(hist_lines) if hist_lines else "None"
+
+            planner_prompt = (
+                "Select which AUA Hub search tools should be invoked and extract a clean focused search_query_override "
+                "(resolving pronouns or short single names like 'Apig' or 'he' to the full entity name/course code from conversation history).\n\n"
+                f"Recent conversation:\n{hist_str}\n\n"
+                f"Current student prompt: {user_prompt}"
+            )
+            config = types.GenerateContentConfig(
+                temperature=0.0,
+                response_mime_type="application/json",
+                response_schema=ToolSelectionPlan,
+            )
+            resp = await asyncio.wait_for(
+                client.aio.models.generate_content(
+                    model="gemini-2.5-flash",
+                    contents=planner_prompt,
+                    config=config,
+                ),
+                timeout=4.0,
+            )
+            if resp and resp.text:
+                parsed = ToolSelectionPlan.model_validate_json(resp.text)
+                # Merge safely with heuristic plan so explicit keywords/entities aren't dropped
+                merged_override = parsed.search_query_override or heuristic_plan.search_query_override
+                return ToolSelectionPlan(
+                    use_feedbacks=parsed.use_feedbacks or heuristic_plan.use_feedbacks,
+                    use_directory=parsed.use_directory or heuristic_plan.use_directory,
+                    use_newsroom_events=parsed.use_newsroom_events or heuristic_plan.use_newsroom_events,
+                    use_highlander=parsed.use_highlander or heuristic_plan.use_highlander,
+                    use_chat_history=parsed.use_chat_history or heuristic_plan.use_chat_history,
+                    use_anonymous_inbox=parsed.use_anonymous_inbox or heuristic_plan.use_anonymous_inbox,
+                    search_query_override=merged_override,
+                )
+        except Exception as exc:
+            logger.debug("Gemini planner fallback to heuristic: %s", exc)
+        return heuristic_plan
 
     async def answer_prompt(
         self,
@@ -1432,7 +1862,15 @@ class AUAAssistantOrchestrator:
     ) -> Dict[str, Any]:
         """Run tool selection, parallel RAG retrieval, and Gemini synthesis."""
         started_ts = time.monotonic()
-        plan = classify_tools_heuristic(user_prompt)
+        heuristic_plan = classify_tools_heuristic(user_prompt, prior_turns=chat_state.turns)
+        plan = await self._plan_tools_with_gemini(user_prompt, chat_state, heuristic_plan)
+
+        # Build effective retrieval query preserving resolved entity context on follow-up turns
+        effective_query = user_prompt
+        if plan.search_query_override:
+            ov = plan.search_query_override.strip()
+            if ov and ov.lower() not in user_prompt.lower():
+                effective_query = f"{ov} {user_prompt}"
 
         executed_steps: List[Dict[str, str]] = []
         aggregated_context: Dict[str, Any] = {}
@@ -1448,7 +1886,7 @@ class AUAAssistantOrchestrator:
                 }
             )
             fb_data, fb_sources = await search_course_and_professor_feedbacks(
-                db_session, user_prompt
+                db_session, effective_query
             )
             aggregated_context["course_and_professor_feedbacks"] = fb_data
             all_sources.extend(fb_sources)
@@ -1462,7 +1900,7 @@ class AUAAssistantOrchestrator:
                 }
             )
             chat_data, chat_sources = await search_global_chat_history(
-                db_session, user_prompt
+                db_session, effective_query
             )
             aggregated_context["campus_chat_history"] = chat_data
             all_sources.extend(chat_sources)
@@ -1476,7 +1914,7 @@ class AUAAssistantOrchestrator:
                 }
             )
             anon_data, anon_sources = await search_anonymous_posts_and_inbox(
-                db_session, user_prompt
+                db_session, effective_query
             )
             aggregated_context["anonymous_posts_and_groups"] = anon_data
             all_sources.extend(anon_sources)
@@ -1492,7 +1930,7 @@ class AUAAssistantOrchestrator:
                 }
             )
             web_tasks["aua_directory_and_faculty_profiles"] = asyncio.create_task(
-                lookup_aua_directory_and_people(user_prompt, deep_profile=True)
+                lookup_aua_directory_and_people(effective_query, deep_profile=True)
             )
 
         if plan.use_newsroom_events:
@@ -1504,7 +1942,7 @@ class AUAAssistantOrchestrator:
                 }
             )
             web_tasks["aua_newsroom_events"] = asyncio.create_task(
-                fetch_aua_newsroom_events(user_prompt)
+                fetch_aua_newsroom_events(effective_query)
             )
 
         if plan.use_highlander:
@@ -1516,7 +1954,7 @@ class AUAAssistantOrchestrator:
                 }
             )
             web_tasks["the_highlander_articles"] = asyncio.create_task(
-                search_highlander_magazine(user_prompt)
+                search_highlander_magazine(effective_query)
             )
 
         if web_tasks:
@@ -1682,7 +2120,7 @@ class AUAAssistantOrchestrator:
                     diff_str = f" (Avg Difficulty: **{avg_d}/5.0**)" if avg_d is not None else ""
                     lines.append(
                         f"- **{item.get('professor_name')}** ({item.get('department')}): "
-                        f"Overall Rating {rating_str}{diff_str} across {item.get('review_count_sampled', 0)} recent reviews."
+                        f"Overall Rating {rating_str}{diff_str} across {item.get('review_count', item.get('review_count_sampled', 0))} reviews."
                     )
                     for rev in (item.get("reviews") or [])[:3]:
                         if rev.get("comment"):
