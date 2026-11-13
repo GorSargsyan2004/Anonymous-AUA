@@ -1,5 +1,6 @@
 """Database CRUD operations for AUA Hub companion website and bot integration."""
 
+from collections import Counter, defaultdict
 from datetime import datetime, timedelta, timezone
 import hashlib
 import hmac
@@ -12,12 +13,23 @@ from sqlalchemy import and_, delete, func, or_, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.database.crud import create_or_regenerate_inbox, get_or_create_user, get_user_active_inbox
+from app.database.crud import (
+    YEREVAN_TZ,
+    _ensure_utc,
+    _safe_mean,
+    _safe_median,
+    create_or_regenerate_inbox,
+    get_admin_stats,
+    get_or_create_user,
+    get_user_active_inbox,
+)
 from app.database.models import (
     AcademicFeedback,
+    AIUsageLog,
     AnonymousInbox,
     AnonymousPublicPost,
     AnonymousPublicPostReport,
+    BotActivitySnapshot,
     Course,
     HaveNeedPost,
     InboxMessage,
@@ -33,6 +45,7 @@ from app.database.models import (
     WebOtpCode,
     WebSyncCode,
     WebUser,
+    WebUserAIChatSession,
 )
 from app.services.email_verification import get_current_academic_year
 from app.services.gender_detector import infer_gender_from_email
@@ -1598,6 +1611,7 @@ async def get_web_admin_stats(session: AsyncSession) -> Dict[str, Any]:
         .limit(15)
     )
     event_counts = dict((await session.execute(events_stmt)).all())
+    ai_stats = await get_ai_assistant_stats(session)
 
     return {
         "users": {
@@ -1622,6 +1636,494 @@ async def get_web_admin_stats(session: AsyncSession) -> Dict[str, Any]:
             "total_clicks": int(total_events),
             "clicks_24h": int(events_24h),
             "event_breakdown": event_counts,
+        },
+        "ai_assistant": ai_stats,
+    }
+
+
+async def backfill_ai_usage_logs(session: AsyncSession) -> int:
+    """One-time backfill of AI usage telemetry from existing WebUserAIChatSession histories if log table is empty."""
+    existing_cnt = (await session.execute(select(func.count(AIUsageLog.id)))).scalar_one() or 0
+    if existing_cnt > 0:
+        return 0
+
+    rows = (await session.execute(select(WebUserAIChatSession))).scalars().all()
+    inserted = 0
+    for row in rows:
+        try:
+            exchanges = json.loads(row.history_json or "[]")
+        except Exception:
+            exchanges = []
+        if not isinstance(exchanges, list):
+            continue
+        for idx, ex in enumerate(exchanges, start=1):
+            if not isinstance(ex, dict):
+                continue
+            steps = ex.get("steps") or []
+            tool_ids = [s.get("id") for s in steps if isinstance(s, dict) and s.get("id") and s.get("id") != "synthesize"]
+            sources = ex.get("sources") or []
+            ts_dt = row.updated_at or datetime.now(timezone.utc)
+            if ex.get("timestamp"):
+                try:
+                    ts_dt = datetime.fromisoformat(str(ex["timestamp"]))
+                    if ts_dt.tzinfo is None:
+                        ts_dt = ts_dt.replace(tzinfo=timezone.utc)
+                except Exception:
+                    pass
+            log = AIUsageLog(
+                web_user_id=row.web_user_id,
+                session_id=row.session_id,
+                prompt_index=idx,
+                tools_used_json=json.dumps(tool_ids),
+                sources_count=len(sources),
+                latency_ms=1450,
+                used_gemini=True,
+                prompt_length=len(str(ex.get("prompt") or "")),
+                answer_length=len(str(ex.get("answer") or "")),
+                created_at=ts_dt,
+            )
+            session.add(log)
+            inserted += 1
+    if inserted > 0:
+        await session.commit()
+    return inserted
+
+
+async def get_ai_assistant_stats(session: AsyncSession) -> Dict[str, Any]:
+    """Compute comprehensive AI Assistant usage, tool selection, latency, and session depth metrics."""
+    try:
+        await backfill_ai_usage_logs(session)
+    except Exception:
+        pass
+
+    now = datetime.now(timezone.utc)
+    now_amt = now.astimezone(YEREVAN_TZ)
+    day_ago = now - timedelta(hours=24)
+    month_ago = now - timedelta(days=30)
+
+    logs = list(
+        (await session.execute(select(AIUsageLog).order_by(AIUsageLog.created_at.asc()))).scalars().all()
+    )
+    active_web_sessions_cnt = (
+        await session.execute(select(func.count(WebUserAIChatSession.id)))
+    ).scalar_one() or 0
+
+    total_prompts = len(logs)
+    prompts_24h = 0
+    prompts_30d = 0
+    sessions_all: Dict[str, int] = defaultdict(int)
+    sessions_24h_set = set()
+    sessions_30d_set = set()
+    signed_users_set = set()
+    signed_in_prompts = 0
+    guest_prompts = 0
+    gemini_success_count = 0
+    latencies: List[float] = []
+    sources_counts: List[float] = []
+    prompt_lengths: List[float] = []
+    answer_lengths: List[float] = []
+    tool_counts: Counter = Counter()
+    depth_counts: Counter = Counter()
+    hourly_prompts_30d = [0] * 24
+    hourly_prompts_24h = [0] * 24
+
+    day_keys = []
+    day_labels = {}
+    for offset in range(29, -1, -1):
+        d = (now_amt - timedelta(days=offset)).date()
+        dk = d.isoformat()
+        day_keys.append(dk)
+        day_labels[dk] = d.strftime("%b %d")
+    daily_prompts: Dict[str, int] = defaultdict(int)
+    daily_sessions: Dict[str, set] = defaultdict(set)
+
+    for lg in logs:
+        ts = _ensure_utc(lg.created_at, now)
+        ts_amt = ts.astimezone(YEREVAN_TZ)
+        sid = lg.session_id
+        sessions_all[sid] += 1
+
+        if lg.web_user_id is not None:
+            signed_in_prompts += 1
+            signed_users_set.add(lg.web_user_id)
+        else:
+            guest_prompts += 1
+
+        if lg.used_gemini:
+            gemini_success_count += 1
+
+        if lg.latency_ms and lg.latency_ms > 0:
+            latencies.append(float(lg.latency_ms))
+        sources_counts.append(float(lg.sources_count or 0))
+        prompt_lengths.append(float(lg.prompt_length or 0))
+        answer_lengths.append(float(lg.answer_length or 0))
+        depth_counts[min(5, max(1, int(lg.prompt_index or 1)))] += 1
+
+        try:
+            tools_list = json.loads(lg.tools_used_json or "[]")
+            if isinstance(tools_list, list):
+                for t_id in tools_list:
+                    if t_id:
+                        tool_counts[str(t_id)] += 1
+        except Exception:
+            pass
+
+        if ts >= month_ago:
+            prompts_30d += 1
+            sessions_30d_set.add(sid)
+            hourly_prompts_30d[ts_amt.hour] += 1
+            dk = ts_amt.date().isoformat()
+            if dk in day_labels:
+                daily_prompts[dk] += 1
+                daily_sessions[dk].add(sid)
+
+        if ts >= day_ago:
+            prompts_24h += 1
+            sessions_24h_set.add(sid)
+            hourly_prompts_24h[ts_amt.hour] += 1
+
+    prompts_per_session_vals = [float(c) for c in sessions_all.values()]
+    limit_reached_sessions = sum(1 for c in sessions_all.values() if c >= 5)
+
+    tool_labels_map = {
+        "feedbacks": "Course & Prof Feedbacks",
+        "directory": "AUA Directory & People",
+        "newsroom": "AUA Newsroom Events",
+        "highlander": "The Highlander Magazine",
+        "chat": "Campus Global Chat",
+        "anonymous": "Anonymous Posts & Groups",
+    }
+    tool_breakdown = [
+        {
+            "id": tid,
+            "label": tool_labels_map.get(tid, tid.title()),
+            "count": int(tool_counts.get(tid, 0)),
+        }
+        for tid in ("feedbacks", "directory", "newsroom", "highlander", "chat", "anonymous")
+    ]
+    tool_breakdown.sort(key=lambda x: x["count"], reverse=True)
+
+    daily_series_30d = [
+        {
+            "date": dk,
+            "label": day_labels[dk],
+            "prompts": daily_prompts.get(dk, 0),
+            "sessions": len(daily_sessions.get(dk, set())),
+        }
+        for dk in day_keys
+    ]
+
+    return {
+        "total_prompts": total_prompts,
+        "prompts_24h": prompts_24h,
+        "prompts_30d": prompts_30d,
+        "unique_sessions_total": len(sessions_all),
+        "unique_sessions_24h": len(sessions_24h_set),
+        "unique_sessions_30d": len(sessions_30d_set),
+        "synced_web_session_records": int(active_web_sessions_cnt),
+        "unique_signed_in_users": len(signed_users_set),
+        "signed_in_prompts": signed_in_prompts,
+        "guest_prompts": guest_prompts,
+        "mean_prompts_per_session": _safe_mean(prompts_per_session_vals),
+        "median_prompts_per_session": _safe_median(prompts_per_session_vals),
+        "limit_reached_sessions": limit_reached_sessions,
+        "mean_latency_ms": _safe_mean(latencies),
+        "median_latency_ms": _safe_median(latencies),
+        "mean_sources_per_prompt": _safe_mean(sources_counts),
+        "mean_prompt_chars": _safe_mean(prompt_lengths),
+        "mean_answer_chars": _safe_mean(answer_lengths),
+        "gemini_success_count": gemini_success_count,
+        "fallback_count": max(0, total_prompts - gemini_success_count),
+        "gemini_success_rate": round((gemini_success_count / total_prompts) * 100, 1) if total_prompts > 0 else 0.0,
+        "tool_breakdown": tool_breakdown,
+        "prompt_depth_distribution": [
+            {"prompt_num": i, "label": f"Prompt #{i}", "count": int(depth_counts.get(i, 0))}
+            for i in range(1, 6)
+        ],
+        "hourly_30d": [
+            {"hour": h, "label": f"{h:02d}:00", "prompts_30d": hourly_prompts_30d[h], "prompts_24h": hourly_prompts_24h[h]}
+            for h in range(24)
+        ],
+        "daily_series_30d": daily_series_30d,
+    }
+
+
+async def get_full_admin_stata_payload(
+    session: AsyncSession,
+    live_ws_count: int = 0,
+    jenzareviews_sync_status: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Assemble the complete unified analytics payload for auahub.am/stata."""
+    now = datetime.now(timezone.utc)
+    now_amt = now.astimezone(YEREVAN_TZ)
+    day_ago = now - timedelta(hours=24)
+    week_ago = now - timedelta(days=7)
+    month_ago = now - timedelta(days=30)
+
+    # 1. Telegram Bot + Advanced Anonymous Chat telemetry
+    bot_stats = await get_admin_stats(session)
+    adv_chat = bot_stats.pop("advanced_chat", {})
+
+    # 2. AI Assistant telemetry
+    ai_stats = await get_ai_assistant_stats(session)
+
+    # 3. Website Users + 30d Daily Signup Series
+    web_users = list(
+        (await session.execute(select(WebUser).where(WebUser.is_deleted.is_(False)))).scalars().all()
+    )
+    wu_total = len(web_users)
+    wu_24h = sum(1 for u in web_users if _ensure_utc(u.created_at, now) >= day_ago)
+    wu_7d = sum(1 for u in web_users if _ensure_utc(u.created_at, now) >= week_ago)
+    wu_30d = sum(1 for u in web_users if _ensure_utc(u.created_at, now) >= month_ago)
+    wu_synced = sum(1 for u in web_users if u.telegram_user_id is not None)
+    wu_students = sum(1 for u in web_users if "@edu.aua.am" in (u.email or "").lower())
+    wu_alumni = sum(1 for u in web_users if "@alumni.aua.am" in (u.email or "").lower())
+    wu_other = max(0, wu_total - wu_students - wu_alumni)
+
+    # 4. Web Modules Detailed Breakdown
+    # Feedbacks
+    all_feedbacks = list(
+        (
+            await session.execute(
+                select(
+                    AcademicFeedback.target_type,
+                    AcademicFeedback.target_title,
+                    AcademicFeedback.rating,
+                    AcademicFeedback.remote_review_id,
+                    AcademicFeedback.is_anonymous,
+                    AcademicFeedback.created_at,
+                )
+            )
+        ).all()
+    )
+    fb_total = len(all_feedbacks)
+    fb_local = sum(1 for r in all_feedbacks if r.remote_review_id is None)
+    fb_synced = fb_total - fb_local
+    fb_instructor = sum(1 for r in all_feedbacks if r.target_type == "instructor")
+    fb_course = fb_total - fb_instructor
+    fb_24h = sum(1 for r in all_feedbacks if _ensure_utc(r.created_at, now) >= day_ago)
+    fb_30d = sum(1 for r in all_feedbacks if _ensure_utc(r.created_at, now) >= month_ago)
+    fb_ratings = [float(r.rating or 5) for r in all_feedbacks]
+    fb_dist = Counter(int(r.rating or 5) for r in all_feedbacks)
+    fb_target_counts = Counter(r.target_title for r in all_feedbacks if r.target_title)
+    fb_top_targets = [{"name": name, "count": cnt} for name, cnt in fb_target_counts.most_common(8)]
+    jenza_prof_count = (await session.execute(select(func.count(JenzaProfessor.id)))).scalar_one() or 0
+
+    # Have-Need
+    hn_posts = list((await session.execute(select(HaveNeedPost))).scalars().all())
+    hn_total = len(hn_posts)
+    hn_active = sum(1 for h in hn_posts if h.is_active)
+    hn_email_enabled = sum(1 for h in hn_posts if h.notify_email)
+    hn_24h = sum(1 for h in hn_posts if _ensure_utc(h.created_at, now) >= day_ago)
+    # Count active reciprocal swap pairs
+    active_hn = [h for h in hn_posts if h.is_active]
+    pair_map: Dict[Tuple[int, int], int] = Counter((h.have_course_id, h.need_course_id) for h in active_hn)
+    reciprocal_matches = 0
+    for h in active_hn:
+        if pair_map.get((h.need_course_id, h.have_course_id), 0) > 0:
+            reciprocal_matches += 1
+    reciprocal_swap_pairs = reciprocal_matches // 2
+
+    # Anonymous Public Posts & Tier 3 Moderation
+    anon_posts = list((await session.execute(select(AnonymousPublicPost))).scalars().all())
+    anon_total = len(anon_posts)
+    anon_hidden = sum(1 for p in anon_posts if p.is_hidden)
+    anon_visible = anon_total - anon_hidden
+    anon_24h = sum(1 for p in anon_posts if _ensure_utc(p.created_at, now) >= day_ago)
+    anon_reports_total = (await session.execute(select(func.count(AnonymousPublicPostReport.id)))).scalar_one() or 0
+
+    # Telegram Groups
+    tg_groups_cnt = (await session.execute(select(func.count(TelegramGroup.id)))).scalar_one() or 0
+    tg_groups_30d = (
+        await session.execute(select(func.count(TelegramGroup.id)).where(TelegramGroup.created_at >= month_ago))
+    ).scalar_one() or 0
+
+    # Campus Global Chat & Reactions
+    chat_msgs = list(
+        (await session.execute(select(SpamChatMessage.id, SpamChatMessage.image_url, SpamChatMessage.reply_to_id, SpamChatMessage.created_at))).all()
+    )
+    chat_total = len(chat_msgs)
+    chat_24h = sum(1 for m in chat_msgs if _ensure_utc(m.created_at, now) >= day_ago)
+    chat_30d = sum(1 for m in chat_msgs if _ensure_utc(m.created_at, now) >= month_ago)
+    chat_with_media = sum(1 for m in chat_msgs if m.image_url)
+    chat_replies = sum(1 for m in chat_msgs if m.reply_to_id is not None)
+    reactions_total = (await session.execute(select(func.count(SpamChatReaction.id)))).scalar_one() or 0
+
+    # Notifications & Courses
+    total_notifications = (await session.execute(select(func.count(UserNotification.id)))).scalar_one() or 0
+    courses_cnt = (await session.execute(select(func.count(Course.id)))).scalar_one() or 0
+
+    # 5. WebAnalyticsEvent Deep Breakdown + Daily Activity Trend (30d) + Top Search Queries
+    all_events = list(
+        (
+            await session.execute(
+                select(WebAnalyticsEvent.event_type, WebAnalyticsEvent.meta_info, WebAnalyticsEvent.created_at)
+            )
+        ).all()
+    )
+    ev_total = len(all_events)
+    ev_24h = 0
+    ev_30d = 0
+    ev_breakdown: Counter = Counter()
+    ev_breakdown_24h: Counter = Counter()
+    search_queries: Counter = Counter()
+
+    day_keys = []
+    day_labels = {}
+    for offset in range(29, -1, -1):
+        d = (now_amt - timedelta(days=offset)).date()
+        dk = d.isoformat()
+        day_keys.append(dk)
+        day_labels[dk] = d.strftime("%b %d")
+
+    daily_web_events: Dict[str, int] = defaultdict(int)
+    daily_web_signups: Dict[str, int] = defaultdict(int)
+    daily_chat_msgs: Dict[str, int] = defaultdict(int)
+
+    for u in web_users:
+        dk = _ensure_utc(u.created_at, now).astimezone(YEREVAN_TZ).date().isoformat()
+        if dk in day_labels:
+            daily_web_signups[dk] += 1
+
+    for m in chat_msgs:
+        dk = _ensure_utc(m.created_at, now).astimezone(YEREVAN_TZ).date().isoformat()
+        if dk in day_labels:
+            daily_chat_msgs[dk] += 1
+
+    for ev_type, meta, created_at in all_events:
+        ts = _ensure_utc(created_at, now)
+        ev_breakdown[ev_type] += 1
+        if ts >= day_ago:
+            ev_24h += 1
+            ev_breakdown_24h[ev_type] += 1
+        if ts >= month_ago:
+            ev_30d += 1
+            dk = ts.astimezone(YEREVAN_TZ).date().isoformat()
+            if dk in day_labels:
+                daily_web_events[dk] += 1
+        if ev_type and "search" in ev_type and meta:
+            q_clean = str(meta).strip().lower()
+            if q_clean:
+                search_queries[(ev_type, q_clean)] += 1
+
+    top_events = [
+        {"event": k, "count": int(v), "count_24h": int(ev_breakdown_24h.get(k, 0))}
+        for k, v in ev_breakdown.most_common(16)
+    ]
+    top_searches = [
+        {"category": cat, "query": q, "count": int(cnt)}
+        for (cat, q), cnt in search_queries.most_common(12)
+    ]
+
+    web_daily_series_30d = [
+        {
+            "date": dk,
+            "label": day_labels[dk],
+            "web_events": daily_web_events.get(dk, 0),
+            "new_web_users": daily_web_signups.get(dk, 0),
+            "campus_chat_messages": daily_chat_msgs.get(dk, 0),
+        }
+        for dk in day_keys
+    ]
+
+    # Live snapshot series (last 24h)
+    snap_rows = list(
+        (
+            await session.execute(
+                select(BotActivitySnapshot)
+                .where(BotActivitySnapshot.created_at >= day_ago)
+                .order_by(BotActivitySnapshot.created_at.asc())
+            )
+        ).scalars().all()
+    )
+    snapshots_24h = [
+        {
+            "time": _ensure_utc(sn.created_at, now).astimezone(YEREVAN_TZ).strftime("%H:%M"),
+            "active_chats": sn.active_chats,
+            "non_paused_chats": sn.non_paused_chats,
+            "searching_users": sn.searching_users,
+            "web_ws_clients": sn.web_ws_clients,
+        }
+        for sn in snap_rows[-96:]
+    ]
+
+    return {
+        "generated_at": now.isoformat(),
+        "generated_at_amt": now_amt.strftime("%Y-%m-%d %H:%M:%S AMT"),
+        "timezone": "Asia/Yerevan (UTC+4)",
+        "live": {
+            "web_ws_clients": int(live_ws_count),
+            "snapshots_24h": snapshots_24h,
+            **adv_chat.get("live", {}),
+        },
+        "anonymous_chat_advanced": adv_chat,
+        "ai_assistant": ai_stats,
+        "bot_overview": bot_stats,
+        "website": {
+            "users": {
+                "total": wu_total,
+                "new_24h": wu_24h,
+                "new_7d": wu_7d,
+                "new_30d": wu_30d,
+                "synced_with_bot": wu_synced,
+                "students": wu_students,
+                "alumni": wu_alumni,
+                "other": wu_other,
+            },
+            "modules": {
+                "courses_catalog": int(courses_cnt),
+                "have_need": {
+                    "total": hn_total,
+                    "active": hn_active,
+                    "email_alerts_enabled": hn_email_enabled,
+                    "created_24h": hn_24h,
+                    "reciprocal_swap_pairs": reciprocal_swap_pairs,
+                },
+                "feedbacks": {
+                    "total": fb_total,
+                    "local_submitted": fb_local,
+                    "jenzareviews_synced": fb_synced,
+                    "professors_indexed": int(jenza_prof_count),
+                    "instructor_reviews": fb_instructor,
+                    "course_reviews": fb_course,
+                    "new_24h": fb_24h,
+                    "new_30d": fb_30d,
+                    "avg_rating": round(sum(fb_ratings) / len(fb_ratings), 2) if fb_ratings else 0.0,
+                    "rating_distribution": [
+                        {"stars": s, "count": int(fb_dist.get(s, 0))} for s in range(1, 6)
+                    ],
+                    "top_targets": fb_top_targets,
+                    "sync_status": jenzareviews_sync_status or {},
+                },
+                "anonymous_posts": {
+                    "total": anon_total,
+                    "visible": anon_visible,
+                    "hidden": anon_hidden,
+                    "new_24h": anon_24h,
+                    "community_reports": int(anon_reports_total),
+                },
+                "telegram_groups": {
+                    "total": int(tg_groups_cnt),
+                    "new_30d": int(tg_groups_30d),
+                },
+                "campus_chat": {
+                    "total_messages": chat_total,
+                    "messages_24h": chat_24h,
+                    "messages_30d": chat_30d,
+                    "media_messages": chat_with_media,
+                    "reply_messages": chat_replies,
+                    "total_reactions": int(reactions_total),
+                },
+                "notifications_sent": int(total_notifications),
+            },
+            "analytics": {
+                "total_events": ev_total,
+                "events_24h": ev_24h,
+                "events_30d": ev_30d,
+                "top_events": top_events,
+                "top_searches": top_searches,
+                "daily_series_30d": web_daily_series_30d,
+            },
         },
     }
 

@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="robots" content="noindex, nofollow" />
+  <title>403 Restricted — AUA Hub /stata</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet" />
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      min-height: 100vh;
+      background:
+        radial-gradient(circle at 20% 20%, rgba(248, 113, 113, 0.14), transparent 45%),
+        radial-gradient(circle at 80% 80%, rgba(56, 189, 248, 0.12), transparent 50%),
+        #050609;
+      color: #f8fafc;
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+      display: grid;
+      place-items: center;
+      padding: 24px;
+    }
+    .card {
+      width: 100%;
+      max-width: 460px;
+      background: rgba(11, 17, 32, 0.78);
+      border: 1px solid rgba(248, 113, 113, 0.35);
+      border-radius: 20px;
+      padding: 36px 32px;
+      backdrop-filter: blur(20px);
+      box-shadow: 0 24px 70px rgba(0, 0, 0, 0.65), 0 0 40px rgba(248, 113, 113, 0.08);
+      text-align: center;
+    }
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 14px;
+      border-radius: 999px;
+      background: rgba(248, 113, 113, 0.12);
+      border: 1px solid rgba(248, 113, 113, 0.38);
+      color: #fca5a5;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.78rem;
+      font-weight: 700;
+      margin-bottom: 18px;
+    }
+    h1 {
+      font-size: 1.55rem;
+      font-weight: 800;
+      letter-spacing: -0.02em;
+      margin-bottom: 12px;
+    }
+    p {
+      color: #94a3b8;
+      font-size: 0.94rem;
+      line-height: 1.6;
+      margin-bottom: 26px;
+    }
+    code {
+      font-family: 'JetBrains Mono', monospace;
+      color: #bae6fd;
+      background: rgba(56, 189, 248, 0.1);
+      padding: 2px 6px;
+      border-radius: 6px;
+      font-size: 0.85em;
+    }
+    .actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px;
+      justify-content: center;
+    }
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      padding: 11px 18px;
+      border-radius: 12px;
+      font-size: 0.9rem;
+      font-weight: 600;
+      text-decoration: none;
+      cursor: pointer;
+      border: 1px solid rgba(56, 189, 248, 0.35);
+      background: rgba(56, 189, 248, 0.12);
+      color: #e0f2fe;
+      transition: transform 0.15s ease, border-color 0.15s ease, background 0.15s ease;
+    }
+    .btn:hover {
+      transform: translateY(-1px);
+      border-color: rgba(125, 211, 252, 0.7);
+      background: rgba(56, 189, 248, 0.22);
+    }
+    .btn-muted {
+      border-color: rgba(148, 163, 184, 0.28);
+      background: rgba(15, 23, 42, 0.7);
+      color: #cbd5e1;
+    }
+    .btn-muted:hover {
+      border-color: rgba(148, 163, 184, 0.55);
+      background: rgba(30, 41, 59, 0.85);
+    }
+  </style>
+</head>
+<body>
+  <main class="card">
+    <div class="badge">HTTP 403 · ACCESS RESTRICTED</div>
+    <h1>Administrator Console Only</h1>
+    <p>
+      The telemetry dashboard at <code>/stata</code> is restricted exclusively to the
+      platform administrator account (<code>gor_sargsyan@edu.aua.am</code>).
+    </p>
+    <div class="actions">
+      <a class="btn" href="/">Return to AUA Hub</a>
+      <button class="btn btn-muted" id="switchAccountBtn" type="button">Switch Account</button>
+    </div>
+  </main>
+  <script>
+    document.getElementById("switchAccountBtn").addEventListener("click", async function () {
+      try {
+        localStorage.removeItem("aua_hub_token");
+        await fetch("/api/auth/logout", { method: "POST", credentials: "same-origin" });
+      } catch (e) {}
+      window.location.href = "/stata";
+    });
+  </script>
+</body>
+</html>
+

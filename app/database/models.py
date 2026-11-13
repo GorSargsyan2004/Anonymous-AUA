@@ -964,5 +964,62 @@ class WebUserAIChatSession(Base):
     web_user = relationship("WebUser", foreign_keys=[web_user_id])
 
 
+class BotActivitySnapshot(Base):
+    """Periodic time-series snapshot of live anonymous chat concurrency, search queue, and web WS traffic."""
+    __tablename__ = "bot_activity_snapshots"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    active_chats: Mapped[int] = mapped_column(
+        Integer, default=0, nullable=False, server_default=text("0")
+    )
+    non_paused_chats: Mapped[int] = mapped_column(
+        Integer, default=0, nullable=False, server_default=text("0")
+    )
+    searching_users: Mapped[int] = mapped_column(
+        Integer, default=0, nullable=False, server_default=text("0")
+    )
+    web_ws_clients: Mapped[int] = mapped_column(
+        Integer, default=0, nullable=False, server_default=text("0")
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False, index=True
+    )
+
+
+class AIUsageLog(Base):
+    """Privacy-preserving telemetry log for every AUA Hub AI Assistant prompt invocation."""
+    __tablename__ = "ai_usage_logs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    web_user_id: Mapped[Optional[int]] = mapped_column(
+        Integer, ForeignKey("web_users.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    session_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    prompt_index: Mapped[int] = mapped_column(
+        Integer, default=1, nullable=False, server_default=text("1")
+    )
+    tools_used_json: Mapped[str] = mapped_column(
+        Text, default="[]", nullable=False, server_default=text("'[]'")
+    )
+    sources_count: Mapped[int] = mapped_column(
+        Integer, default=0, nullable=False, server_default=text("0")
+    )
+    latency_ms: Mapped[int] = mapped_column(
+        Integer, default=0, nullable=False, server_default=text("0")
+    )
+    used_gemini: Mapped[bool] = mapped_column(
+        Boolean, default=True, nullable=False, server_default=text("true")
+    )
+    prompt_length: Mapped[int] = mapped_column(
+        Integer, default=0, nullable=False, server_default=text("0")
+    )
+    answer_length: Mapped[int] = mapped_column(
+        Integer, default=0, nullable=False, server_default=text("0")
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False, index=True
+    )
+
+
 
 

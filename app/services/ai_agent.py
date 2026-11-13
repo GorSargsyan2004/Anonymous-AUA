@@ -41,6 +41,7 @@ except ImportError:
 from app.config import settings
 from app.database.models import (
     AcademicFeedback,
+    AIUsageLog,
     AnonymousPublicPost,
     Course,
     HaveNeedPost,
@@ -1430,6 +1431,7 @@ class AUAAssistantOrchestrator:
         web_user_id: Optional[int] = None,
     ) -> Dict[str, Any]:
         """Run tool selection, parallel RAG retrieval, and Gemini synthesis."""
+        started_ts = time.monotonic()
         plan = classify_tools_heuristic(user_prompt)
 
         executed_steps: List[Dict[str, str]] = []
@@ -1544,11 +1546,13 @@ class AUAAssistantOrchestrator:
                 seen_src.add(k)
                 unique_sources.append(s)
 
+        self._last_used_gemini = False
         answer_markdown = await self._synthesize_with_gemini(
             user_prompt=user_prompt,
             chat_state=chat_state,
             retrieved_context=aggregated_context,
         )
+        used_gemini = bool(getattr(self, "_last_used_gemini", False))
 
         # Record turns and increment prompt counter
         now_iso = datetime.now(timezone.utc).isoformat()
@@ -1567,6 +1571,26 @@ class AUAAssistantOrchestrator:
         chat_state.updated_at = time.time()
         if web_user_id:
             await persist_ai_session(db_session, web_user_id, chat_state)
+
+        # Record privacy-preserving AI telemetry log
+        try:
+            latency_ms = max(1, int((time.monotonic() - started_ts) * 1000))
+            tool_ids = [s.get("id") for s in executed_steps if s.get("id") and s.get("id") != "synthesize"]
+            usage_log = AIUsageLog(
+                web_user_id=web_user_id,
+                session_id=str(chat_state.session_id)[:64],
+                prompt_index=int(chat_state.prompts_used),
+                tools_used_json=json.dumps(tool_ids),
+                sources_count=len(unique_sources),
+                latency_ms=latency_ms,
+                used_gemini=used_gemini,
+                prompt_length=len(user_prompt),
+                answer_length=len(answer_markdown),
+            )
+            db_session.add(usage_log)
+            await db_session.commit()
+        except Exception as exc:
+            logger.debug("AI usage telemetry log skipped: %s", exc)
 
         return {
             "ok": True,
@@ -1614,10 +1638,12 @@ class AUAAssistantOrchestrator:
                     config=config,
                 )
                 if response and response.text:
+                    self._last_used_gemini = True
                     return response.text.strip()
             except Exception as exc:
                 logger.warning("Gemini synthesis fallback triggered: %s", exc)
 
+        self._last_used_gemini = False
         return self._synthesize_fallback(user_prompt, retrieved_context)
 
     def _synthesize_fallback(

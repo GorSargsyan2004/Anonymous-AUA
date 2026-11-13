@@ -1,0 +1,210 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="robots" content="noindex, nofollow" />
+  <title>Admin Sign In — AUA Hub /stata</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet" />
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      min-height: 100vh;
+      background:
+        radial-gradient(circle at 18% 18%, rgba(56, 189, 248, 0.16), transparent 45%),
+        radial-gradient(circle at 82% 78%, rgba(14, 165, 233, 0.14), transparent 50%),
+        #050609;
+      color: #f8fafc;
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+      display: grid;
+      place-items: center;
+      padding: 24px;
+    }
+    .gate-card {
+      width: 100%;
+      max-width: 430px;
+      background: rgba(11, 17, 32, 0.78);
+      border: 1px solid rgba(56, 189, 248, 0.28);
+      border-radius: 22px;
+      padding: 34px 30px;
+      backdrop-filter: blur(22px);
+      box-shadow: 0 24px 80px rgba(0, 0, 0, 0.7), 0 0 42px rgba(56, 189, 248, 0.12);
+    }
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 12px;
+      border-radius: 999px;
+      background: rgba(56, 189, 248, 0.12);
+      border: 1px solid rgba(56, 189, 248, 0.35);
+      color: #7dd3fc;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.75rem;
+      font-weight: 700;
+      margin-bottom: 16px;
+    }
+    h1 {
+      font-size: 1.5rem;
+      font-weight: 800;
+      letter-spacing: -0.02em;
+      margin-bottom: 8px;
+    }
+    .sub {
+      color: #94a3b8;
+      font-size: 0.9rem;
+      line-height: 1.5;
+      margin-bottom: 24px;
+    }
+    .field {
+      margin-bottom: 16px;
+    }
+    label {
+      display: block;
+      font-size: 0.8rem;
+      font-weight: 600;
+      color: #bae6fd;
+      margin-bottom: 7px;
+      letter-spacing: 0.02em;
+    }
+    input {
+      width: 100%;
+      padding: 12px 14px;
+      border-radius: 12px;
+      background: rgba(5, 9, 18, 0.88);
+      border: 1px solid rgba(56, 189, 248, 0.24);
+      color: #ffffff;
+      font-size: 0.95rem;
+      outline: none;
+      transition: border-color 0.18s ease, box-shadow 0.18s ease;
+    }
+    input:focus {
+      border-color: #38bdf8;
+      box-shadow: 0 0 0 3px rgba(56, 189, 248, 0.18);
+    }
+    .btn-submit {
+      width: 100%;
+      margin-top: 8px;
+      padding: 13px 18px;
+      border: none;
+      border-radius: 12px;
+      background: linear-gradient(135deg, #0284c7, #38bdf8);
+      color: #ffffff;
+      font-size: 0.95rem;
+      font-weight: 700;
+      cursor: pointer;
+      box-shadow: 0 0 24px rgba(56, 189, 248, 0.35);
+      transition: transform 0.15s ease, opacity 0.15s ease;
+    }
+    .btn-submit:hover { transform: translateY(-1px); }
+    .btn-submit:disabled { opacity: 0.6; cursor: wait; transform: none; }
+    .status {
+      margin-top: 14px;
+      font-size: 0.86rem;
+      line-height: 1.45;
+      min-height: 20px;
+      color: #94a3b8;
+    }
+    .status.error { color: #f87171; }
+    .status.ok { color: #34d399; }
+    .footer-link {
+      display: inline-block;
+      margin-top: 18px;
+      font-size: 0.84rem;
+      color: #7dd3fc;
+      text-decoration: none;
+    }
+    .footer-link:hover { text-decoration: underline; }
+  </style>
+</head>
+<body>
+  <main class="gate-card">
+    <div class="pill">AUA HUB · /STATA TELEMETRY</div>
+    <h1>Administrator Sign In</h1>
+    <p class="sub">
+      Authenticate with your authorized AUA Hub administrator account to unlock full platform &amp; bot analytics.
+    </p>
+    <form id="adminGateForm">
+      <div class="field">
+        <label for="gateEmail">Admin Email</label>
+        <input id="gateEmail" type="email" autocomplete="username" placeholder="gor_sargsyan@edu.aua.am" required />
+      </div>
+      <div class="field">
+        <label for="gatePassword">Password</label>
+        <input id="gatePassword" type="password" autocomplete="current-password" placeholder="Enter your AUA Hub password" required />
+      </div>
+      <button id="gateSubmitBtn" class="btn-submit" type="submit">Unlock Telemetry Console</button>
+      <div id="gateStatus" class="status" role="status" aria-live="polite"></div>
+    </form>
+    <a class="footer-link" href="/">&larr; Back to AUA Hub</a>
+  </main>
+
+  <script>
+    (async function checkExistingToken() {
+      const statusEl = document.getElementById("gateStatus");
+      const token = localStorage.getItem("aua_hub_token");
+      if (!token) return;
+      try {
+        statusEl.textContent = "Checking active session...";
+        const res = await fetch("/api/auth/me", {
+          headers: { Authorization: "Bearer " + token },
+          credentials: "same-origin",
+        });
+        if (!res.ok) {
+          statusEl.textContent = "";
+          return;
+        }
+        const data = await res.json();
+        if (data.authenticated) {
+          window.location.reload();
+        } else {
+          statusEl.textContent = "";
+        }
+      } catch (e) {
+        statusEl.textContent = "";
+      }
+    })();
+
+    document.getElementById("adminGateForm").addEventListener("submit", async function (e) {
+      e.preventDefault();
+      const email = document.getElementById("gateEmail").value.trim();
+      const password = document.getElementById("gatePassword").value;
+      const btn = document.getElementById("gateSubmitBtn");
+      const statusEl = document.getElementById("gateStatus");
+
+      btn.disabled = true;
+      statusEl.className = "status";
+      statusEl.textContent = "Verifying credentials...";
+
+      try {
+        const res = await fetch("/api/auth/login", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          credentials: "same-origin",
+          body: JSON.stringify({ email, password }),
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          statusEl.className = "status error";
+          statusEl.textContent = data.error || "Sign-in failed.";
+          btn.disabled = false;
+          return;
+        }
+        if (data.token) {
+          localStorage.setItem("aua_hub_token", data.token);
+        }
+        statusEl.className = "status ok";
+        statusEl.textContent = "Authenticated. Loading dashboard...";
+        window.location.reload();
+      } catch (err) {
+        statusEl.className = "status error";
+        statusEl.textContent = "Network error while signing in.";
+        btn.disabled = false;
+      }
+    });
+  </script>
+</body>
+</html>
+

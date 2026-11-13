@@ -42,17 +42,29 @@ router.callback_query.filter(IsAdminFilter())
 
 @router.message(Command("stata", "stats"))
 async def handle_stata(message: Message) -> None:
-    """Display real-time aggregated metrics and backup status for Anonymous AUA Bot."""
+    """Display real-time aggregated metrics, advanced chat analytics, and backup status for Anonymous AUA Bot."""
     async with get_db_session() as session:
         stats = await get_admin_stats(session)
+        web_stats = await get_web_admin_stats(session)
+
+    adv = stats.get("advanced_chat", {})
+    w24 = adv.get("window_24h", {})
+    w30 = adv.get("window_30d", {})
+    wall = adv.get("window_all_time", {})
+    peak = adv.get("peak_hours", {})
+    top_peaks = peak.get("top_by_initiated_30d", [])[:3]
+    peak_str = ", ".join(
+        f"{p['window_label'].replace(' AMT', '')} ({p['initiated_30d']})"
+        for p in top_peaks
+    ) or "N/A"
+    ai = web_stats.get("ai_assistant", {})
 
     backup_info = get_backup_metadata()
     if backup_info["exists"]:
         latest_kb = backup_info["latest_size_bytes"] / 1024
         backup_str = (
             f"✅ Active ({backup_info['latest_modified']})\n"
-            f"• Primary File: <code>backups/latest.sql.gz</code> ({latest_kb:.1f} KB)\n"
-            f"• Rolling Snapshots: <b>{backup_info['total_snapshots']}</b>"
+            f"• Primary: <code>backups/latest.sql.gz</code> ({latest_kb:.1f} KB) | Snapshots: <b>{backup_info['total_snapshots']}</b>"
         )
     else:
         backup_str = "⚠️ No backup snapshot found yet (run /backup)"
@@ -63,63 +75,51 @@ async def handle_stata(message: Message) -> None:
         else ""
     )
 
+    def _fmt_dur(sec: float) -> str:
+        s = int(round(sec or 0))
+        if s < 60:
+            return f"{s}s"
+        if s < 3600:
+            return f"{s // 60}m {s % 60}s"
+        return f"{s // 3600}h {(s % 3600) // 60}m"
+
     dashboard = (
         "📊 <b>Anonymous AUA — Administrator Dashboard</b> 🎭\n"
         "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
         f"👥 <b>User Base & Reach:</b>\n"
         f"• Total Registered: <b>{stats['total_users']}</b>\n"
-        f"• 💬 Active Bot Chats: <b>{stats['active_chat_users']}</b> <i>(have not blocked/deleted bot)</i>\n"
-        f"• 🚫 Blocked / Left Bot: <b>{stats['blocked_bot_users']}</b>\n"
-        f"• 🔨 Banned Accounts: <b>{stats['banned_count']}</b>\n"
-        f"• 🔍 Actively Searching: <b>{stats['searching_users']}</b>\n"
-        f"• ⚡ Active Match Sessions: <b>{stats['active_chats']}</b>\n\n"
-        f"🎓 <b>AUA Verification:</b>\n"
-        f"• Total Verified: <b>{stats['total_verified']}</b>\n"
-        f"  ├ 🎓 Active Students: <b>{stats['verified_students']}</b>\n"
-        f"  ├ 🎓🏛️ Alumni / Graduates: <b>{stats['verified_alumni']}</b>\n"
-        f"  ├ ⚠️ Expired (Sep 1): <b>{stats['verified_expired']}</b>\n"
-        f"  └ 🔒 Gender Confirmed: <b>{stats['gender_verified']}</b>\n"
-        f"• ❌ Unverified Users: <b>{stats['unverified_count']}</b>\n"
-        f"• ⚠️ Gender Conflicts: <b>{stats['gender_mismatch_count']}</b>{appeal_note}\n\n"
-        f"🚻 <b>Sex Breakdown:</b>\n"
-        f"• Male: <b>{stats['male_count']}</b>\n"
-        f"• Female: <b>{stats['female_count']}</b>\n"
-        f"• Unfinished Setup: <b>{stats['unset_sex_count']}</b>\n\n"
-        f"🧭 <b>Orientation Breakdown:</b>\n"
-        f"• Straight: <b>{stats['straight_count']}</b>\n"
-        f"• Bisexual: <b>{stats.get('bisexual_count', 0)}</b>\n"
-        f"• Lesbian: <b>{stats['lesbian_count']}</b>\n"
-        f"• Gay: <b>{stats['gay_count']}</b>\n\n"
-        f"⭐ <b>All-Time Feedbacks:</b>\n"
-        f"• 👍 Likes: <b>{stats['likes_count']}</b>\n"
-        f"• 👎 Dislikes: <b>{stats['dislikes_count']}</b>\n"
-        f"• 🚫 Spams: <b>{stats['spam_count']}</b>\n"
-        f"• 🏫 Not from AUA: <b>{stats['not_aua_count']}</b>\n\n"
-        f"💡 <b>Bot Suggestions:</b>\n"
-        f"• Total Received: <b>{stats.get('total_suggestions', 0)}</b>\n"
-        f"• ✅ Replied: <b>{stats.get('replied_suggestions', 0)}</b>\n"
-        f"• ⏳ Pending: <b>{stats.get('pending_suggestions', 0)}</b>\n\n"
-        f"🚨 <b>Reports Summary:</b>\n"
-        f"• Total Filed: <b>{stats['total_reports']}</b>\n"
-        f"• ✅ Resolved: <b>{stats['resolved_reports']}</b>\n"
-        f"• ⏳ Pending: <b>{stats['pending_reports']}</b>"
-        + (" <i>(Review with /reports)</i>" if stats.get("pending_reports", 0) > 0 else "")
-        + "\n\n"
-        f"📬 <b>Anonymous Inboxes & Q&A (/link):</b>\n"
-        f"• 🔗 Users Generated Links: <b>{stats['inbox_users_count']}</b> <i>({stats['active_inboxes_count']} active)</i>\n"
-        f"• 💬 Q&A Messages Sent: <b>{stats['total_inbox_messages']}</b>\n"
-        f"• ✍️ Answered / Replied: <b>{stats['replied_inbox_messages']}</b> <i>({stats['inbox_reply_rate']}%)</i>\n"
-        f"• 🔄 Total Replies Relayed: <b>{stats['total_inbox_replies']}</b>\n\n"
-        f"👥 <b>Direct Chat Invites (/invite):</b>\n"
-        f"• 🔗 Total Invites Created: <b>{stats['total_chat_invites']}</b>\n"
-        f"• 🤝 Connected Sessions: <b>{stats['used_chat_invites']}</b> <i>({stats['active_chat_invites']} active)</i>\n\n"
+        f"• 💬 Active Bot Chats: <b>{stats['active_chat_users']}</b> | 🚫 Blocked Bot: <b>{stats['blocked_bot_users']}</b> | 🔨 Banned: <b>{stats['banned_count']}</b>\n"
+        f"• 🔍 Searching Queue: <b>{stats['searching_users']}</b> | ⚡ Live Active Chats: <b>{stats['active_chats']}</b>\n\n"
+        f"📈 <b>Anonymous Chat Analytics (AMT UTC+4):</b>\n"
+        f"• <b>Chats Initiated:</b> <b>{w24.get('initiated', 0)}</b> (24h) | <b>{w30.get('initiated', 0)}</b> (30d) | <b>{wall.get('initiated', 0)}</b> (Total)\n"
+        f"• <b>Active Sessions Mean Counter:</b> <b>{w24.get('concurrent_mean', 0)}</b> (24h) | <b>{w30.get('concurrent_mean', 0)}</b> (30d)\n"
+        f"• <b>Active Sessions Median:</b> <b>{w24.get('concurrent_median', 0)}</b> (24h) | <b>{w30.get('concurrent_median', 0)}</b> (30d)\n"
+        f"• <b>Peak Concurrency:</b> <b>{w24.get('concurrent_peak', 0)}</b> (24h) | <b>{w30.get('concurrent_peak', 0)}</b> (30d)\n"
+        f"• <b>Msgs / Chat (Mean | Median):</b> {w30.get('messages_mean', 0)} | {w30.get('messages_median', 0)} (30d)\n"
+        f"• <b>Duration (Mean | Median):</b> {_fmt_dur(w30.get('duration_mean_sec', 0))} | {_fmt_dur(w30.get('duration_median_sec', 0))} (30d)\n"
+        f"• 🔥 <b>Most Active Hours (30d):</b> {peak_str} AMT\n\n"
+        f"✦ <b>AI Assistant Usage:</b>\n"
+        f"• Prompts: <b>{ai.get('prompts_24h', 0)}</b> (24h) | <b>{ai.get('prompts_30d', 0)}</b> (30d) | <b>{ai.get('total_prompts', 0)}</b> (Total)\n"
+        f"• Sessions: <b>{ai.get('unique_sessions_total', 0)}</b> | Mean/Sess: <b>{ai.get('mean_prompts_per_session', 0)}</b> | Avg Latency: <b>{ai.get('mean_latency_ms', 0)}ms</b>\n\n"
+        f"🎓 <b>Verification &amp; Demographics:</b>\n"
+        f"• Verified: <b>{stats['total_verified']}</b> (🎓 Students: {stats['verified_students']} | 🏛️ Alumni: {stats['verified_alumni']} | ⚠️ Expired: {stats['verified_expired']} | 🔒 Gender OK: {stats['gender_verified']})\n"
+        f"• Unverified: <b>{stats['unverified_count']}</b> | Conflicts: <b>{stats['gender_mismatch_count']}</b>{appeal_note}\n"
+        f"• Sex: M <b>{stats['male_count']}</b> / F <b>{stats['female_count']}</b> / Unset <b>{stats['unset_sex_count']}</b>\n"
+        f"• Orientation: Straight <b>{stats['straight_count']}</b> | Bi <b>{stats.get('bisexual_count', 0)}</b> | Lesbian <b>{stats['lesbian_count']}</b> | Gay <b>{stats['gay_count']}</b>\n\n"
+        f"⭐ <b>Feedback, Reports &amp; Suggestions:</b>\n"
+        f"• Ratings: 👍 {stats['likes_count']} | 👎 {stats['dislikes_count']} | 🚫 {stats['spam_count']} | 🏫 {stats['not_aua_count']}\n"
+        f"• Reports: {stats['total_reports']} total ({stats['pending_reports']} pending) | Suggestions: {stats.get('total_suggestions', 0)} ({stats.get('pending_suggestions', 0)} pending)\n\n"
+        f"📬 <b>/link Inbox &amp; /invite Links:</b>\n"
+        f"• Inbox Owners: <b>{stats['inbox_users_count']}</b> ({stats['active_inboxes_count']} active) | Q&amp;As: <b>{stats['total_inbox_messages']}</b> ({stats['inbox_reply_rate']}% replied)\n"
+        f"• Invites: <b>{stats['total_chat_invites']}</b> created | <b>{stats['used_chat_invites']}</b> connected ({stats['active_chat_invites']} active)\n\n"
         f"💾 <b>Database Backups:</b>\n"
         f"{backup_str}\n"
         "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        "💡 <i>Tip: Use /reports to review pending reports, /backup for snapshots.</i>"
+        "📈 <b>Full Visual Charts Dashboard:</b> <a href=\"https://auahub.am/stata\">auahub.am/stata</a>\n"
+        "💡 <i>Tip: Use /stats_web for website metrics, /reports for pending reports, /backup for snapshots.</i>"
     )
 
-    await message.answer(dashboard, parse_mode="HTML")
+    await message.answer(dashboard, parse_mode="HTML", disable_web_page_preview=True)
 
 
 @router.message(Command("stats_web", "web_stats"))
@@ -131,6 +131,7 @@ async def handle_stats_web(message: Message) -> None:
     u = stats["users"]
     c = stats["content"]
     a = stats["analytics"]
+    ai = stats.get("ai_assistant", {})
 
     event_labels = {
         "click_free_rooms": "🏫 Free Rooms Lookups",
@@ -143,6 +144,9 @@ async def handle_stats_web(message: Message) -> None:
         "join_group": "🔗 Group Invites Clicked",
         "search_courses": "📚 Course Swap Searches",
         "view_feedbacks": "⭐ Instructor Ratings Views",
+        "click_ai_assistant": "✦ AI Assistant Views",
+        "click_partner_findaua": "🐻 FindAUA Partner Clicks",
+        "click_partner_jenzareviews": "🎓 JenzaReviews Partner Clicks",
     }
     events_lines = []
     for ev, count in a["event_breakdown"].items():
@@ -161,6 +165,10 @@ async def handle_stats_web(message: Message) -> None:
         f"  └ 💼 Staff/Other (@aua.am): <b>{u['other']}</b>\n"
         f"• 🔗 Synced with Telegram Bot: <b>{u['synced']}</b>\n"
         f"• 📈 Growth: <b>+{u['new_24h']}</b> last 24h | <b>+{u['new_7d']}</b> last 7d\n\n"
+        "✦ <b>AI Assistant Telemetry:</b>\n"
+        f"• Total Prompts: <b>{ai.get('total_prompts', 0)}</b> (24h: <b>{ai.get('prompts_24h', 0)}</b> | 30d: <b>{ai.get('prompts_30d', 0)}</b>)\n"
+        f"• Sessions: <b>{ai.get('unique_sessions_total', 0)}</b> | Mean Prompts/Session: <b>{ai.get('mean_prompts_per_session', 0)}</b> | Median: <b>{ai.get('median_prompts_per_session', 0)}</b>\n"
+        f"• Gemini Rate: <b>{ai.get('gemini_success_rate', 0)}%</b> | Mean Latency: <b>{ai.get('mean_latency_ms', 0)}ms</b>\n\n"
         "📦 <b>Web Platform Content & Activity:</b>\n"
         f"• 🎭 Anonymous Public Posts: <b>{c['anon_posts']}</b>\n"
         f"• 📬 Total Personal Inbox Q&As: <b>{c['inbox_messages']}</b>\n"
@@ -172,7 +180,7 @@ async def handle_stats_web(message: Message) -> None:
         f"• Total Tracked Clicks: <b>{a['total_clicks']}</b> <i>(+{a['clicks_24h']} in last 24h)</i>\n"
         f"{events_str}\n"
         "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        "🌐 <b>Live Domain:</b> <a href=\"https://auahub.am\">auahub.am</a>"
+        "📊 <b>Interactive Charts Dashboard:</b> <a href=\"https://auahub.am/stata\">auahub.am/stata</a>"
     )
 
     await message.answer(dashboard, parse_mode="HTML", disable_web_page_preview=True)

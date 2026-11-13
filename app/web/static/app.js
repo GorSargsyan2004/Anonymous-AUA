@@ -877,8 +877,12 @@ function renderClickableUserNameHtml(userObj, extraClass = "") {
     const unreadCount = state.unreadNotificationCount || 0;
     const badgeCls = unreadCount > 0 ? "" : " hidden";
     const badgeTxt = unreadCount > 99 ? "99+" : String(unreadCount);
+    const stataBtnHtml = state.user?.is_stata_admin
+      ? `<a href="/stata" class="btn-glass btn-sm" title="Platform &amp; Bot Telemetry (/stata)" style="display:inline-flex;align-items:center;gap:5px;text-decoration:none;border-color:rgba(56,189,248,0.45);color:#7DD3FC;padding:6px 10px;font-size:0.78rem;font-weight:700;"><span>📊</span><span>/stata</span></a>`
+      : "";
 
     container.innerHTML = `
+    ${stataBtnHtml}
     <button
       id="navbarNotifBtn"
       class="navbar-notif-btn"

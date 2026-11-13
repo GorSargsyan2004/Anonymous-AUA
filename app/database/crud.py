@@ -1,6 +1,8 @@
 """Reusable database CRUD queries and operations."""
 
+from collections import defaultdict
 from datetime import datetime, timedelta, timezone
+import statistics
 from typing import Any, Dict, List, Optional, Tuple
 from sqlalchemy import and_, delete, desc, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -10,6 +12,7 @@ import secrets
 from app.config import settings
 from app.database.models import (
     AnonymousInbox,
+    BotActivitySnapshot,
     ChatInvite,
     ChatMessageMap,
     ChatSession,
@@ -1208,6 +1211,8 @@ async def get_admin_stats(session: AsyncSession) -> Dict[str, Any]:
         )
     ).scalar_one() or 0
 
+    advanced_chat = await get_advanced_bot_chat_stats(session)
+
     return {
         "total_users": total_users,
         "banned_count": banned_count,
@@ -1249,6 +1254,424 @@ async def get_admin_stats(session: AsyncSession) -> Dict[str, Any]:
         "total_chat_invites": total_chat_invites,
         "active_chat_invites": active_chat_invites,
         "used_chat_invites": used_chat_invites,
+        "advanced_chat": advanced_chat,
+    }
+
+
+YEREVAN_TZ = timezone(timedelta(hours=4))
+
+
+def _ensure_utc(dt: Optional[datetime], fallback: datetime) -> datetime:
+    if dt is None:
+        return fallback
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
+def _sweep_concurrency(
+    intervals: List[Tuple[float, float]],
+    grid_timestamps: List[float],
+) -> List[int]:
+    """Compute exact concurrent active sessions at every sorted timestamp in O(N log N + M)."""
+    if not grid_timestamps:
+        return []
+    if not intervals:
+        return [0] * len(grid_timestamps)
+
+    starts = sorted(st for st, _ in intervals)
+    ends = sorted(en for _, en in intervals)
+    si = 0
+    ei = 0
+    active = 0
+    n = len(starts)
+    out: List[int] = []
+    for t in grid_timestamps:
+        while si < n and starts[si] <= t:
+            active += 1
+            si += 1
+        while ei < n and ends[ei] < t:
+            active -= 1
+            ei += 1
+        out.append(max(0, active))
+    return out
+
+
+def _safe_mean(vals: List[float]) -> float:
+    return round(float(statistics.mean(vals)), 2) if vals else 0.0
+
+
+def _safe_median(vals: List[float]) -> float:
+    return round(float(statistics.median(vals)), 2) if vals else 0.0
+
+
+async def record_bot_activity_snapshot(
+    session: AsyncSession,
+    web_ws_clients: int = 0,
+) -> BotActivitySnapshot:
+    """Capture a point-in-time snapshot of active anonymous chats, searching queue, and web sockets."""
+    active_chats = (
+        await session.execute(select(func.count(ChatSession.id)).where(ChatSession.is_active == True))  # noqa: E712
+    ).scalar_one() or 0
+    non_paused_chats = (
+        await session.execute(
+            select(func.count(ChatSession.id)).where(
+                ChatSession.is_active == True,  # noqa: E712
+                ChatSession.is_paused == False,  # noqa: E712
+            )
+        )
+    ).scalar_one() or 0
+    searching_users = (
+        await session.execute(select(func.count(User.id)).where(User.is_searching == True))  # noqa: E712
+    ).scalar_one() or 0
+
+    snap = BotActivitySnapshot(
+        active_chats=int(active_chats),
+        non_paused_chats=int(non_paused_chats),
+        searching_users=int(searching_users),
+        web_ws_clients=int(max(0, web_ws_clients)),
+    )
+    session.add(snap)
+    await session.commit()
+    return snap
+
+
+async def get_advanced_bot_chat_stats(session: AsyncSession) -> Dict[str, Any]:
+    """Compute deep anonymous chat telemetry (mean/median active sessions, 24h & 30d metrics, peak hours AMT)."""
+    now = datetime.now(timezone.utc)
+    now_amt = now.astimezone(YEREVAN_TZ)
+    day_ago = now - timedelta(hours=24)
+    month_ago = now - timedelta(days=30)
+
+    # Fetch lightweight columns for all chat sessions
+    cs_stmt = select(
+        ChatSession.started_at,
+        ChatSession.ended_at,
+        ChatSession.is_active,
+        ChatSession.is_paused,
+        ChatSession.messages_count,
+    ).order_by(ChatSession.started_at.asc())
+    cs_rows = (await session.execute(cs_stmt)).all()
+
+    # Fetch bot user registration timestamps for growth curve
+    u_rows = (
+        await session.execute(select(User.created_at).order_by(User.created_at.asc()))
+    ).scalars().all()
+
+    # Fetch recent snapshots (optional queue depth telemetry)
+    snap_rows = (
+        await session.execute(
+            select(BotActivitySnapshot)
+            .where(BotActivitySnapshot.created_at >= day_ago)
+            .order_by(BotActivitySnapshot.created_at.asc())
+        )
+    ).scalars().all()
+
+    intervals: List[Tuple[float, float]] = []
+    sessions_data: List[Dict[str, Any]] = []
+    live_active = 0
+    live_paused = 0
+
+    for started_at, ended_at, is_active, is_paused, msgs_count in cs_rows:
+        st = _ensure_utc(started_at, now)
+        en = _ensure_utc(ended_at, now) if not is_active and ended_at is not None else now
+        if ended_at is not None and not is_active:
+            en = _ensure_utc(ended_at, now)
+        if en < st:
+            en = st
+        dur_sec = (en - st).total_seconds()
+        msgs = int(msgs_count or 0)
+        if is_active:
+            live_active += 1
+            if is_paused:
+                live_paused += 1
+
+        intervals.append((st.timestamp(), en.timestamp()))
+        sessions_data.append(
+            {
+                "started_at": st,
+                "ended_at": en,
+                "amt_start": st.astimezone(YEREVAN_TZ),
+                "is_active": bool(is_active),
+                "is_paused": bool(is_paused),
+                "messages": msgs,
+                "duration_sec": dur_sec,
+            }
+        )
+
+    # 1. Concurrency Sweep for 24h (5-minute resolution) and 30d (15-minute resolution)
+    grid_24h_dt: List[datetime] = []
+    t = day_ago
+    while t <= now:
+        grid_24h_dt.append(t)
+        t += timedelta(minutes=5)
+    grid_24h_ts = [dt.timestamp() for dt in grid_24h_dt]
+    conc_24h = _sweep_concurrency(intervals, grid_24h_ts)
+
+    grid_30d_dt: List[datetime] = []
+    t = month_ago
+    while t <= now:
+        grid_30d_dt.append(t)
+        t += timedelta(minutes=15)
+    grid_30d_ts = [dt.timestamp() for dt in grid_30d_dt]
+    conc_30d = _sweep_concurrency(intervals, grid_30d_ts)
+
+    # All-time concurrency from earliest session (30-min resolution)
+    if sessions_data:
+        first_st = max(sessions_data[0]["started_at"], now - timedelta(days=365))
+    else:
+        first_st = month_ago
+    grid_all_ts: List[float] = []
+    t_all = first_st.timestamp()
+    end_ts = now.timestamp()
+    while t_all <= end_ts:
+        grid_all_ts.append(t_all)
+        t_all += 1800.0
+    conc_all = _sweep_concurrency(intervals, grid_all_ts)
+
+    # 2. Initiated, Engaged, Messages & Duration stats across 24h, 30d, All-Time
+    s_24h = [s for s in sessions_data if s["started_at"] >= day_ago]
+    s_30d = [s for s in sessions_data if s["started_at"] >= month_ago]
+
+    def _summarize_bucket(bucket: List[Dict[str, Any]]) -> Dict[str, Any]:
+        total_cnt = len(bucket)
+        engaged = [s for s in bucket if s["messages"] > 0]
+        msgs_list = [float(s["messages"]) for s in bucket]
+        dur_list = [float(s["duration_sec"]) for s in bucket]
+        eng_dur_list = [float(s["duration_sec"]) for s in engaged]
+        return {
+            "initiated": total_cnt,
+            "engaged": len(engaged),
+            "engagement_rate": round((len(engaged) / total_cnt) * 100, 1) if total_cnt > 0 else 0.0,
+            "messages_total": int(sum(msgs_list)),
+            "messages_mean": _safe_mean(msgs_list),
+            "messages_median": _safe_median(msgs_list),
+            "duration_mean_sec": _safe_mean(dur_list),
+            "duration_median_sec": _safe_median(dur_list),
+            "engaged_duration_median_sec": _safe_median(eng_dur_list),
+        }
+
+    sum_24h = _summarize_bucket(s_24h)
+    sum_30d = _summarize_bucket(s_30d)
+    sum_all = _summarize_bucket(sessions_data)
+
+    # 3. 30-Day Daily Series (AMT calendar days)
+    day_keys: List[str] = []
+    day_labels: Dict[str, str] = {}
+    for offset in range(29, -1, -1):
+        d = (now_amt - timedelta(days=offset)).date()
+        dk = d.isoformat()
+        day_keys.append(dk)
+        day_labels[dk] = d.strftime("%b %d")
+
+    daily_init: Dict[str, int] = defaultdict(int)
+    daily_engaged: Dict[str, int] = defaultdict(int)
+    daily_msgs: Dict[str, int] = defaultdict(int)
+    daily_new_users: Dict[str, int] = defaultdict(int)
+    daily_conc_samples: Dict[str, List[int]] = defaultdict(list)
+
+    for s in s_30d:
+        dk = s["amt_start"].date().isoformat()
+        if dk in day_labels:
+            daily_init[dk] += 1
+            if s["messages"] > 0:
+                daily_engaged[dk] += 1
+            daily_msgs[dk] += s["messages"]
+
+    for u_dt in u_rows:
+        if u_dt is not None:
+            u_amt = _ensure_utc(u_dt, now).astimezone(YEREVAN_TZ)
+            dk = u_amt.date().isoformat()
+            if dk in day_labels:
+                daily_new_users[dk] += 1
+
+    for dt, val in zip(grid_30d_dt, conc_30d):
+        dk = dt.astimezone(YEREVAN_TZ).date().isoformat()
+        if dk in day_labels:
+            daily_conc_samples[dk].append(val)
+
+    daily_series_30d = []
+    daily_init_values = []
+    for dk in day_keys:
+        c_list = daily_conc_samples.get(dk, [])
+        init_v = daily_init.get(dk, 0)
+        daily_init_values.append(float(init_v))
+        daily_series_30d.append(
+            {
+                "date": dk,
+                "label": day_labels[dk],
+                "chats_initiated": init_v,
+                "engaged_chats": daily_engaged.get(dk, 0),
+                "messages_total": daily_msgs.get(dk, 0),
+                "new_bot_users": daily_new_users.get(dk, 0),
+                "concurrent_mean": _safe_mean([float(x) for x in c_list]),
+                "concurrent_median": _safe_median([float(x) for x in c_list]),
+                "concurrent_peak": max(c_list) if c_list else 0,
+            }
+        )
+
+    # 4. Rolling 24h Hourly Breakdown & 15-min Concurrency Curve
+    hour_buckets_24h: Dict[str, Dict[str, Any]] = {}
+    hour_keys_24h: List[str] = []
+    base_hour_amt = now_amt.replace(minute=0, second=0, microsecond=0)
+    for offset in range(23, -1, -1):
+        h_dt = base_hour_amt - timedelta(hours=offset)
+        hk = h_dt.strftime("%Y-%m-%d %H")
+        hour_keys_24h.append(hk)
+        hour_buckets_24h[hk] = {
+            "label": h_dt.strftime("%H:00"),
+            "chats_initiated": 0,
+            "messages_total": 0,
+            "samples": [],
+        }
+
+    for s in s_24h:
+        hk = s["amt_start"].strftime("%Y-%m-%d %H")
+        if hk in hour_buckets_24h:
+            hour_buckets_24h[hk]["chats_initiated"] += 1
+            hour_buckets_24h[hk]["messages_total"] += s["messages"]
+
+    for dt, val in zip(grid_24h_dt, conc_24h):
+        hk = dt.astimezone(YEREVAN_TZ).strftime("%Y-%m-%d %H")
+        if hk in hour_buckets_24h:
+            hour_buckets_24h[hk]["samples"].append(val)
+
+    rolling_24h_series = []
+    for hk in hour_keys_24h:
+        b = hour_buckets_24h[hk]
+        s_vals = b["samples"]
+        rolling_24h_series.append(
+            {
+                "label": b["label"],
+                "chats_initiated": b["chats_initiated"],
+                "messages_total": b["messages_total"],
+                "concurrent_mean": _safe_mean([float(x) for x in s_vals]),
+                "concurrent_median": _safe_median([float(x) for x in s_vals]),
+                "concurrent_peak": max(s_vals) if s_vals else 0,
+            }
+        )
+
+    # 24h fine-grained concurrency curve (sample every 3rd point = 15-min steps, 96 points)
+    concurrency_24h_curve = [
+        {
+            "label": dt.astimezone(YEREVAN_TZ).strftime("%H:%M"),
+            "active_sessions": val,
+        }
+        for dt, val in list(zip(grid_24h_dt, conc_24h))[::3]
+    ]
+
+    # 5. Clock-Hour Activity Profile (00..23 AMT) & 7x24 Heatmap Matrix
+    clock_init_30d = [0] * 24
+    clock_init_24h = [0] * 24
+    clock_init_all = [0] * 24
+    clock_msgs_30d = [0] * 24
+    clock_conc_30d: List[List[int]] = [[] for _ in range(24)]
+    clock_conc_24h: List[List[int]] = [[] for _ in range(24)]
+    heatmap_matrix = [[0 for _ in range(24)] for _ in range(7)]  # weekday (0=Mon..6=Sun) x hour (0..23)
+
+    for s in sessions_data:
+        h = s["amt_start"].hour
+        wd = s["amt_start"].weekday()
+        clock_init_all[h] += 1
+        if s["started_at"] >= month_ago:
+            clock_init_30d[h] += 1
+            clock_msgs_30d[h] += s["messages"]
+            heatmap_matrix[wd][h] += 1
+        if s["started_at"] >= day_ago:
+            clock_init_24h[h] += 1
+
+    for dt, val in zip(grid_30d_dt, conc_30d):
+        clock_conc_30d[dt.astimezone(YEREVAN_TZ).hour].append(val)
+
+    for dt, val in zip(grid_24h_dt, conc_24h):
+        clock_conc_24h[dt.astimezone(YEREVAN_TZ).hour].append(val)
+
+    hourly_profile = []
+    for h in range(24):
+        c30_list = clock_conc_30d[h]
+        c24_list = clock_conc_24h[h]
+        hourly_profile.append(
+            {
+                "hour": h,
+                "label": f"{h:02d}:00",
+                "window_label": f"{h:02d}:00 - {(h + 1) % 24:02d}:00 AMT",
+                "initiated_30d": clock_init_30d[h],
+                "initiated_24h": clock_init_24h[h],
+                "initiated_all": clock_init_all[h],
+                "messages_30d": clock_msgs_30d[h],
+                "avg_concurrent_30d": _safe_mean([float(x) for x in c30_list]),
+                "median_concurrent_30d": _safe_median([float(x) for x in c30_list]),
+                "avg_concurrent_24h": _safe_mean([float(x) for x in c24_list]),
+            }
+        )
+
+    peak_by_initiated = sorted(
+        hourly_profile,
+        key=lambda x: (x["initiated_30d"], x["avg_concurrent_30d"]),
+        reverse=True,
+    )
+    peak_by_concurrency = sorted(
+        hourly_profile,
+        key=lambda x: (x["avg_concurrent_30d"], x["initiated_30d"]),
+        reverse=True,
+    )
+    top_peak_hours = peak_by_initiated[:5]
+    top_conc_hours = peak_by_concurrency[:5]
+
+    best_init = top_peak_hours[0] if top_peak_hours else {"window_label": "N/A", "initiated_30d": 0}
+    best_conc = top_conc_hours[0] if top_conc_hours else {"window_label": "N/A", "avg_concurrent_30d": 0.0}
+
+    # Mean & median of queue depth from snapshots if available
+    queue_24h_vals = [float(sn.searching_users) for sn in snap_rows]
+    ws_24h_vals = [float(sn.web_ws_clients) for sn in snap_rows]
+
+    return {
+        "timezone": "Asia/Yerevan (UTC+4)",
+        "live": {
+            "active_sessions_now": live_active,
+            "actively_chatting_now": max(0, live_active - live_paused),
+            "paused_now": live_paused,
+            "queue_mean_24h": _safe_mean(queue_24h_vals),
+            "ws_clients_mean_24h": _safe_mean(ws_24h_vals),
+            "snapshots_24h_count": len(snap_rows),
+        },
+        "window_24h": {
+            "concurrent_mean": _safe_mean([float(x) for x in conc_24h]),
+            "concurrent_median": _safe_median([float(x) for x in conc_24h]),
+            "concurrent_peak": max(conc_24h) if conc_24h else 0,
+            "concurrent_min": min(conc_24h) if conc_24h else 0,
+            **sum_24h,
+        },
+        "window_30d": {
+            "concurrent_mean": _safe_mean([float(x) for x in conc_30d]),
+            "concurrent_median": _safe_median([float(x) for x in conc_30d]),
+            "concurrent_peak": max(conc_30d) if conc_30d else 0,
+            "concurrent_min": min(conc_30d) if conc_30d else 0,
+            "chats_initiated_daily_mean": _safe_mean(daily_init_values),
+            "chats_initiated_daily_median": _safe_median(daily_init_values),
+            **sum_30d,
+        },
+        "window_all_time": {
+            "concurrent_mean": _safe_mean([float(x) for x in conc_all]),
+            "concurrent_median": _safe_median([float(x) for x in conc_all]),
+            "concurrent_peak": max(conc_all) if conc_all else 0,
+            **sum_all,
+        },
+        "peak_hours": {
+            "top_by_initiated_30d": top_peak_hours,
+            "top_by_concurrency_30d": top_conc_hours,
+            "most_active_init_window": best_init["window_label"],
+            "most_active_conc_window": best_conc["window_label"],
+        },
+        "hourly_profile": hourly_profile,
+        "rolling_24h_series": rolling_24h_series,
+        "concurrency_24h_curve": concurrency_24h_curve,
+        "daily_series_30d": daily_series_30d,
+        "heatmap_7x24": {
+            "days": ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"],
+            "hours": [f"{h:02d}" for h in range(24)],
+            "matrix": heatmap_matrix,
+        },
     }
 
 

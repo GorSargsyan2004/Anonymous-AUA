@@ -25,6 +25,7 @@ from app.database.models import (
     WebOtpCode,
     WebSyncCode,
     WebUser,
+    AIUsageLog,
 )
 from app.database.session import engine, get_db_session, init_db
 from app.database.web_crud import (
@@ -139,6 +140,12 @@ class TestAuaHub(unittest.IsolatedAsyncioTestCase):
             )
             await session.execute(
                 delete(WebAnalyticsEvent).where(WebAnalyticsEvent.event_type.like("test_%"))
+            )
+            await session.execute(
+                delete(AIUsageLog).where(
+                    AIUsageLog.session_id.in_(["test_session_123", "mobile_local_sid", "desktop_local_sid"])
+                    | AIUsageLog.session_id.like("user:%")
+                )
             )
             # Re-sync anonymous_public_posts sequence to actual current max id
             await session.execute(

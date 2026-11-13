@@ -28,7 +28,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
-from app.database.crud import mark_inbox_message_replied
+from app.database.crud import mark_inbox_message_replied, record_bot_activity_snapshot
 from app.database.models import (
     AcademicFeedback,
     AnonymousInbox,
@@ -86,6 +86,7 @@ from app.database.web_crud import (
     update_web_user_profile,
     verify_web_otp_and_register,
     ANON_POST_REPORT_HIDE_THRESHOLD,
+    get_full_admin_stata_payload,
 )
 from app.services.ai_agent import (
     MAX_PROMPTS_PER_SESSION,
@@ -115,9 +116,11 @@ logger = logging.getLogger("aua_hub_web")
 
 BASE_DIR = Path(__file__).resolve().parent
 STATIC_DIR = BASE_DIR / "static"
+TEMPLATES_DIR = BASE_DIR / "templates"
 PROJECT_ROOT = BASE_DIR.parent.parent
 UPLOADS_DIR = PROJECT_ROOT / "uploads"
 UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
+ADMIN_STATA_EMAIL = "gor_sargsyan@edu.aua.am"
 
 ALLOWED_IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
 ALLOWED_VIDEO_EXTENSIONS = {".mp4", ".webm", ".mov"}
@@ -344,7 +347,16 @@ async def security_middleware(request: web.Request, handler: Callable) -> web.St
     )
     if request.path.startswith("/uploads/"):
         response.headers.setdefault("Content-Disposition", "inline")
-    if request.path in ("/", "/index.html", "/sw.js"):
+    if request.path in (
+        "/",
+        "/index.html",
+        "/sw.js",
+        "/stata",
+        "/stata/",
+        "/stata/assets/stata.css",
+        "/stata/assets/stata.js",
+        "/api/admin/stata",
+    ):
         response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
         response.headers["Pragma"] = "no-cache"
         response.headers["Expires"] = "0"
@@ -556,6 +568,13 @@ def render_safe_chat_html(raw_text: str) -> str:
 # Serializers
 # ==============================================================================
 
+def is_stata_admin(user: Optional[WebUser]) -> bool:
+    """Restrict /stata analytics exclusively to gor_sargsyan@edu.aua.am."""
+    if not user or getattr(user, "is_deleted", False):
+        return False
+    return (user.email or "").strip().lower() == ADMIN_STATA_EMAIL
+
+
 def serialize_web_user(u: WebUser) -> Dict[str, Any]:
     return {
         "id": u.id,
@@ -567,6 +586,7 @@ def serialize_web_user(u: WebUser) -> Dict[str, Any]:
         "telegram_user_id": u.telegram_user_id,
         "is_bot_synced": u.telegram_user_id is not None,
         "is_admin": bool(u.telegram_user_id and u.telegram_user_id in settings.admin_ids),
+        "is_stata_admin": is_stata_admin(u),
         "is_alumni": u.email.lower().endswith("@alumni.aua.am"),
         "is_deleted": getattr(u, "is_deleted", False),
         "created_at": u.created_at.isoformat() if u.created_at else None,
@@ -1102,13 +1122,27 @@ async def api_auth_me(request: web.Request) -> web.Response:
     async with get_db_session() as session:
         unread_count = await get_spam_chat_unread_count(session, user.id)
 
-    return web.json_response(
+    response = web.json_response(
         {
             "authenticated": True,
             "user": serialize_web_user(user),
             "unread_spam_count": unread_count,
         }
     )
+    auth_header = request.headers.get("Authorization", "")
+    if auth_header.startswith("Bearer ") and not request.cookies.get("aua_hub_token"):
+        bearer_token = auth_header[7:].strip()
+        if bearer_token:
+            response.set_cookie(
+                "aua_hub_token",
+                bearer_token,
+                max_age=30 * 86400,
+                httponly=True,
+                secure=_is_https_request(request),
+                samesite="Lax",
+                path="/",
+            )
+    return response
 
 
 # ------------------------------------------------------------------------------
@@ -2927,6 +2961,85 @@ async def api_ai_reset(request: web.Request) -> web.Response:
 
 
 # ------------------------------------------------------------------------------
+# 8B. Admin Analytics Dashboard (/stata) & Telemetry Worker
+# ------------------------------------------------------------------------------
+
+_STATA_ALLOWED_ASSETS: Dict[str, str] = {
+    "stata.css": "text/css; charset=utf-8",
+    "stata.js": "application/javascript; charset=utf-8",
+}
+
+
+@routes.get("/api/admin/stata")
+async def api_admin_stata(request: web.Request) -> web.Response:
+    user = await get_current_web_user(request)
+    if not user:
+        return web.json_response({"error": "Authentication required."}, status=401)
+    if not is_stata_admin(user):
+        return web.json_response(
+            {"error": "Forbidden: administrator telemetry is restricted."},
+            status=403,
+        )
+
+    async with get_db_session() as session:
+        payload = await get_full_admin_stata_payload(
+            session,
+            live_ws_count=len(_ACTIVE_WS_CLIENTS),
+            jenzareviews_sync_status=get_jenzareviews_sync_status(),
+        )
+
+    return web.json_response(payload)
+
+
+@routes.get("/stata")
+@routes.get("/stata/")
+async def serve_admin_stata(request: web.Request) -> web.Response:
+    user = await get_current_web_user(request)
+    if not user:
+        return web.FileResponse(TEMPLATES_DIR / "stata_gate.html")
+    if not is_stata_admin(user):
+        denied_html = (TEMPLATES_DIR / "stata_denied.html").read_text(encoding="utf-8")
+        return web.Response(text=denied_html, content_type="text/html", charset="utf-8", status=403)
+    return web.FileResponse(TEMPLATES_DIR / "stata.html")
+
+
+@routes.get("/stata/assets/{asset_name}")
+async def serve_admin_stata_asset(request: web.Request) -> web.Response:
+    user = await get_current_web_user(request)
+    if not user:
+        return web.json_response({"error": "Authentication required."}, status=401)
+    if not is_stata_admin(user):
+        return web.json_response({"error": "Forbidden."}, status=403)
+
+    asset_name = request.match_info.get("asset_name", "")
+    content_type = _STATA_ALLOWED_ASSETS.get(asset_name)
+    if not content_type:
+        return web.json_response({"error": "Asset not found."}, status=404)
+
+    asset_path = TEMPLATES_DIR / asset_name
+    if not asset_path.is_file():
+        return web.json_response({"error": "Asset not found."}, status=404)
+
+    return web.FileResponse(asset_path, headers={"Content-Type": content_type})
+
+
+async def bot_activity_snapshot_worker() -> None:
+    """Capture live anonymous-chat concurrency and WebSocket snapshots every 60 seconds."""
+    while True:
+        try:
+            async with get_db_session() as session:
+                await record_bot_activity_snapshot(
+                    session,
+                    web_ws_clients=len(_ACTIVE_WS_CLIENTS),
+                )
+        except asyncio.CancelledError:
+            break
+        except Exception as exc:
+            logger.warning("bot_activity_snapshot_worker error: %s", exc)
+        await asyncio.sleep(60)
+
+
+# ------------------------------------------------------------------------------
 # 9. Static Assets, Uploads & SPA Fallback
 # ------------------------------------------------------------------------------
 
@@ -2981,10 +3094,11 @@ async def start_background_web_server(bot: Any = None, host: str = "0.0.0.0", po
     await site.start()
     logger.info("AUA Hub Web Server listening on http://%s:%d", host, listen_port)
 
-    # Trigger non-blocking background workers: course sync, free rooms pre-warmer, and 5-min jenzareviews sync
+    # Trigger non-blocking background workers: course sync, free rooms pre-warmer, jenzareviews sync, and telemetry snapshotter
     asyncio.create_task(_initial_course_warmup())
     asyncio.create_task(free_rooms_prewarm_worker())
     asyncio.create_task(jenzareviews_sync_worker())
+    asyncio.create_task(bot_activity_snapshot_worker())
     return runner
 
 

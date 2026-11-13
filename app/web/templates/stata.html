@@ -1,0 +1,353 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="robots" content="noindex, nofollow" />
+  <title>AUA Hub · /stata Admin Telemetry</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/stata/assets/stata.css" />
+  <script src="/static/vendor/chart.umd.min.js" defer></script>
+  <script src="/stata/assets/stata.js" defer></script>
+</head>
+<body>
+  <div class="ambient-bg" aria-hidden="true"></div>
+
+  <header class="stata-topbar">
+    <div class="topbar-left">
+      <a href="/" class="back-btn" title="Back to AUA Hub">&larr; Hub</a>
+      <div class="brand-title-wrap">
+        <div class="brand-badges">
+          <span class="pill pill-ice">AUA HUB · /STATA</span>
+          <span class="pill pill-emerald" id="livePulsePill">● LIVE TELEMETRY</span>
+          <span class="pill pill-muted" id="tzPill">Asia/Yerevan (UTC+4)</span>
+        </div>
+        <h1>Platform &amp; Anonymous Bot Analytics</h1>
+      </div>
+    </div>
+
+    <nav class="section-nav" aria-label="Dashboard Sections">
+      <a href="#sec-overview" class="sec-link">Overview</a>
+      <a href="#sec-anon-chat" class="sec-link">Anonymous Chat</a>
+      <a href="#sec-ai" class="sec-link">AI Assistant</a>
+      <a href="#sec-bot" class="sec-link">Bot Community</a>
+      <a href="#sec-web" class="sec-link">Website &amp; Modules</a>
+    </nav>
+
+    <div class="topbar-actions">
+      <div class="refresh-meta">
+        <span class="meta-label">Updated</span>
+        <span id="lastUpdatedAmt" class="mono-val">—</span>
+      </div>
+      <label class="toggle-chip" title="Refresh dashboard data every 30 seconds">
+        <input type="checkbox" id="autoRefreshToggle" checked />
+        <span>Auto 30s</span>
+      </label>
+      <button id="refreshBtn" class="btn-glass" type="button">↻ Refresh</button>
+      <button id="exportJsonBtn" class="btn-glass" type="button">⬇ JSON</button>
+      <button id="logoutBtn" class="btn-danger-ghost" type="button">Sign Out</button>
+    </div>
+  </header>
+
+  <main class="stata-shell">
+    <div id="loadingBanner" class="banner-info">
+      Loading full analytics across Anonymous Bot, AI Assistant, and AUA Hub...
+    </div>
+    <div id="errorBanner" class="banner-error hidden"></div>
+
+    <!-- SECTION 1: EXECUTIVE OVERVIEW -->
+    <section id="sec-overview" class="dash-section">
+      <div class="section-header">
+        <div>
+          <h2>Executive Snapshot</h2>
+          <p>Real-time concurrency, active session medians &amp; means, AI usage, and total platform reach.</p>
+        </div>
+      </div>
+      <div id="kpiGrid" class="kpi-grid"></div>
+    </section>
+
+    <!-- SECTION 2: ANONYMOUS CHAT DEEP ANALYTICS -->
+    <section id="sec-anon-chat" class="dash-section">
+      <div class="section-header">
+        <div>
+          <h2>Anonymous Chat · Advanced Statistical Engine</h2>
+          <p>Mean counters, concurrency medians, session duration distributions, and peak hours in Asia/Yerevan time.</p>
+        </div>
+        <div class="segmented" id="anonWindowSwitch">
+          <button type="button" class="seg-btn active" data-window="24h">24 Hours</button>
+          <button type="button" class="seg-btn" data-window="30d">30 Days</button>
+        </div>
+      </div>
+
+      <div class="card-grid-2">
+        <article class="glass-card span-full">
+          <div class="card-head">
+            <h3>24h vs 30d vs All-Time Statistical Comparison</h3>
+            <span class="card-sub">Concurrency sampled on 5-min (24h) / 15-min (30d) sweep grid</span>
+          </div>
+          <div class="table-wrap">
+            <table class="data-table" id="anonComparisonTable">
+              <thead>
+                <tr>
+                  <th>Metric</th>
+                  <th>Last 24 Hours</th>
+                  <th>Last 30 Days</th>
+                  <th>All Time</th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </article>
+
+        <article class="glass-card">
+          <div class="card-head">
+            <h3 id="concTrendTitle">24h Concurrency Curve (15-min Slots, AMT)</h3>
+            <span class="card-sub" id="concTrendSub">Exact active sessions sweep across today</span>
+          </div>
+          <div class="chart-box">
+            <canvas id="chartAnonConcOrDaily"></canvas>
+          </div>
+        </article>
+
+        <article class="glass-card">
+          <div class="card-head">
+            <h3 id="initTrendTitle">Rolling 24h Initiated &amp; Mean/Median Concurrency</h3>
+            <span class="card-sub" id="initTrendSub">Hourly chats initiated vs concurrent sessions</span>
+          </div>
+          <div class="chart-box">
+            <canvas id="chartAnonInitTrend"></canvas>
+          </div>
+        </article>
+
+        <article class="glass-card span-full">
+          <div class="card-head">
+            <div>
+              <h3>Most Active Hours Profile (00:00–23:59 AMT)</h3>
+              <span class="card-sub">30-day total chats initiated vs mean concurrency by clock hour</span>
+            </div>
+            <div id="peakHoursBadges" class="peak-badges"></div>
+          </div>
+          <div class="chart-box chart-box-tall">
+            <canvas id="chartHourlyProfile"></canvas>
+          </div>
+        </article>
+
+        <article class="glass-card">
+          <div class="card-head">
+            <h3>Live Telemetry Snapshots &amp; Search Queue (24h)</h3>
+            <span class="card-sub" id="snapshotSub">60s worker samples: chats, searching users, WebSockets</span>
+          </div>
+          <div class="chart-box">
+            <canvas id="chartLiveSnapshots"></canvas>
+          </div>
+          <div id="snapshotEmptyNote" class="empty-note hidden">
+            Telemetry snapshot worker started recording live queue &amp; WebSocket samples every 60 seconds.
+          </div>
+        </article>
+
+        <article class="glass-card">
+          <div class="card-head">
+            <h3>Peak Activity Windows Leaderboard (Last 30d AMT)</h3>
+            <span class="card-sub">Ranked by chats initiated and mean active sessions</span>
+          </div>
+          <div id="peakLeaderboard" class="dual-list"></div>
+        </article>
+
+        <article class="glass-card span-full">
+          <div class="card-head">
+            <div>
+              <h3>7 &times; 24 Weekly Anonymous Chat Heatmap (Last 30d · AMT)</h3>
+              <span class="card-sub">Chats initiated per Day-of-Week &times; Hour-of-Day cell</span>
+            </div>
+            <div class="heatmap-legend">
+              <span>Low</span>
+              <span class="hm-scale"></span>
+              <span>Peak</span>
+            </div>
+          </div>
+          <div id="heatmapContainer" class="heatmap-wrap"></div>
+        </article>
+      </div>
+    </section>
+
+    <!-- SECTION 3: AI ASSISTANT TELEMETRY -->
+    <section id="sec-ai" class="dash-section">
+      <div class="section-header">
+        <div>
+          <h2>AI Assistant &amp; Multi-Source RAG Analytics</h2>
+          <p>Prompt volume, session depth (1–5 limit), Gemini synthesis reliability, latency, and RAG tool invocation mix.</p>
+        </div>
+      </div>
+
+      <div id="aiKpiStrip" class="mini-kpi-grid"></div>
+
+      <div class="card-grid-2">
+        <article class="glass-card">
+          <div class="card-head">
+            <h3>30-Day AI Prompts &amp; Sessions Trend</h3>
+            <span class="card-sub">Daily prompts sent and unique chat sessions</span>
+          </div>
+          <div class="chart-box">
+            <canvas id="chartAiDaily30d"></canvas>
+          </div>
+        </article>
+
+        <article class="glass-card">
+          <div class="card-head">
+            <h3>RAG Tool Usage Breakdown</h3>
+            <span class="card-sub">Internal &amp; AUA external retrieval pipelines triggered</span>
+          </div>
+          <div class="chart-box">
+            <canvas id="chartAiTools"></canvas>
+          </div>
+        </article>
+
+        <article class="glass-card">
+          <div class="card-head">
+            <h3>Session Depth Distribution (Prompts 1–5)</h3>
+            <span class="card-sub">How far users converse before resetting at the 5-prompt cap</span>
+          </div>
+          <div class="chart-box">
+            <canvas id="chartAiDepth"></canvas>
+          </div>
+        </article>
+
+        <article class="glass-card">
+          <div class="card-head">
+            <h3>AI Assistant Activity by Hour (AMT)</h3>
+            <span class="card-sub">Last 30d vs last 24h hourly demand</span>
+          </div>
+          <div class="chart-box">
+            <canvas id="chartAiHourly"></canvas>
+          </div>
+        </article>
+      </div>
+    </section>
+
+    <!-- SECTION 4: TELEGRAM BOT COMMUNITY, VERIFICATION & MODERATION -->
+    <section id="sec-bot" class="dash-section">
+      <div class="section-header">
+        <div>
+          <h2>Telegram Anonymous Bot · Users, Verification &amp; Safety</h2>
+          <p>Membership verification tiers, gender/orientation mix, karma feedback, secret inbox, invites &amp; reports.</p>
+        </div>
+      </div>
+
+      <div id="botSummaryGrid" class="mini-kpi-grid"></div>
+
+      <div class="card-grid-2">
+        <article class="glass-card">
+          <div class="card-head">
+            <h3>Verification &amp; Gender Breakdown</h3>
+            <span class="card-sub">AUA domain verification and profile verification ratios</span>
+          </div>
+          <div class="chart-box">
+            <canvas id="chartBotVerification"></canvas>
+          </div>
+        </article>
+
+        <article class="glass-card">
+          <div class="card-head">
+            <h3>Reputation, Safety &amp; Secret Inbox Funnel</h3>
+            <span class="card-sub">Partner reactions, reports, suggestions &amp; invite links</span>
+          </div>
+          <div class="chart-box">
+            <canvas id="chartBotSafety"></canvas>
+          </div>
+        </article>
+      </div>
+    </section>
+
+    <!-- SECTION 5: WEBSITE TRAFFIC, MODULES & SEARCHES -->
+    <section id="sec-web" class="dash-section">
+      <div class="section-header">
+        <div>
+          <h2>auahub.am Website · Modules, Searches &amp; Traffic</h2>
+          <p>Web accounts, course reviews (JenzaReviews + local), Have-Need swaps, Campus Chat, moderation &amp; query analytics.</p>
+        </div>
+      </div>
+
+      <div id="webModulesGrid" class="mini-kpi-grid"></div>
+
+      <div class="card-grid-2">
+        <article class="glass-card">
+          <div class="card-head">
+            <h3>30-Day Website Events, Signups &amp; Campus Chat</h3>
+            <span class="card-sub">Tracked analytics events, Campus Chat posts &amp; new accounts</span>
+          </div>
+          <div class="chart-box">
+            <canvas id="chartWebDaily30d"></canvas>
+          </div>
+        </article>
+
+        <article class="glass-card">
+          <div class="card-head">
+            <div>
+              <h3>Course &amp; Professor Feedback Ratings</h3>
+              <span class="card-sub" id="jenzaSyncSub">Sync status loading...</span>
+            </div>
+          </div>
+          <div class="chart-box">
+            <canvas id="chartRatingDist"></canvas>
+          </div>
+        </article>
+
+        <article class="glass-card">
+          <div class="card-head">
+            <h3>Top Tracked Web Events</h3>
+            <span class="card-sub">All-time vs 24h feature interactions</span>
+          </div>
+          <div class="table-wrap">
+            <table class="data-table" id="topEventsTable">
+              <thead>
+                <tr>
+                  <th>Event</th>
+                  <th>All Time</th>
+                  <th>24h</th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </article>
+
+        <article class="glass-card">
+          <div class="card-head">
+            <h3>Top Campus Searches &amp; Reviewed Targets</h3>
+            <span class="card-sub">Most queried rooms, courses, professors &amp; reviews</span>
+          </div>
+          <div class="split-tables">
+            <div class="table-wrap">
+              <table class="data-table" id="topSearchesTable">
+                <thead>
+                  <tr>
+                    <th>Category</th>
+                    <th>Query</th>
+                    <th>Hits</th>
+                  </tr>
+                </thead>
+                <tbody></tbody>
+              </table>
+            </div>
+            <div class="table-wrap">
+              <table class="data-table" id="topTargetsTable">
+                <thead>
+                  <tr>
+                    <th>Top Reviewed Course / Prof</th>
+                    <th>Reviews</th>
+                  </tr>
+                </thead>
+                <tbody></tbody>
+              </table>
+            </div>
+          </div>
+        </article>
+      </div>
+    </section>
+  </main>
+</body>
+</html>
+
