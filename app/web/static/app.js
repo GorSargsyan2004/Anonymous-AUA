@@ -852,6 +852,7 @@ function renderClickableUserNameHtml(userObj, extraClass = "") {
       }
     }
     renderNavbarAuth();
+    syncAiSessionWithServer(true);
     const stream = document.getElementById("spamMessagesStream");
     if (stream && (state.activeView === "spam-chat" || state.activeView === "chat")) {
       loadSpamChatMessages(false);
@@ -943,6 +944,7 @@ function renderClickableUserNameHtml(userObj, extraClass = "") {
       } catch { }
       updateUnreadBadge(res.unread_spam_count || 0);
       loadNotifications();
+      syncAiSessionWithServer(true);
       renderNavbarAuth();
       closeAuthModal();
       showToast(`Welcome back, ${res.user.name}!`);
@@ -1000,6 +1002,7 @@ function renderClickableUserNameHtml(userObj, extraClass = "") {
       } catch { }
       updateUnreadBadge(res.unread_spam_count || 0);
       loadNotifications();
+      syncAiSessionWithServer(true);
       renderNavbarAuth();
       closeAuthModal();
       showToast("Account verified and signed in! Welcome to AUA Hub ✨");
@@ -5797,6 +5800,12 @@ function renderClickableUserNameHtml(userObj, extraClass = "") {
                 showToast(`🔔 ${notif.title}`);
               }
             }
+          } else if (data.type === "ai_session_updated") {
+            if (state.user && Number(data.recipient_id) === Number(state.user.id)) {
+              if (!state.aiIsGenerating) {
+                applyServerAiSessionState(data);
+              }
+            }
           }
         } catch { }
       };
@@ -6545,6 +6554,7 @@ function renderClickableUserNameHtml(userObj, extraClass = "") {
   let aiPlaceholderDeleting = false;
   let aiTypewriterInitialized = false;
   let aiSessionSyncedOnce = false;
+  let aiSyncInFlight = false;
 
   function saveAiHistoryToStorage() {
     try {
@@ -6554,6 +6564,27 @@ function renderClickableUserNameHtml(userObj, extraClass = "") {
         localStorage.setItem("aua_hub_ai_session_id", state.aiSessionId);
       }
     } catch { }
+  }
+
+  function applyServerAiSessionState(data) {
+    if (!data) return;
+    if (typeof data.session_id === "string" && data.session_id) {
+      state.aiSessionId = data.session_id;
+    }
+    if (Array.isArray(data.history)) {
+      state.aiHistory = data.history;
+      if (data.history.length === 0 && Number(data.prompts_used) === 0) {
+        state.aiPromptsUsed = 0;
+      } else {
+        state.aiPromptsUsed = Math.max(
+          Number(data.prompts_used) || 0,
+          data.history.length
+        );
+      }
+      saveAiHistoryToStorage();
+      renderAiHistoryThread();
+      updateAiQuotaUI();
+    }
   }
 
   function renderAiStepsHtml(steps, allDone = true) {
@@ -6641,12 +6672,12 @@ function renderClickableUserNameHtml(userObj, extraClass = "") {
     threadEl.scrollTop = threadEl.scrollHeight;
   }
 
-  async function syncAiSessionWithServer() {
-    if (aiSessionSyncedOnce) return;
-    aiSessionSyncedOnce = true;
+  async function syncAiSessionWithServer(force = false) {
+    if (aiSyncInFlight) return;
+    if (!force && aiSessionSyncedOnce) return;
 
-    if (!state.aiSessionId) {
-      if ((!state.aiHistory || state.aiHistory.length === 0) && state.aiPromptsUsed > 0) {
+    if (!state.user && !state.aiSessionId && (!state.aiHistory || state.aiHistory.length === 0)) {
+      if (state.aiPromptsUsed > 0) {
         state.aiPromptsUsed = 0;
         saveAiHistoryToStorage();
         updateAiQuotaUI();
@@ -6654,40 +6685,31 @@ function renderClickableUserNameHtml(userObj, extraClass = "") {
       return;
     }
 
-    try {
-      const data = await apiFetch(
-        `/api/ai/session?session_id=${encodeURIComponent(state.aiSessionId)}`
-      );
-      if (!data || !data.ok) return;
+    aiSyncInFlight = true;
+    aiSessionSyncedOnce = true;
 
-      const serverHistory = Array.isArray(data.history) ? data.history : [];
-      if (serverHistory.length > (state.aiHistory || []).length) {
-        state.aiHistory = serverHistory;
-        state.aiPromptsUsed = Math.max(Number(data.prompts_used) || 0, serverHistory.length);
-        saveAiHistoryToStorage();
-        renderAiHistoryThread();
-        updateAiQuotaUI();
-      } else if ((state.aiHistory || []).length > 0) {
-        state.aiPromptsUsed = Math.max(state.aiHistory.length, Number(data.prompts_used) || 0);
-        saveAiHistoryToStorage();
-        renderAiHistoryThread();
-        updateAiQuotaUI();
-      } else if (serverHistory.length === 0 && (state.aiHistory || []).length === 0) {
-        // Neither client nor server has any turns; ensure quota counter reflects empty chat
-        state.aiPromptsUsed = 0;
-        saveAiHistoryToStorage();
-        renderAiHistoryThread();
-        updateAiQuotaUI();
+    try {
+      const data = await apiFetch("/api/ai/session", {
+        method: "POST",
+        body: JSON.stringify({
+          session_id: state.aiSessionId || undefined,
+          client_history: state.aiHistory || [],
+        }),
+      });
+      if (data && data.ok) {
+        applyServerAiSessionState(data);
       }
     } catch {
       // Offline or transient error: rely on localStorage history
+    } finally {
+      aiSyncInFlight = false;
     }
   }
 
   function initAiAssistantView() {
     renderAiHistoryThread();
     updateAiQuotaUI();
-    syncAiSessionWithServer();
+    syncAiSessionWithServer(true);
     if (!aiTypewriterInitialized) {
       aiTypewriterInitialized = true;
       startAiTypewriterLoop();
@@ -7137,4 +7159,16 @@ function renderClickableUserNameHtml(userObj, extraClass = "") {
     initNavigationHistory();
     await loadCoursesCatalog(false);
     initSpamChatWebSocket();
+  });
+
+  window.addEventListener("focus", () => {
+    if (state.user && !state.aiIsGenerating) {
+      syncAiSessionWithServer(true);
+    }
+  });
+
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible" && state.user && !state.aiIsGenerating) {
+      syncAiSessionWithServer(true);
+    }
   });

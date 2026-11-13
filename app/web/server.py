@@ -87,6 +87,8 @@ from app.services.ai_agent import (
     MAX_PROMPTS_PER_SESSION,
     ai_orchestrator,
     ai_session_store,
+    load_or_sync_ai_session,
+    reset_ai_session_persistent,
 )
 from app.services.booking_scraper import (
     free_rooms_prewarm_worker,
@@ -139,10 +141,11 @@ _ACTIVE_WS_USERS: Dict[web.WebSocketResponse, Optional[int]] = {}
 
 
 async def broadcast_ws_event(event_dict: Dict[str, Any]) -> None:
-    """Broadcast an event JSON to connected WebSocket clients (scoping private notifications to recipient only)."""
+    """Broadcast an event JSON to connected WebSocket clients (scoping private notifications & AI sessions to recipient only)."""
     target_recipient_id = (
         int(event_dict["recipient_id"])
-        if event_dict.get("type") == "new_notification" and event_dict.get("recipient_id") is not None
+        if event_dict.get("type") in ("new_notification", "ai_session_updated")
+        and event_dict.get("recipient_id") is not None
         else None
     )
     payload_str = json.dumps(event_dict)
@@ -2578,9 +2581,23 @@ async def api_delete_feedback(request: web.Request) -> web.Response:
 # ------------------------------------------------------------------------------
 
 @routes.get("/api/ai/session")
+@routes.post("/api/ai/session")
 async def api_ai_session(request: web.Request) -> web.Response:
+    user = await get_current_web_user(request)
     session_id = (request.query.get("session_id") or "").strip() or None
-    if not session_id:
+    client_history = None
+
+    if request.method == "POST":
+        try:
+            body = await request.json()
+            if isinstance(body, dict):
+                session_id = (body.get("session_id") or session_id or "").strip() or None
+                if isinstance(body.get("client_history"), list):
+                    client_history = body.get("client_history")
+        except Exception:
+            pass
+
+    if not user and not session_id and not client_history:
         return web.json_response(
             {
                 "ok": True,
@@ -2591,18 +2608,35 @@ async def api_ai_session(request: web.Request) -> web.Response:
                 "history": [],
             }
         )
-    chat_state = ai_session_store.get_or_create(session_id)
-    history = chat_state.get_history_payload()
-    return web.json_response(
-        {
-            "ok": True,
-            "session_id": chat_state.session_id,
-            "prompts_used": chat_state.prompts_used,
-            "max_prompts": MAX_PROMPTS_PER_SESSION,
-            "limit_reached": chat_state.prompts_used >= MAX_PROMPTS_PER_SESSION,
-            "history": history,
-        }
-    )
+
+    async with get_db_session() as session:
+        chat_state, was_updated = await load_or_sync_ai_session(
+            db_session=session,
+            session_id=session_id,
+            web_user_id=user.id if user else None,
+            client_history=client_history,
+        )
+        history = chat_state.get_history_payload()
+
+    payload = {
+        "ok": True,
+        "session_id": chat_state.session_id,
+        "prompts_used": chat_state.prompts_used,
+        "max_prompts": MAX_PROMPTS_PER_SESSION,
+        "limit_reached": chat_state.prompts_used >= MAX_PROMPTS_PER_SESSION,
+        "history": history,
+    }
+
+    if user and was_updated:
+        await broadcast_ws_event(
+            {
+                "type": "ai_session_updated",
+                "recipient_id": user.id,
+                **payload,
+            }
+        )
+
+    return web.json_response(payload)
 
 
 @routes.post("/api/ai/chat")
@@ -2626,67 +2660,105 @@ async def api_ai_chat(request: web.Request) -> web.Response:
     reset = bool(data.get("reset", False))
     client_history = data.get("client_history")
 
-    if reset:
-        chat_state = ai_session_store.reset_session(session_id)
-    else:
-        chat_state = ai_session_store.get_or_create(session_id)
-        if isinstance(client_history, list) and client_history:
-            chat_state.restore_from_client_history(client_history)
-
-    if chat_state.prompts_used >= MAX_PROMPTS_PER_SESSION:
-        return web.json_response(
-            {
-                "ok": False,
-                "limit_reached": True,
-                "session_id": chat_state.session_id,
-                "prompts_used": chat_state.prompts_used,
-                "max_prompts": MAX_PROMPTS_PER_SESSION,
-                "history": chat_state.get_history_payload(),
-                "error": (
-                    "You've reached the 5-prompt limit for this session. "
-                    "Please start a new chat to continue."
-                ),
-            },
-            status=429,
-        )
-
-    if not prompt:
-        return web.json_response({"error": "Please enter a prompt question."}, status=400)
-
-    if len(prompt) > 1200:
-        return web.json_response(
-            {"error": "Prompt is too long (maximum 1,200 characters)."},
-            status=400,
-        )
-
     async with get_db_session() as session:
+        if reset:
+            chat_state = await reset_ai_session_persistent(
+                db_session=session,
+                old_session_id=session_id,
+                web_user_id=user.id if user else None,
+            )
+        else:
+            chat_state, _ = await load_or_sync_ai_session(
+                db_session=session,
+                session_id=session_id,
+                web_user_id=user.id if user else None,
+                client_history=client_history if isinstance(client_history, list) else None,
+            )
+
+        if chat_state.prompts_used >= MAX_PROMPTS_PER_SESSION:
+            return web.json_response(
+                {
+                    "ok": False,
+                    "limit_reached": True,
+                    "session_id": chat_state.session_id,
+                    "prompts_used": chat_state.prompts_used,
+                    "max_prompts": MAX_PROMPTS_PER_SESSION,
+                    "history": chat_state.get_history_payload(),
+                    "error": (
+                        "You've reached the 5-prompt limit for this session. "
+                        "Please start a new chat to continue."
+                    ),
+                },
+                status=429,
+            )
+
+        if not prompt:
+            return web.json_response({"error": "Please enter a prompt question."}, status=400)
+
+        if len(prompt) > 1200:
+            return web.json_response(
+                {"error": "Prompt is too long (maximum 1,200 characters)."},
+                status=400,
+            )
+
         result = await ai_orchestrator.answer_prompt(
             db_session=session,
             user_prompt=prompt,
             chat_state=chat_state,
+            web_user_id=user.id if user else None,
         )
-        return web.json_response(result)
+
+    if user:
+        await broadcast_ws_event(
+            {
+                "type": "ai_session_updated",
+                "recipient_id": user.id,
+                "session_id": result["session_id"],
+                "prompts_used": result["prompts_used"],
+                "max_prompts": result["max_prompts"],
+                "limit_reached": result["limit_reached"],
+                "history": result["history"],
+            }
+        )
+
+    return web.json_response(result)
 
 
 @routes.post("/api/ai/reset")
 async def api_ai_reset(request: web.Request) -> web.Response:
+    user = await get_current_web_user(request)
     try:
         data = await request.json()
     except Exception:
         data = {}
 
     old_sid = (data.get("session_id") or "").strip() or None
-    fresh_state = ai_session_store.reset_session(old_sid)
-    return web.json_response(
-        {
-            "ok": True,
-            "session_id": fresh_state.session_id,
-            "prompts_used": 0,
-            "max_prompts": MAX_PROMPTS_PER_SESSION,
-            "limit_reached": False,
-            "history": [],
-        }
-    )
+    async with get_db_session() as session:
+        fresh_state = await reset_ai_session_persistent(
+            db_session=session,
+            old_session_id=old_sid,
+            web_user_id=user.id if user else None,
+        )
+
+    payload = {
+        "ok": True,
+        "session_id": fresh_state.session_id,
+        "prompts_used": 0,
+        "max_prompts": MAX_PROMPTS_PER_SESSION,
+        "limit_reached": False,
+        "history": [],
+    }
+
+    if user:
+        await broadcast_ws_event(
+            {
+                "type": "ai_session_updated",
+                "recipient_id": user.id,
+                **payload,
+            }
+        )
+
+    return web.json_response(payload)
 
 
 # ------------------------------------------------------------------------------

@@ -907,4 +907,30 @@ class JenzaProfessorRequest(Base):
     user_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
 
 
+class WebUserAIChatSession(Base):
+    """Stores a signed-in user's active AI Assistant chat session so mobile and desktop stay synchronized."""
+    __tablename__ = "web_user_ai_sessions"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    web_user_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("web_users.id", ondelete="CASCADE"), unique=True, nullable=False, index=True
+    )
+    session_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    prompts_used: Mapped[int] = mapped_column(
+        Integer, default=0, nullable=False, server_default=text("0")
+    )
+    history_json: Mapped[str] = mapped_column(
+        Text, default="[]", nullable=False, server_default=text("'[]'")
+    )
+    reset_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+    web_user = relationship("WebUser", foreign_keys=[web_user_id])
+
+
+
 

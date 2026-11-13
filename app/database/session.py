@@ -462,6 +462,11 @@ async def init_db() -> None:
                 "CREATE INDEX IF NOT EXISTS ix_academic_feedbacks_remote_professor_id ON academic_feedbacks (remote_professor_id);"
             )
         )
+        await conn.execute(
+            text(
+                "ALTER TABLE web_user_ai_sessions ADD COLUMN IF NOT EXISTS reset_at TIMESTAMP WITH TIME ZONE;"
+            )
+        )
 
 
 

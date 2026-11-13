@@ -49,6 +49,7 @@ from app.database.models import (
     JenzaReview,
     SpamChatMessage,
     TelegramGroup,
+    WebUserAIChatSession,
 )
 
 logger = logging.getLogger(__name__)
@@ -834,6 +835,9 @@ async def lookup_aua_directory_and_people(
                             )
                             prof_url = link_m.group(1).strip() if link_m else ""
                             snippet = strip_html_tags(block)
+                            head_check = f"{prof_url} {snippet[:120]}".lower()
+                            if tokens and not any(t.lower() in head_check for t in tokens):
+                                continue
                             if prof_url and prof_url not in discovered_profile_urls:
                                 discovered_profile_urls.append(prof_url)
                             results.append(
@@ -1028,6 +1032,244 @@ class AISessionStore:
 ai_session_store = AISessionStore()
 
 
+def _parse_iso_dt(ts_str: Optional[str]) -> Optional[datetime]:
+    """Safely parse an ISO-8601 timestamp string to a timezone-aware UTC datetime."""
+    if not ts_str or not isinstance(ts_str, str):
+        return None
+    try:
+        cleaned = ts_str.strip()
+        if cleaned.endswith("Z"):
+            cleaned = cleaned[:-1] + "+00:00"
+        dt = datetime.fromisoformat(cleaned)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc)
+    except Exception:
+        return None
+
+
+def _merge_session_exchanges(
+    existing: List[Dict[str, Any]],
+    incoming: Optional[List[Dict[str, Any]]],
+    reset_at: Optional[datetime] = None,
+) -> Tuple[List[Dict[str, Any]], bool]:
+    """Merge and deduplicate exchanges across devices (e.g. mobile + desktop) while
+    filtering out any stale turns created prior to `reset_at` (when New Chat was pressed).
+    Returns (merged_list, changed).
+    """
+    if not isinstance(incoming, list) or not incoming:
+        return list(existing), False
+
+    reset_utc = reset_at.astimezone(timezone.utc) if (reset_at and reset_at.tzinfo) else (
+        reset_at.replace(tzinfo=timezone.utc) if reset_at else None
+    )
+
+    combined: List[Dict[str, Any]] = []
+    seen_keys = set()
+
+    for item in existing:
+        if not isinstance(item, dict):
+            continue
+        p_txt = str(item.get("prompt") or "").strip()
+        a_txt = str(item.get("answer") or "").strip()
+        if not p_txt or not a_txt:
+            continue
+        key = (p_txt.lower(), a_txt[:120].lower())
+        if key not in seen_keys:
+            seen_keys.add(key)
+            combined.append(item)
+
+    added_any = False
+    for item in incoming:
+        if not isinstance(item, dict):
+            continue
+        p_txt = str(item.get("prompt") or "").strip()
+        a_txt = str(item.get("answer") or "").strip()
+        if not p_txt or not a_txt:
+            continue
+        ts_raw = str(item.get("timestamp") or "").strip()
+        item_dt = _parse_iso_dt(ts_raw)
+        if reset_utc is not None:
+            # Discard any turn from before the most recent New Chat reset
+            if item_dt is None or item_dt <= reset_utc:
+                continue
+
+        key = (p_txt.lower(), a_txt[:120].lower())
+        if key in seen_keys:
+            continue
+        seen_keys.add(key)
+        steps = item.get("steps") if isinstance(item.get("steps"), list) else []
+        sources = item.get("sources") if isinstance(item.get("sources"), list) else []
+        combined.append(
+            {
+                "prompt": p_txt[:1200],
+                "answer": a_txt,
+                "steps": steps[:10],
+                "sources": sources[:10],
+                "timestamp": ts_raw or datetime.now(timezone.utc).isoformat(),
+            }
+        )
+        added_any = True
+
+    if added_any:
+        combined.sort(key=lambda x: str(x.get("timestamp") or ""))
+        combined = combined[:MAX_PROMPTS_PER_SESSION]
+
+    return combined, added_any
+
+
+async def load_or_sync_ai_session(
+    db_session: AsyncSession,
+    session_id: Optional[str] = None,
+    web_user_id: Optional[int] = None,
+    client_history: Optional[List[Dict[str, Any]]] = None,
+) -> Tuple[AIChatSessionState, bool]:
+    """Load or synchronize the AI chat session for an authenticated user (persisted in PostgreSQL
+    so mobile and desktop views stay synchronized) or an unauthenticated browser session.
+    Returns (chat_state, was_updated).
+    """
+    client_sid = (session_id or "").strip() or None
+
+    if not web_user_id:
+        chat_state = ai_session_store.get_or_create(client_sid)
+        prev_len = len(chat_state.get_history_payload())
+        if isinstance(client_history, list) and client_history:
+            chat_state.restore_from_client_history(client_history)
+        return chat_state, len(chat_state.get_history_payload()) > prev_len
+
+    res = await db_session.execute(
+        select(WebUserAIChatSession).where(WebUserAIChatSession.web_user_id == web_user_id)
+    )
+    row = res.scalar_one_or_none()
+
+    # Gather any in-memory turns associated with client_sid (e.g., created just before login or sync)
+    mem_exchanges: List[Dict[str, Any]] = []
+    if client_sid and client_sid in ai_session_store._sessions:
+        mem_exchanges = ai_session_store._sessions[client_sid].get_history_payload()
+
+    if row is None:
+        canonical_sid = f"user_{web_user_id}_{uuid.uuid4().hex[:12]}"
+        merged, _ = _merge_session_exchanges([], mem_exchanges, reset_at=None)
+        merged, _ = _merge_session_exchanges(merged, client_history, reset_at=None)
+
+        chat_state = AIChatSessionState(session_id=canonical_sid)
+        if merged:
+            chat_state.restore_from_client_history(merged)
+
+        row = WebUserAIChatSession(
+            web_user_id=web_user_id,
+            session_id=canonical_sid,
+            prompts_used=chat_state.prompts_used,
+            history_json=json.dumps(chat_state.get_history_payload(), ensure_ascii=False),
+            reset_at=None,
+        )
+        db_session.add(row)
+        await db_session.commit()
+        ai_session_store._sessions[canonical_sid] = chat_state
+        ai_session_store._sessions[f"user_{web_user_id}"] = chat_state
+        return chat_state, len(chat_state.exchanges) > 0
+
+    try:
+        db_history = json.loads(row.history_json or "[]")
+        if not isinstance(db_history, list):
+            db_history = []
+    except Exception:
+        db_history = []
+
+    merged, chg1 = _merge_session_exchanges(db_history, mem_exchanges, reset_at=row.reset_at)
+    merged, chg2 = _merge_session_exchanges(merged, client_history, reset_at=row.reset_at)
+    was_updated = chg1 or chg2
+
+    chat_state = AIChatSessionState(session_id=row.session_id)
+    if merged:
+        chat_state.restore_from_client_history(merged)
+        chat_state.prompts_used = max(int(row.prompts_used or 0), len(chat_state.exchanges))
+    else:
+        chat_state.prompts_used = 0
+
+    if was_updated:
+        row.prompts_used = chat_state.prompts_used
+        row.history_json = json.dumps(chat_state.get_history_payload(), ensure_ascii=False)
+        await db_session.commit()
+
+    ai_session_store._sessions[chat_state.session_id] = chat_state
+    ai_session_store._sessions[f"user_{web_user_id}"] = chat_state
+    return chat_state, was_updated
+
+
+async def persist_ai_session(
+    db_session: AsyncSession,
+    web_user_id: Optional[int],
+    chat_state: AIChatSessionState,
+) -> None:
+    """Persist the latest AIChatSessionState to PostgreSQL for cross-device account synchronization."""
+    ai_session_store._sessions[chat_state.session_id] = chat_state
+    if not web_user_id:
+        return
+    ai_session_store._sessions[f"user_{web_user_id}"] = chat_state
+    res = await db_session.execute(
+        select(WebUserAIChatSession).where(WebUserAIChatSession.web_user_id == web_user_id)
+    )
+    row = res.scalar_one_or_none()
+    history_str = json.dumps(chat_state.get_history_payload(), ensure_ascii=False)
+    if row is None:
+        row = WebUserAIChatSession(
+            web_user_id=web_user_id,
+            session_id=chat_state.session_id,
+            prompts_used=chat_state.prompts_used,
+            history_json=history_str,
+        )
+        db_session.add(row)
+    else:
+        row.session_id = chat_state.session_id
+        row.prompts_used = chat_state.prompts_used
+        row.history_json = history_str
+    await db_session.commit()
+
+
+async def reset_ai_session_persistent(
+    db_session: AsyncSession,
+    old_session_id: Optional[str] = None,
+    web_user_id: Optional[int] = None,
+) -> AIChatSessionState:
+    """Reset the AI chat session across all devices of a signed-in user (or single anonymous browser)."""
+    if not web_user_id:
+        return ai_session_store.reset_session(old_session_id)
+
+    if old_session_id:
+        ai_session_store._sessions.pop(old_session_id, None)
+    ai_session_store._sessions.pop(f"user_{web_user_id}", None)
+
+    new_sid = f"user_{web_user_id}_{uuid.uuid4().hex[:12]}"
+    now_utc = datetime.now(timezone.utc)
+    fresh_state = AIChatSessionState(session_id=new_sid, prompts_used=0)
+    ai_session_store._sessions[new_sid] = fresh_state
+    ai_session_store._sessions[f"user_{web_user_id}"] = fresh_state
+
+    res = await db_session.execute(
+        select(WebUserAIChatSession).where(WebUserAIChatSession.web_user_id == web_user_id)
+    )
+    row = res.scalar_one_or_none()
+    if row is None:
+        row = WebUserAIChatSession(
+            web_user_id=web_user_id,
+            session_id=new_sid,
+            prompts_used=0,
+            history_json="[]",
+            reset_at=now_utc,
+        )
+        db_session.add(row)
+    else:
+        if row.session_id:
+            ai_session_store._sessions.pop(row.session_id, None)
+        row.session_id = new_sid
+        row.prompts_used = 0
+        row.history_json = "[]"
+        row.reset_at = now_utc
+    await db_session.commit()
+    return fresh_state
+
+
 # ---------------------------------------------------------------------------
 # Tool Selection Planner & Orchestrator
 # ---------------------------------------------------------------------------
@@ -1184,6 +1426,7 @@ class AUAAssistantOrchestrator:
         db_session: AsyncSession,
         user_prompt: str,
         chat_state: AIChatSessionState,
+        web_user_id: Optional[int] = None,
     ) -> Dict[str, Any]:
         """Run tool selection, parallel RAG retrieval, and Gemini synthesis."""
         plan = classify_tools_heuristic(user_prompt)
@@ -1321,6 +1564,8 @@ class AUAAssistantOrchestrator:
             }
         )
         chat_state.updated_at = time.time()
+        if web_user_id:
+            await persist_ai_session(db_session, web_user_id, chat_state)
 
         return {
             "ok": True,

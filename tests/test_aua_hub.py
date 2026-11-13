@@ -1133,6 +1133,8 @@ class TestAuaHub(unittest.IsolatedAsyncioTestCase):
             classify_tools_heuristic,
             decode_cfemails_in_html,
             extract_person_name_candidate,
+            load_or_sync_ai_session,
+            reset_ai_session_persistent,
             search_course_and_professor_feedbacks,
         )
 
@@ -1208,6 +1210,72 @@ class TestAuaHub(unittest.IsolatedAsyncioTestCase):
         self.assertNotEqual(fresh_st.session_id, "test_session_123")
         self.assertEqual(fresh_st.prompts_used, 0)
         self.assertEqual(fresh_st.get_history_payload(), [])
+
+        # 4. Verify cross-device (Mobile <-> Desktop) DB-backed synchronization for same WebUser account
+        async with get_db_session() as session:
+            await session.execute(delete(WebUser).where(WebUser.email == "sync_student@edu.aua.am"))
+            await session.commit()
+            otp_m, _ = await create_web_registration_otp(
+                session=session,
+                name="Sync Student",
+                email="sync_student@edu.aua.am",
+                password="StrongPassword123!",
+            )
+            ok_m, sync_user, _ = await verify_web_otp_and_register(
+                session=session,
+                email="sync_student@edu.aua.am",
+                otp_code=otp_m,
+            )
+            self.assertTrue(ok_m)
+            self.assertIsNotNone(sync_user)
+
+            # Mobile sends a prompt
+            mobile_state, _ = await load_or_sync_ai_session(
+                db_session=session,
+                session_id="mobile_local_sid",
+                web_user_id=sync_user.id,
+            )
+            await orchestrator.answer_prompt(
+                db_session=session,
+                user_prompt="Find discussions about CS courses in chat from mobile",
+                chat_state=mobile_state,
+                web_user_id=sync_user.id,
+            )
+
+            # Desktop loads session with its own different local session_id -> receives Mobile's prompt & response!
+            desktop_state, _ = await load_or_sync_ai_session(
+                db_session=session,
+                session_id="desktop_local_sid",
+                web_user_id=sync_user.id,
+            )
+            self.assertEqual(desktop_state.session_id, mobile_state.session_id)
+            self.assertEqual(desktop_state.prompts_used, 1)
+            self.assertEqual(len(desktop_state.get_history_payload()), 1)
+            self.assertEqual(
+                desktop_state.get_history_payload()[0]["prompt"],
+                "Find discussions about CS courses in chat from mobile",
+            )
+
+            # Pressing New Chat on Desktop resets both Desktop and Mobile
+            reset_state = await reset_ai_session_persistent(
+                db_session=session,
+                old_session_id=desktop_state.session_id,
+                web_user_id=sync_user.id,
+            )
+            self.assertEqual(reset_state.prompts_used, 0)
+            self.assertEqual(reset_state.get_history_payload(), [])
+
+            # Even if Mobile tries to sync its pre-reset client_history, reset_at filters it out
+            mobile_after_reset, _ = await load_or_sync_ai_session(
+                db_session=session,
+                session_id=mobile_state.session_id,
+                web_user_id=sync_user.id,
+                client_history=desktop_state.get_history_payload(),
+            )
+            self.assertEqual(mobile_after_reset.prompts_used, 0)
+            self.assertEqual(mobile_after_reset.get_history_payload(), [])
+            await session.execute(delete(WebUser).where(WebUser.id == sync_user.id))
+            await session.commit()
 
 
 if __name__ == "__main__":
