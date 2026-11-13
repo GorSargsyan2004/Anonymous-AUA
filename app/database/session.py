@@ -467,6 +467,11 @@ async def init_db() -> None:
                 "ALTER TABLE web_user_ai_sessions ADD COLUMN IF NOT EXISTS reset_at TIMESTAMP WITH TIME ZONE;"
             )
         )
+        await conn.execute(
+            text(
+                "ALTER TABLE have_need_posts ADD COLUMN IF NOT EXISTS notify_email BOOLEAN NOT NULL DEFAULT true;"
+            )
+        )
 
 
 

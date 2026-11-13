@@ -309,3 +309,175 @@ async def send_verification_email(to_email: str, code: str) -> Tuple[bool, Optio
     except Exception as e:
         logger.error("Failed to send verification email to %s: %s", clean_email, e)
         return False, str(e)
+
+
+def _send_have_need_match_smtp_sync(
+    host: str,
+    port: int,
+    user: Optional[str],
+    password: Optional[str],
+    from_addr: str,
+    to_addr: str,
+    recipient_name: str,
+    partner_name: str,
+    partner_contact_dm: str,
+    partner_notes: Optional[str],
+    my_have_label: str,
+    my_need_label: str,
+    use_tls: bool = True,
+) -> None:
+    """Synchronous SMTP delivery for a Have-Need course section swap match."""
+    import html as html_lib
+
+    msg = MIMEMultipart("alternative")
+    msg["Subject"] = f"Course Swap Match Found on AUA Hub: {my_have_label} ⇄ {my_need_label}"
+    msg["From"] = from_addr
+    msg["To"] = to_addr
+
+    clean_dm = (partner_contact_dm or "").strip()
+    dm_url = ""
+    if clean_dm.startswith("@"):
+        dm_url = f"https://t.me/{clean_dm[1:]}"
+    elif clean_dm.startswith(("https://t.me/", "http://t.me/")):
+        dm_url = clean_dm
+    elif clean_dm.startswith("t.me/"):
+        dm_url = f"https://{clean_dm}"
+
+    notes_plain = f"\nNote from {partner_name}: {partner_notes}\n" if partner_notes else ""
+    plain_text = (
+        f"Hello {recipient_name},\n\n"
+        f"Great news! Another AUA student ({partner_name}) posted a matching Have-Need course swap on AUA Hub:\n\n"
+        f"• Course You Have (They Need): {my_have_label}\n"
+        f"• Course You Need (They Have): {my_need_label}\n"
+        f"• Contact / Telegram DM: {clean_dm}"
+        f"{notes_plain}\n"
+        f"Reach out to {partner_name} to coordinate your section swap!\n"
+    )
+
+    safe_recip = html_lib.escape(recipient_name or "AUA Student")
+    safe_partner = html_lib.escape(partner_name or "AUA Student")
+    safe_have = html_lib.escape(my_have_label)
+    safe_need = html_lib.escape(my_need_label)
+    safe_dm = html_lib.escape(clean_dm)
+    safe_notes = html_lib.escape(partner_notes) if partner_notes else ""
+
+    dm_cta_html = (
+        f'<div style="text-align: center; margin-top: 22px;">'
+        f'<a href="{html_lib.escape(dm_url)}" target="_blank" style="display: inline-block; background: linear-gradient(135deg, #0284c7, #2563eb); color: #ffffff; text-decoration: none; font-weight: 700; font-size: 14px; padding: 12px 24px; border-radius: 10px;">'
+        f'Message {safe_partner} on Telegram ({safe_dm})</a></div>'
+        if dm_url
+        else f'<div style="background: #f1f5f9; border-radius: 8px; padding: 12px 16px; margin-top: 16px; font-size: 14px; color: #0f172a;"><b>Contact Method:</b> {safe_dm}</div>'
+    )
+
+    notes_html = (
+        f'<div style="background: #f8fafc; border-left: 3px solid #38bdf8; padding: 10px 14px; margin-top: 14px; font-size: 13.5px; color: #334155;">'
+        f'<b>Note from {safe_partner}:</b> {safe_notes}</div>'
+        if safe_notes
+        else ""
+    )
+
+    html_content = f"""<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"></head>
+<body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; background-color: #0b1120; padding: 24px; margin: 0;">
+  <div style="max-width: 540px; margin: 0 auto; background: #ffffff; border-radius: 14px; padding: 30px; border: 1px solid #e2e8f0; box-shadow: 0 10px 25px rgba(0,0,0,0.15);">
+    <div style="text-align: center; margin-bottom: 20px;">
+      <div style="display: inline-block; background: #e0f2fe; color: #0369a1; font-weight: 800; font-size: 12px; padding: 5px 12px; border-radius: 999px; letter-spacing: 0.04em; text-transform: uppercase;">🔄 Course Swap Match</div>
+      <h2 style="color: #0f172a; margin: 10px 0 4px; font-size: 21px;">You Have a Direct Course Swap Match!</h2>
+      <p style="color: #64748b; font-size: 13.5px; margin: 0;">AUA Hub Have-Need Exchange</p>
+    </div>
+
+    <p style="color: #334155; font-size: 14.5px; line-height: 1.55;">Hello <b>{safe_recip}</b>,</p>
+    <p style="color: #334155; font-size: 14.5px; line-height: 1.55;">
+      <b>{safe_partner}</b> has posted a reciprocal course section swap on AUA Hub that matches yours:
+    </p>
+
+    <div style="background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 12px; padding: 16px; margin: 18px 0;">
+      <div style="margin-bottom: 12px;">
+        <div style="font-size: 11px; font-weight: 800; color: #0284c7; text-transform: uppercase; letter-spacing: 0.05em;">📘 Course You Have (They Need)</div>
+        <div style="font-size: 15px; font-weight: 700; color: #0f172a; margin-top: 3px;">{safe_have}</div>
+      </div>
+      <div style="border-top: 1px dashed #cbd5e1; margin: 10px 0;"></div>
+      <div>
+        <div style="font-size: 11px; font-weight: 800; color: #059669; text-transform: uppercase; letter-spacing: 0.05em;">📗 Course You Need (They Have)</div>
+        <div style="font-size: 15px; font-weight: 700; color: #0f172a; margin-top: 3px;">{safe_need}</div>
+      </div>
+    </div>
+
+    {notes_html}
+    {dm_cta_html}
+
+    <hr style="border: none; border-top: 1px solid #e2e8f0; margin: 24px 0 16px;" />
+    <p style="color: #94a3b8; font-size: 12px; text-align: center; margin: 0;">
+      You received this email because you enabled "Receive an email if there is a match" on your AUA Hub Have-Need listing.
+    </p>
+  </div>
+</body>
+</html>"""
+
+    msg.attach(MIMEText(plain_text, "plain", "utf-8"))
+    msg.attach(MIMEText(html_content, "html", "utf-8"))
+
+    if port == 465:
+        with smtplib.SMTP_SSL(host, port, timeout=15) as server:
+            if user and password:
+                server.login(user, password)
+            server.sendmail(from_addr, [to_addr], msg.as_string())
+    else:
+        with smtplib.SMTP(host, port, timeout=15) as server:
+            if use_tls:
+                server.starttls()
+            if user and password:
+                server.login(user, password)
+            server.sendmail(from_addr, [to_addr], msg.as_string())
+
+
+async def send_have_need_match_email(
+    to_email: str,
+    recipient_name: str,
+    partner_name: str,
+    partner_contact_dm: str,
+    partner_notes: Optional[str],
+    my_have_label: str,
+    my_need_label: str,
+) -> Tuple[bool, Optional[str]]:
+    """Send an email notification when a reciprocal Have-Need course swap match is found."""
+    clean_email = (to_email or "").strip().lower()
+    if not clean_email or "@" not in clean_email:
+        return False, "invalid_email"
+
+    if not settings.SMTP_HOST:
+        logger.info(
+            "(Dev/Simulated mode) Have-Need match email to %s: %s ⇄ %s with %s (%s)",
+            clean_email,
+            my_have_label,
+            my_need_label,
+            partner_name,
+            partner_contact_dm,
+        )
+        return True, "simulated"
+
+    from_addr = settings.SMTP_FROM_EMAIL or f"notifications@{settings.SMTP_HOST}"
+    try:
+        await asyncio.to_thread(
+            _send_have_need_match_smtp_sync,
+            host=settings.SMTP_HOST,
+            port=settings.SMTP_PORT,
+            user=settings.SMTP_USER,
+            password=settings.SMTP_PASSWORD,
+            from_addr=from_addr,
+            to_addr=clean_email,
+            recipient_name=recipient_name,
+            partner_name=partner_name,
+            partner_contact_dm=partner_contact_dm,
+            partner_notes=partner_notes,
+            my_have_label=my_have_label,
+            my_need_label=my_need_label,
+            use_tls=settings.SMTP_USE_TLS,
+        )
+        logger.info("Sent Have-Need swap match email to %s", clean_email)
+        return True, None
+    except Exception as exc:
+        logger.warning("Failed to send Have-Need swap match email to %s: %s", clean_email, exc)
+        return False, str(exc)
+

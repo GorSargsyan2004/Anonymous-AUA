@@ -25,6 +25,7 @@ from urllib.parse import urlparse
 
 from aiohttp import WSMsgType, web
 from sqlalchemy import func, select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.database.crud import mark_inbox_message_replied
@@ -97,6 +98,7 @@ from app.services.booking_scraper import (
 from app.services.email_verification import (
     BLOCKED_LOCAL_TERMS,
     is_valid_aua_email,
+    send_have_need_match_email,
     send_verification_email,
 )
 from app.services.jenzareviews_sync import (
@@ -708,6 +710,7 @@ def serialize_have_need(p: HaveNeedPost, current_user_id: Optional[int] = None) 
         "need_course": serialize_course(p.need_course) if p.need_course else None,
         "contact_dm": "" if is_deleted else p.contact_dm,
         "notes": p.notes or "",
+        "notify_email": bool(getattr(p, "notify_email", True)),
         "created_at": p.created_at.isoformat() if p.created_at else None,
         "updated_at": p.updated_at.isoformat() if p.updated_at else None,
     }
@@ -1391,6 +1394,141 @@ async def api_list_have_need(request: web.Request) -> web.Response:
     )
 
 
+async def _process_have_need_matches(
+    session: AsyncSession,
+    post: HaveNeedPost,
+    user: WebUser,
+) -> int:
+    """Detect reciprocal Have-Need swap matches, create in-app notifications, broadcast WebSocket
+    alerts, and send email notifications to users who opted into `notify_email`.
+    """
+    hc = post.have_course or await session.get(Course, post.have_course_id)
+    nc = post.need_course or await session.get(Course, post.need_course_id)
+    if not hc or not nc:
+        return 0
+
+    matches = await find_reciprocal_have_need_matches(
+        session=session,
+        have_course_id=post.have_course_id,
+        need_course_id=post.need_course_id,
+        exclude_user_id=user.id,
+    )
+
+    my_have_short = f"{hc.course_code} [Sec {hc.section}]"
+    my_need_short = f"{nc.course_code} [Sec {nc.section}]"
+    my_have_full = f"{hc.course_code} (Sec {hc.section}) — {hc.course_title}"
+    my_need_full = f"{nc.course_code} (Sec {nc.section}) — {nc.course_title}"
+
+    for m_post in matches:
+        partner = m_post.web_user
+        if not partner or getattr(partner, "is_deleted", False):
+            continue
+
+        p_hc = m_post.have_course or nc
+        p_nc = m_post.need_course or hc
+        p_have_short = f"{p_hc.course_code} [Sec {p_hc.section}]"
+        p_need_short = f"{p_nc.course_code} [Sec {p_nc.section}]"
+        p_have_full = f"{p_hc.course_code} (Sec {p_hc.section}) — {p_hc.course_title}"
+        p_need_full = f"{p_nc.course_code} (Sec {p_nc.section}) — {p_nc.course_title}"
+
+        # 1. In-app notification + live WebSocket alert for the partner (existing listing owner)
+        p_notif = await create_user_notification(
+            session=session,
+            recipient_id=partner.id,
+            sender_id=user.id,
+            category="have_need_match",
+            title=f"Swap Match: {p_have_short} ⇄ {p_need_short}",
+            content=(
+                f"Reciprocal match found with {user.name}! "
+                f"They have {p_need_short} and need {p_have_short}. Contact: {post.contact_dm}"
+            ),
+            target_type="have_need",
+            target_id=str(post.id),
+            extra_data={
+                "post_id": m_post.id,
+                "matched_post_id": post.id,
+                "partner_name": user.name,
+                "partner_dm": post.contact_dm,
+                "have_code": p_hc.course_code,
+                "need_code": p_nc.course_code,
+                "have_course_code": p_hc.course_code,
+                "need_course_code": p_nc.course_code,
+            },
+        )
+        p_unread = await get_unread_notification_count(session, partner.id)
+        await broadcast_ws_event(
+            {
+                "type": "new_notification",
+                "recipient_id": partner.id,
+                "notification": serialize_user_notification(p_notif),
+                "unread_count": p_unread,
+            }
+        )
+
+        # 2. In-app notification + live WebSocket alert for the current user
+        my_notif = await create_user_notification(
+            session=session,
+            recipient_id=user.id,
+            sender_id=partner.id,
+            category="have_need_match",
+            title=f"Swap Match: {my_have_short} ⇄ {my_need_short}",
+            content=(
+                f"Reciprocal match found with {partner.name}! "
+                f"They have {my_need_short} and need {my_have_short}. Contact: {m_post.contact_dm}"
+            ),
+            target_type="have_need",
+            target_id=str(m_post.id),
+            extra_data={
+                "post_id": post.id,
+                "matched_post_id": m_post.id,
+                "partner_name": partner.name,
+                "partner_dm": m_post.contact_dm,
+                "have_code": hc.course_code,
+                "need_code": nc.course_code,
+                "have_course_code": hc.course_code,
+                "need_course_code": nc.course_code,
+            },
+        )
+        my_unread = await get_unread_notification_count(session, user.id)
+        await broadcast_ws_event(
+            {
+                "type": "new_notification",
+                "recipient_id": user.id,
+                "notification": serialize_user_notification(my_notif),
+                "unread_count": my_unread,
+            }
+        )
+
+        # 3. Email alerts for each party that opted into "Receive an email if there is a match"
+        if getattr(m_post, "notify_email", True) and partner.email:
+            asyncio.create_task(
+                send_have_need_match_email(
+                    to_email=partner.email,
+                    recipient_name=partner.name,
+                    partner_name=user.name,
+                    partner_contact_dm=post.contact_dm,
+                    partner_notes=post.notes,
+                    my_have_label=p_have_full,
+                    my_need_label=p_need_full,
+                )
+            )
+
+        if getattr(post, "notify_email", True) and user.email:
+            asyncio.create_task(
+                send_have_need_match_email(
+                    to_email=user.email,
+                    recipient_name=user.name,
+                    partner_name=partner.name,
+                    partner_contact_dm=m_post.contact_dm,
+                    partner_notes=m_post.notes,
+                    my_have_label=my_have_full,
+                    my_need_label=my_need_full,
+                )
+            )
+
+    return len(matches)
+
+
 @routes.post("/api/have-need")
 async def api_create_have_need(request: web.Request) -> web.Response:
     user = await get_current_web_user(request)
@@ -1417,6 +1555,7 @@ async def api_create_have_need(request: web.Request) -> web.Response:
 
     contact_dm = (data.get("contact_dm") or "").strip()
     notes = (data.get("notes") or "").strip()
+    notify_email = bool(data.get("notify_email", True))
 
     if not contact_dm:
         return web.json_response(
@@ -1441,77 +1580,15 @@ async def api_create_have_need(request: web.Request) -> web.Response:
             need_course_id=need_course_id,
             contact_dm=contact_dm,
             notes=notes,
+            notify_email=notify_email,
         )
 
-        # Cross-matching pipeline: detect reciprocal matches and alert both parties
-        matches = await find_reciprocal_have_need_matches(
-            session=session,
-            have_course_id=have_course_id,
-            need_course_id=need_course_id,
-            exclude_user_id=user.id,
-        )
-        for m_post in matches:
-            partner = m_post.web_user
-            if not partner:
-                continue
-            # Notify the partner (existing listing owner)
-            p_notif = await create_user_notification(
-                session=session,
-                recipient_id=partner.id,
-                sender_id=user.id,
-                category="have_need_match",
-                title=f"Swap Match: {m_post.have_course.code} ⇄ {m_post.need_course.code}",
-                content=f"Reciprocal match found with {user.name}! They have {nc.code} and need {hc.code}.",
-                target_type="have_need",
-                target_id=str(m_post.id),
-                extra_data={
-                    "post_id": m_post.id,
-                    "matched_post_id": post.id,
-                    "partner_name": user.name,
-                    "partner_dm": contact_dm,
-                    "have_code": m_post.have_course.code,
-                    "need_code": m_post.need_course.code,
-                },
-            )
-            p_unread = await get_unread_notification_count(session, partner.id)
-            await broadcast_ws_event({
-                "type": "new_notification",
-                "recipient_id": partner.id,
-                "notification": serialize_user_notification(p_notif),
-                "unread_count": p_unread,
-            })
-
-            # Notify the current user
-            my_notif = await create_user_notification(
-                session=session,
-                recipient_id=user.id,
-                sender_id=partner.id,
-                category="have_need_match",
-                title=f"Swap Match: {hc.code} ⇄ {nc.code}",
-                content=f"Reciprocal match found with {partner.name}! They have {m_post.have_course.code} and need {m_post.need_course.code}.",
-                target_type="have_need",
-                target_id=str(post.id),
-                extra_data={
-                    "post_id": post.id,
-                    "matched_post_id": m_post.id,
-                    "partner_name": partner.name,
-                    "partner_dm": m_post.contact_dm,
-                    "have_code": hc.code,
-                    "need_code": nc.code,
-                },
-            )
-            my_unread = await get_unread_notification_count(session, user.id)
-            await broadcast_ws_event({
-                "type": "new_notification",
-                "recipient_id": user.id,
-                "notification": serialize_user_notification(my_notif),
-                "unread_count": my_unread,
-            })
+        matches_count = await _process_have_need_matches(session=session, post=post, user=user)
 
         return web.json_response({
             "ok": True,
             "post": serialize_have_need(post, current_user_id=user.id),
-            "matches_count": len(matches),
+            "matches_count": matches_count,
         })
 
 
@@ -1538,12 +1615,16 @@ async def api_update_have_need(request: web.Request) -> web.Response:
 
     contact_dm = data.get("contact_dm")
     notes = data.get("notes")
+    notify_email = bool(data["notify_email"]) if "notify_email" in data else None
 
     link_err = scan_web_text_for_malicious_links(f"{contact_dm or ''} {notes or ''}")
     if link_err:
         return web.json_response({"error": link_err}, status=400)
 
     async with get_db_session() as session:
+        existing = await session.get(HaveNeedPost, post_id)
+        old_pair = (existing.have_course_id, existing.need_course_id) if existing else (None, None)
+
         updated = await update_have_need_post(
             session=session,
             post_id=post_id,
@@ -1552,11 +1633,20 @@ async def api_update_have_need(request: web.Request) -> web.Response:
             need_course_id=need_cid,
             contact_dm=contact_dm,
             notes=notes,
+            notify_email=notify_email,
         )
         if not updated:
             return web.json_response({"error": "Post not found or not owned by you."}, status=404)
 
-        return web.json_response({"ok": True, "post": serialize_have_need(updated, current_user_id=user.id)})
+        matches_count = 0
+        if (updated.have_course_id, updated.need_course_id) != old_pair:
+            matches_count = await _process_have_need_matches(session=session, post=updated, user=user)
+
+        return web.json_response({
+            "ok": True,
+            "post": serialize_have_need(updated, current_user_id=user.id),
+            "matches_count": matches_count,
+        })
 
 
 @routes.delete("/api/have-need/{post_id}")

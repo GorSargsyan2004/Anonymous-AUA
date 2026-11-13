@@ -630,6 +630,7 @@ class HaveNeedPost(Base):
     )
     contact_dm: Mapped[str] = mapped_column(String(128), nullable=False)
     notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    notify_email: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False, server_default=text("true"))
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False, server_default=text("true"))
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False

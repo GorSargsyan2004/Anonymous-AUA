@@ -687,7 +687,7 @@ class TestAuaHub(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(await delete_academic_feedback(session, feedback_id=fb_course.id, web_user_id=u2.id))
 
             # 10. Real-Time In-App Notifications & Have-Need Reciprocal Matching
-            # User 1 posts: Has c1 (Section A), Needs c2 (Section B)
+            # User 1 posts: Has c1 (Section A), Needs c2 (Section B) with notify_email=True
             hn1 = await create_have_need_post(
                 session=session,
                 web_user_id=u1.id,
@@ -695,7 +695,23 @@ class TestAuaHub(unittest.IsolatedAsyncioTestCase):
                 need_course_id=c2.id,
                 contact_dm="@gor_tg",
                 notes="Morning for afternoon section",
+                notify_email=True,
             )
+            self.assertTrue(hn1.notify_email)
+            hn1_toggled = await update_have_need_post(
+                session=session,
+                post_id=hn1.id,
+                web_user_id=u1.id,
+                notify_email=False,
+            )
+            self.assertFalse(hn1_toggled.notify_email)
+            hn1 = await update_have_need_post(
+                session=session,
+                post_id=hn1.id,
+                web_user_id=u1.id,
+                notify_email=True,
+            )
+            self.assertTrue(hn1.notify_email)
             # User 2 checks for reciprocal match: Has c2 (Section B), Needs c1 (Section A)
             reciprocal_matches = await find_reciprocal_have_need_matches(
                 session=session,

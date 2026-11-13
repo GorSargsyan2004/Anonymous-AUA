@@ -17,7 +17,7 @@
     href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;700;800&display=swap"
     rel="stylesheet">
   <link rel="icon" type="image/svg+xml" href="/static/bot-logo.svg" />
-  <link rel="stylesheet" href="/static/styles.css?v=20261113_6" />
+  <link rel="stylesheet" href="/static/styles.css?v=20261113_7" />
 </head>
 
 <body>
@@ -408,11 +408,24 @@
             </div>
 
             <!-- Optional Note -->
-            <div style="margin-bottom: 18px;">
+            <div style="margin-bottom: 14px;">
               <label class="field-label" for="hnNotes">Optional Note</label>
               <input type="text" id="hnNotes" class="input-glass"
                 placeholder="e.g. Also open to Section C if morning slot" />
             </div>
+
+            <!-- Email & In-App Match Notification Checkbox -->
+            <label class="hn-match-alert-toggle" for="hnNotifyEmailCheckbox">
+              <input type="checkbox" id="hnNotifyEmailCheckbox" class="hn-match-checkbox" checked />
+              <div class="hn-match-toggle-text">
+                <div class="hn-match-toggle-title">
+                  <span>📧</span> Receive an email if there is a match
+                </div>
+                <div class="hn-match-toggle-sub">
+                  Get an instant email to your AUA address + a 🔔 notification when another student has the section you need and needs the section you have.
+                </div>
+              </div>
+            </label>
 
             <div style="display:flex; gap:10px;">
               <button type="submit" id="hnSubmitBtn" class="btn-illuminated" style="flex:1;">
@@ -1330,7 +1343,7 @@
     </div>
   </div>
 
-  <script src="/static/app.js?v=20261113_6"></script>
+  <script src="/static/app.js?v=20261113_7"></script>
 </body>
 
 </html>

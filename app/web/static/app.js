@@ -1220,15 +1220,40 @@ function renderClickableUserNameHtml(userObj, extraClass = "") {
         }
       }, 280);
     } else if (notif.target_type === "have_need") {
+      state.hnOnlyMine = false;
+      const tabAll = document.getElementById("hnTabAll");
+      const tabMine = document.getElementById("hnTabMine");
+      if (tabAll) tabAll.classList.add("active");
+      if (tabMine) tabMine.classList.remove("active");
+
+      const searchInput = document.getElementById("hnFeedSearch");
+      if (searchInput) {
+        searchInput.value = "";
+      }
       switchView("have-need");
-      const code = notif.extra_data?.have_course_code || notif.extra_data?.need_course_code;
-      if (code) {
-        const searchInput = document.getElementById("hnFeedSearch");
-        if (searchInput) {
+      const targetPostId = Number(
+        notif.extra_data?.matched_post_id || notif.target_id || notif.extra_data?.post_id || 0
+      );
+      setTimeout(() => {
+        if (targetPostId) {
+          const cardEl = document.getElementById(`hn-post-${targetPostId}`);
+          if (cardEl) {
+            cardEl.scrollIntoView({ behavior: "smooth", block: "center" });
+            cardEl.classList.add("hn-card-highlighted");
+            setTimeout(() => cardEl.classList.remove("hn-card-highlighted"), 3600);
+            return;
+          }
+        }
+        const code =
+          notif.extra_data?.have_course_code ||
+          notif.extra_data?.have_code ||
+          notif.extra_data?.need_course_code ||
+          notif.extra_data?.need_code;
+        if (code && searchInput) {
           searchInput.value = code;
           loadHaveNeedPosts();
         }
-      }
+      }, 320);
     } else if (notif.target_type === "inbox") {
       switchView("anonymous");
       switchAnonymousSubtab("inbox");
@@ -1679,6 +1704,8 @@ function renderClickableUserNameHtml(userObj, extraClass = "") {
       return;
     }
 
+    const myOwnPosts = state.hnPosts.filter((item) => item.is_owner);
+
     container.innerHTML = state.hnPosts
       .map((p) => {
         const hc = p.have_course || {};
@@ -1692,9 +1719,32 @@ function renderClickableUserNameHtml(userObj, extraClass = "") {
           is_bot_synced: p.author?.is_bot_synced,
           is_alumni: p.author?.is_alumni,
         };
+        const emailEnabled = p.notify_email !== false;
+        const isReciprocalMatch =
+          !p.is_owner &&
+          myOwnPosts.some(
+            (mine) =>
+              mine.have_course?.id &&
+              mine.need_course?.id &&
+              mine.have_course.id === nc.id &&
+              mine.need_course.id === hc.id
+          );
+
+        const matchBannerHtml = isReciprocalMatch
+          ? `<div class="hn-direct-match-banner">⚡ Direct Course Swap Match for Your Listing!</div>`
+          : "";
+
         const ownerControls = p.is_owner
           ? `
-          <div style="display:flex; gap:8px;">
+          <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+            <label class="hn-card-email-pill ${emailEnabled ? "active" : ""}" title="Receive an email when another student matches this course swap">
+              <input
+                type="checkbox"
+                ${emailEnabled ? "checked" : ""}
+                onchange="toggleHaveNeedEmailAlert(${p.id}, this.checked)"
+              />
+              <span>📧 Email if matched</span>
+            </label>
             <button class="btn-glass" style="padding:6px 12px; font-size:12px;" onclick="startEditHaveNeed(${p.id})">✏️ Edit</button>
             <button class="btn-danger-glass" onclick="deleteHaveNeed(${p.id})">🗑️ Remove</button>
           </div>
@@ -1702,7 +1752,8 @@ function renderClickableUserNameHtml(userObj, extraClass = "") {
           : "";
 
         return `
-        <div class="glass-card">
+        <div class="glass-card" id="hn-post-${p.id}" data-hn-post-id="${p.id}">
+          ${matchBannerHtml}
           <div style="display:flex; align-items:center; justify-content:space-between; gap:10px; flex-wrap:wrap;">
             <div style="display:flex; align-items:center; gap:12px;">
               ${renderAvatarCircleHtml(authorObj, "user-avatar-md", true)}
@@ -1753,6 +1804,28 @@ function renderClickableUserNameHtml(userObj, extraClass = "") {
       .join("");
   }
 
+  async function toggleHaveNeedEmailAlert(postId, enabled) {
+    try {
+      const res = await apiFetch(`/api/have-need/${postId}`, {
+        method: "PUT",
+        body: JSON.stringify({ notify_email: Boolean(enabled) }),
+      });
+      const post = state.hnPosts.find((p) => p.id === postId);
+      if (post) {
+        post.notify_email = res?.post?.notify_email !== undefined ? Boolean(res.post.notify_email) : Boolean(enabled);
+      }
+      renderHaveNeedPosts();
+      showToast(
+        enabled
+          ? "📧 You will receive an email if a matching course swap is found!"
+          : "Email alerts turned off for this swap (in-app notifications remain active)."
+      );
+    } catch (err) {
+      showToast(err.message || "Could not update email alert preference.", true);
+      loadHaveNeedPosts();
+    }
+  }
+
   async function submitHaveNeedForm(e) {
     e.preventDefault();
     if (!state.user) {
@@ -1768,27 +1841,37 @@ function renderClickableUserNameHtml(userObj, extraClass = "") {
     const editingId = document.getElementById("hnEditingPostId").value;
     const contact_dm = document.getElementById("hnContactDm").value.trim();
     const notes = document.getElementById("hnNotes").value.trim();
+    const notifyCheckbox = document.getElementById("hnNotifyEmailCheckbox");
+    const notify_email = notifyCheckbox ? Boolean(notifyCheckbox.checked) : true;
 
     const payload = {
       have_course_id: state.selectedHaveCourse.id,
       need_course_id: state.selectedNeedCourse.id,
       contact_dm,
       notes,
+      notify_email,
     };
 
     try {
+      let resData = null;
       if (editingId) {
-        await apiFetch(`/api/have-need/${editingId}`, {
+        resData = await apiFetch(`/api/have-need/${editingId}`, {
           method: "PUT",
           body: JSON.stringify(payload),
         });
         showToast("Your Have-Need listing has been updated!");
       } else {
-        await apiFetch("/api/have-need", {
+        resData = await apiFetch("/api/have-need", {
           method: "POST",
           body: JSON.stringify(payload),
         });
         showToast("Have-Need exchange published! 🚀");
+      }
+      if (resData && Number(resData.matches_count) > 0) {
+        showToast(
+          `🎉 Found ${resData.matches_count} matching course swap(s)! Check your notifications 🔔${notify_email ? " & email 📧" : ""}!`
+        );
+        loadNotifications();
       }
       resetHaveNeedForm();
       loadHaveNeedPosts();
@@ -1813,6 +1896,10 @@ function renderClickableUserNameHtml(userObj, extraClass = "") {
 
     document.getElementById("hnContactDm").value = post.contact_dm || "";
     document.getElementById("hnNotes").value = post.notes || "";
+    const notifyCheckbox = document.getElementById("hnNotifyEmailCheckbox");
+    if (notifyCheckbox) {
+      notifyCheckbox.checked = post.notify_email !== false;
+    }
     window.scrollTo({ top: 0, behavior: "smooth" });
   }
 
@@ -1827,6 +1914,10 @@ function renderClickableUserNameHtml(userObj, extraClass = "") {
     renderSelectedCourseChip("need");
     document.getElementById("hnContactDm").value = "";
     document.getElementById("hnNotes").value = "";
+    const notifyCheckbox = document.getElementById("hnNotifyEmailCheckbox");
+    if (notifyCheckbox) {
+      notifyCheckbox.checked = true;
+    }
     closeMobileFormPanel("hnFormPanel", "hnMobileFormToggleBtn", "+ Post a Course Swap");
   }
 

@@ -641,6 +641,7 @@ async def create_have_need_post(
     need_course_id: int,
     contact_dm: str,
     notes: Optional[str] = None,
+    notify_email: bool = True,
 ) -> HaveNeedPost:
     """Create a new Have-Need course section exchange listing."""
     post = HaveNeedPost(
@@ -649,6 +650,7 @@ async def create_have_need_post(
         need_course_id=need_course_id,
         contact_dm=contact_dm.strip()[:128],
         notes=notes.strip()[:500] if notes else None,
+        notify_email=bool(notify_email),
         is_active=True,
     )
     session.add(post)
@@ -731,6 +733,7 @@ async def update_have_need_post(
     need_course_id: Optional[int] = None,
     contact_dm: Optional[str] = None,
     notes: Optional[str] = None,
+    notify_email: Optional[bool] = None,
 ) -> Optional[HaveNeedPost]:
     """Update a user's own Have-Need listing."""
     stmt = (
@@ -754,6 +757,8 @@ async def update_have_need_post(
         post.contact_dm = contact_dm.strip()[:128]
     if notes is not None:
         post.notes = notes.strip()[:500] if notes.strip() else None
+    if notify_email is not None:
+        post.notify_email = bool(notify_email)
 
     post.updated_at = datetime.now(timezone.utc)
     await session.commit()
