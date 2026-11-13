@@ -263,9 +263,20 @@ class TestStataAnalytics(unittest.IsolatedAsyncioTestCase):
             self.assertIn("bot_overview", data)
             self.assertIn("website", data)
 
-            # 4. Local Chart.js vendor bundle served with 200
+            # 4. Local Chart.js vendor bundle & site favicon assets served with 200
             r_chartjs = await client.get("/static/vendor/chart.umd.min.js")
             self.assertEqual(r_chartjs.status, 200)
+
+            for icon_path in (
+                "/favicon.ico",
+                "/static/favicon-32x32.png",
+                "/static/favicon-192x192.png",
+                "/static/apple-touch-icon.png",
+                "/manifest.json",
+            ):
+                r_icon = await client.get(icon_path)
+                self.assertEqual(r_icon.status, 200, f"Expected 200 for {icon_path}")
+                self.assertGreater(len(await r_icon.read()), 500)
 
 
 if __name__ == "__main__":

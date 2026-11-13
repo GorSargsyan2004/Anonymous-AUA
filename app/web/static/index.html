@@ -10,13 +10,15 @@
   <meta name="apple-mobile-web-app-title" content="AUA Hub" />
   <title>AUA Hub — American University of Armenia Student Ecosystem</title>
   <link rel="manifest" href="/manifest.json" />
-  <link rel="apple-touch-icon" href="/static/bot-logo.svg" />
+  <link rel="apple-touch-icon" sizes="180x180" href="/static/apple-touch-icon.png?v=20261113_1" />
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link
     href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;700;800&display=swap"
     rel="stylesheet">
-  <link rel="icon" type="image/svg+xml" href="/static/bot-logo.svg" />
+  <link rel="icon" type="image/png" sizes="32x32" href="/static/favicon-32x32.png?v=20261113_1" />
+  <link rel="icon" type="image/png" sizes="192x192" href="/static/favicon-192x192.png?v=20261113_1" />
+  <link rel="shortcut icon" href="/favicon.ico?v=20261113_1" />
   <link rel="stylesheet" href="/static/styles.css?v=20261113_9" />
 </head>
 
@@ -107,7 +109,8 @@
             onclick="switchView('ai-assistant')">
             <div>
               <h3><span class="ai-sparkle-icon">✦</span> AI Assistant <span class="arrow">&rarr;</span></h3>
-              <p style="margin-top:6px;">Ask anything about AUA professors, course feedbacks, Newsroom events, faculty directory, The Highlander, or campus chat.</p>
+              <p style="margin-top:6px;">Ask anything about AUA professors, course feedbacks, Newsroom events, faculty
+                directory, The Highlander, or campus chat.</p>
             </div>
           </div>
 
@@ -170,13 +173,14 @@
             <span class="home-partners-badge">🤝 Student-Run Ecosystem &bull; Official Collaborations</span>
             <h2 class="home-partners-title">Partnered AUA Student Platforms</h2>
             <p class="home-partners-subtitle">
-              <strong>auahub.am</strong> is collaborating with fellow student-run platforms built by and for AUA students. Explore our partner sites below:
+              <strong>auahub.am</strong> is collaborating with fellow student-run platforms built by and for AUA
+              students. Explore our partner sites below:
             </p>
           </div>
 
           <div class="home-partners-grid">
-            <a href="https://findaua.com" target="_blank" rel="noopener noreferrer"
-              class="glass-card home-partner-card" onclick="if(window.trackWebEvent) trackWebEvent('click_partner_findaua')">
+            <a href="https://findaua.com" target="_blank" rel="noopener noreferrer" class="glass-card home-partner-card"
+              onclick="if(window.trackWebEvent) trackWebEvent('click_partner_findaua')">
               <div class="home-partner-top">
                 <div class="home-partner-logo-wrap">
                   <img src="/static/partners/findaua-logo.png"
@@ -192,17 +196,19 @@
                 </div>
               </div>
               <p class="home-partner-desc">
-                An independent student-run community for AUA study groups, student meetups, campus activities, and shared moments across campus.
+                An independent student-run community for AUA study groups, student meetups, campus activities, and
+                shared moments across campus.
               </p>
             </a>
 
             <a href="https://jenzareviews.com" target="_blank" rel="noopener noreferrer"
-              class="glass-card home-partner-card" onclick="if(window.trackWebEvent) trackWebEvent('click_partner_jenzareviews')">
+              class="glass-card home-partner-card"
+              onclick="if(window.trackWebEvent) trackWebEvent('click_partner_jenzareviews')">
               <div class="home-partner-top">
                 <div class="home-partner-logo-wrap">
                   <img src="/static/partners/jenzareviews-logo.ico"
-                    onerror="this.onerror=null;this.src='https://jenzareviews.com/favicon.ico';"
-                    alt="JenzaReviews Logo" class="home-partner-logo" />
+                    onerror="this.onerror=null;this.src='https://jenzareviews.com/favicon.ico';" alt="JenzaReviews Logo"
+                    class="home-partner-logo" />
                 </div>
                 <div class="home-partner-meta">
                   <div class="home-partner-name-row">
@@ -213,7 +219,8 @@
                 </div>
               </div>
               <p class="home-partner-desc">
-                Student-run professor ratings and anonymous course feedback platform for AUA — directly synchronized with AUA Hub Feedbacks &amp; AI Assistant.
+                Student-run professor ratings and anonymous course feedback platform for AUA — directly synchronized
+                with AUA Hub Feedbacks &amp; AI Assistant.
               </p>
             </a>
           </div>
@@ -223,7 +230,7 @@
           <div>
             🚀 <strong>Have your own student-run program or website?</strong> Let me know at
             <a href="https://t.me/sargsiangor" target="_blank" rel="noopener noreferrer">@sargsiangor</a>
-            and I will add it on this main page!
+            and I will add it on this page!
           </div>
           <div class="home-contact-subline">
             For feature suggestions, missing tools, or bug reports, also reach out at
@@ -253,7 +260,8 @@
                 <span class="ai-model-pill">Multi-Source RAG</span>
               </div>
               <p class="ai-topbar-sub">
-                Connected to Course Feedbacks &bull; AUA Directory &bull; Newsroom Events &bull; The Highlander &bull; Campus Chat
+                Connected to Course Feedbacks &bull; AUA Directory &bull; Newsroom Events &bull; The Highlander &bull;
+                Campus Chat
               </p>
             </div>
           </div>
@@ -269,7 +277,8 @@
                 <span class="ai-quota-seg"></span>
               </div>
             </div>
-            <button type="button" class="btn-glass ai-new-chat-top-btn" onclick="resetAiChatSession()" title="Start a fresh 5-prompt session">
+            <button type="button" class="btn-glass ai-new-chat-top-btn" onclick="resetAiChatSession()"
+              title="Start a fresh 5-prompt session">
               <span>↻</span> New Chat
             </button>
           </div>
@@ -307,7 +316,8 @@
                 <span class="ai-sug-icon">🏛️</span>
                 <div class="ai-sug-body">
                   <div class="ai-sug-title">Faculty &amp; Professor Lookup</div>
-                  <div class="ai-sug-text">"How is Dr. Aram Hajian's teaching, background, and office contact info?"</div>
+                  <div class="ai-sug-text">"How is Dr. Aram Hajian's teaching, background, and office contact info?"
+                  </div>
                 </div>
               </button>
 
@@ -316,7 +326,8 @@
                 <span class="ai-sug-icon">📅</span>
                 <div class="ai-sug-body">
                   <div class="ai-sug-title">AUA Newsroom Events</div>
-                  <div class="ai-sug-text">"Are there any upcoming events, masterclasses, or workshops at AUA this week?"</div>
+                  <div class="ai-sug-text">"Are there any upcoming events, masterclasses, or workshops at AUA this
+                    week?"</div>
                 </div>
               </button>
 
@@ -325,7 +336,8 @@
                 <span class="ai-sug-icon">🎓</span>
                 <div class="ai-sug-body">
                   <div class="ai-sug-title">Course &amp; Grading Reviews</div>
-                  <div class="ai-sug-text">"What do students say in course feedbacks about grading fairness and workload?"</div>
+                  <div class="ai-sug-text">"What do students say in course feedbacks about grading fairness and
+                    workload?"</div>
                 </div>
               </button>
 
@@ -334,7 +346,8 @@
                 <span class="ai-sug-icon">📰</span>
                 <div class="ai-sug-body">
                   <div class="ai-sug-title">The Highlander Magazine</div>
-                  <div class="ai-sug-text">"Find student articles in The Highlander about AUA student clubs and campus life"</div>
+                  <div class="ai-sug-text">"Find student articles in The Highlander about AUA student clubs and campus
+                    life"</div>
                 </div>
               </button>
             </div>
@@ -371,22 +384,16 @@
                   <span class="ai-typewriter-cursor">|</span>
                 </div>
 
-                <textarea
-                  id="aiPromptInput"
-                  class="ai-prompt-textarea"
-                  rows="1"
-                  maxlength="1200"
-                  aria-label="Ask AUA Hub AI Assistant"
-                  oninput="handleAiInputChanged(this)"
-                  onfocus="handleAiInputFocus()"
-                  onblur="handleAiInputBlur()"
-                  onkeydown="handleAiInputKeydown(event)"
-                ></textarea>
+                <textarea id="aiPromptInput" class="ai-prompt-textarea" rows="1" maxlength="1200"
+                  aria-label="Ask AUA Hub AI Assistant" oninput="handleAiInputChanged(this)"
+                  onfocus="handleAiInputFocus()" onblur="handleAiInputBlur()"
+                  onkeydown="handleAiInputKeydown(event)"></textarea>
               </div>
 
               <div class="ai-composer-footer">
                 <div class="ai-composer-meta">
-                  <span class="ai-composer-hint">Press <kbd>Enter</kbd> to ask &bull; <kbd>Shift+Enter</kbd> for new line</span>
+                  <span class="ai-composer-hint">Press <kbd>Enter</kbd> to ask &bull; <kbd>Shift+Enter</kbd> for new
+                    line</span>
                   <span id="aiComposerCounter" class="ai-composer-counter">Prompt 1 of 5</span>
                 </div>
 
@@ -484,7 +491,8 @@
                   <span>📧</span> Receive an email if there is a match
                 </div>
                 <div class="hn-match-toggle-sub">
-                  Get an instant email to your AUA address + a 🔔 notification when another student has the section you need and needs the section you have.
+                  Get an instant email to your AUA address + a 🔔 notification when another student has the section you
+                  need and needs the section you have.
                 </div>
               </div>
             </label>
@@ -845,10 +853,11 @@
               <span class="emoji-search-icon">🔍</span>
               <input type="text" id="emojiSearchInput" class="emoji-search-input"
                 placeholder="Search emojis (smile, fire, heart, party)..." oninput="filterEmojis(this.value)" />
-              <button type="button" id="emojiClearSearchBtn" class="emoji-clear-btn hidden"
-                onclick="clearEmojiSearch()" title="Clear search">&times;</button>
+              <button type="button" id="emojiClearSearchBtn" class="emoji-clear-btn hidden" onclick="clearEmojiSearch()"
+                title="Clear search">&times;</button>
             </div>
-            <button type="button" class="emoji-backspace-btn" onclick="backspaceChatEmoji()" title="Backspace">⌫</button>
+            <button type="button" class="emoji-backspace-btn" onclick="backspaceChatEmoji()"
+              title="Backspace">⌫</button>
             <button type="button" class="emoji-close-btn" onclick="closeEmojiPicker()" title="Close">&times;</button>
           </div>
 
@@ -1075,7 +1084,8 @@
   <div id="groupModal" class="modal-backdrop" onclick="if(event.target===this) closeGroupModal()">
     <div class="glass-panel modal-card group-modal-card">
       <div class="modal-drag-handle"></div>
-      <button type="button" class="modal-close group-modal-close" onclick="closeGroupModal()" aria-label="Close">&times;</button>
+      <button type="button" class="modal-close group-modal-close" onclick="closeGroupModal()"
+        aria-label="Close">&times;</button>
 
       <div class="group-modal-hero">
         <div id="groupModalIconBadge" class="group-modal-icon-badge">✈️</div>
@@ -1096,7 +1106,8 @@
               <img id="groupAvatarPreviewImg" src="" alt="Group preview" style="display:none;" />
             </div>
             <span class="group-avatar-cam-badge">📷</span>
-            <input type="file" id="groupImageFileInput" accept="image/*" style="display:none;" onchange="handleGroupImageUpload(this)" />
+            <input type="file" id="groupImageFileInput" accept="image/*" style="display:none;"
+              onchange="handleGroupImageUpload(this)" />
           </label>
 
           <div class="group-identity-fields">
@@ -1104,8 +1115,10 @@
             <input type="text" id="groupNameInput" class="input-glass" placeholder="e.g. AUA CS Class of 2028"
               oninput="updateGroupModalPreview()" required />
             <div class="group-upload-status-row">
-              <span id="groupUploadedPreview" class="group-upload-status-text">Tap icon to add group photo (optional)</span>
-              <button type="button" id="groupRemovePhotoBtn" class="group-remove-photo-btn hidden" onclick="clearGroupUploadedPhoto()">Remove</button>
+              <span id="groupUploadedPreview" class="group-upload-status-text">Tap icon to add group photo
+                (optional)</span>
+              <button type="button" id="groupRemovePhotoBtn" class="group-remove-photo-btn hidden"
+                onclick="clearGroupUploadedPhoto()">Remove</button>
             </div>
           </div>
           <input type="hidden" id="groupImageUrlInput" value="" />
@@ -1126,10 +1139,14 @@
             <span class="group-quick-tags-hint">Quick tags:</span>
           </div>
           <div class="group-quick-tags" role="group" aria-label="Quick category tags">
-            <button type="button" class="group-tag-chip" onclick="appendGroupQuickTag('📚 Study Group')">📚 Study Group</button>
-            <button type="button" class="group-tag-chip" onclick="appendGroupQuickTag('💻 Major / Class')">💻 Major / Class</button>
-            <button type="button" class="group-tag-chip" onclick="appendGroupQuickTag('🎉 Campus Club')">🎉 Campus Club</button>
-            <button type="button" class="group-tag-chip" onclick="appendGroupQuickTag('🏀 Sports &amp; Hobbies')">🏀 Sports &amp; Hobbies</button>
+            <button type="button" class="group-tag-chip" onclick="appendGroupQuickTag('📚 Study Group')">📚 Study
+              Group</button>
+            <button type="button" class="group-tag-chip" onclick="appendGroupQuickTag('💻 Major / Class')">💻 Major /
+              Class</button>
+            <button type="button" class="group-tag-chip" onclick="appendGroupQuickTag('🎉 Campus Club')">🎉 Campus
+              Club</button>
+            <button type="button" class="group-tag-chip" onclick="appendGroupQuickTag('🏀 Sports &amp; Hobbies')">🏀
+              Sports &amp; Hobbies</button>
           </div>
           <textarea id="groupDescInput" class="textarea-glass" rows="3"
             placeholder="What is this group about? Which students or courses is it for?"></textarea>
@@ -1405,7 +1422,7 @@
     </div>
   </div>
 
-  <script src="/static/app.js?v=20261113_9"></script>
+  <script src="/static/app.js?v=20261113_10"></script>
 </body>
 
 </html>

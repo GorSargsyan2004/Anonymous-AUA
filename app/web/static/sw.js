@@ -1,10 +1,14 @@
 /* AUA Hub Service Worker (PWA Support & Offline Shell Cache) */
-const CACHE_NAME = "aua-hub-shell-v30";
+const CACHE_NAME = "aua-hub-shell-v31";
 const SHELL_ASSETS = [
   "/",
-  "/static/styles.css?v=20261108_2",
-  "/static/app.js?v=20261111_1",
+  "/static/styles.css?v=20261113_9",
+  "/static/app.js?v=20261113_10",
+  "/static/favicon-32x32.png?v=20261113_1",
+  "/static/favicon-192x192.png?v=20261113_1",
+  "/static/apple-touch-icon.png?v=20261113_1",
   "/static/bot-logo.svg",
+  "/favicon.ico",
   "/manifest.json",
 ];
 

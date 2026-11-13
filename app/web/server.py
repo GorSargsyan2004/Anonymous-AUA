@@ -3056,6 +3056,17 @@ async def serve_pwa_manifest(request: web.Request) -> web.FileResponse:
     )
 
 
+@routes.get("/favicon.ico")
+async def serve_favicon_ico(request: web.Request) -> web.FileResponse:
+    return web.FileResponse(
+        STATIC_DIR / "favicon.ico",
+        headers={
+            "Content-Type": "image/x-icon",
+            "Cache-Control": "public, max-age=86400",
+        },
+    )
+
+
 @routes.get("/sw.js")
 async def serve_service_worker(request: web.Request) -> web.FileResponse:
     return web.FileResponse(
