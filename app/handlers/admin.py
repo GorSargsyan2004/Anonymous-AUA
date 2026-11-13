@@ -22,6 +22,7 @@ from app.database.crud import (
 )
 from app.database.models import User
 from app.database.session import get_db_session
+from app.database.web_crud import get_web_admin_stats
 from app.filters.admin import IsAdminFilter
 from app.keyboards.inline import get_admin_report_keyboard
 from app.services.backup import create_database_backup, get_backup_metadata
@@ -119,6 +120,62 @@ async def handle_stata(message: Message) -> None:
     )
 
     await message.answer(dashboard, parse_mode="HTML")
+
+
+@router.message(Command("stats_web", "web_stats"))
+async def handle_stats_web(message: Message) -> None:
+    """Display real-time aggregated metrics for the AUA Hub web platform (auahub.am)."""
+    async with get_db_session() as session:
+        stats = await get_web_admin_stats(session)
+
+    u = stats["users"]
+    c = stats["content"]
+    a = stats["analytics"]
+
+    event_labels = {
+        "click_free_rooms": "🏫 Free Rooms Lookups",
+        "click_have_need": "🔄 Have-Need Views",
+        "click_groups": "👥 Telegram Groups Views",
+        "click_chat": "💬 Global Chat Opens",
+        "click_pwa_install": "📲 PWA Install Clicks",
+        "search_anon_posts": "🔍 Anon Posts Searches",
+        "search_inbox": "🔎 Inbox Searches",
+        "join_group": "🔗 Group Invites Clicked",
+        "search_courses": "📚 Course Swap Searches",
+        "view_feedbacks": "⭐ Instructor Ratings Views",
+    }
+    events_lines = []
+    for ev, count in a["event_breakdown"].items():
+        label = event_labels.get(ev, f"🖱️ {ev}")
+        events_lines.append(f"  • {label}: <b>{count}</b>")
+
+    events_str = "\n".join(events_lines) if events_lines else "  • <i>No recorded click events yet</i>"
+
+    dashboard = (
+        "🌐 <b>AUA Hub (auahub.am) — Web Admin Dashboard</b> 📊\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        "👥 <b>Registered Web Accounts:</b>\n"
+        f"• Total Web Accounts: <b>{u['total']}</b>\n"
+        f"  ├ 🎓 Students (@edu.aua.am): <b>{u['students']}</b>\n"
+        f"  ├ 🏛️ Alumni (@alumni.aua.am): <b>{u['alumni']}</b>\n"
+        f"  └ 💼 Staff/Other (@aua.am): <b>{u['other']}</b>\n"
+        f"• 🔗 Synced with Telegram Bot: <b>{u['synced']}</b>\n"
+        f"• 📈 Growth: <b>+{u['new_24h']}</b> last 24h | <b>+{u['new_7d']}</b> last 7d\n\n"
+        "📦 <b>Web Platform Content & Activity:</b>\n"
+        f"• 🎭 Anonymous Public Posts: <b>{c['anon_posts']}</b>\n"
+        f"• 📬 Total Personal Inbox Q&As: <b>{c['inbox_messages']}</b>\n"
+        f"• 🔄 Course Swaps (Have-Need): <b>{c['have_need_active']}</b> active <i>({c['have_need_total']} total)</i>\n"
+        f"• 👥 Telegram Communities Listed: <b>{c['telegram_groups']}</b>\n"
+        f"• ⭐ Instructor & Course Ratings: <b>{c['academic_feedbacks']}</b>\n"
+        f"• 💬 Campus Global Chat Messages: <b>{c['chat_messages']}</b>\n\n"
+        "🖱️ <b>Web Interactions & Button Clicks:</b>\n"
+        f"• Total Tracked Clicks: <b>{a['total_clicks']}</b> <i>(+{a['clicks_24h']} in last 24h)</i>\n"
+        f"{events_str}\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        "🌐 <b>Live Domain:</b> <a href=\"https://auahub.am\">auahub.am</a>"
+    )
+
+    await message.answer(dashboard, parse_mode="HTML", disable_web_page_preview=True)
 
 
 @router.message(Command("reports", "pending_reports"))
@@ -269,7 +326,8 @@ async def handle_admin_penalize_start(callback: CallbackQuery, state: FSMContext
 
     await callback.message.reply(
         f"⚖️ <b>Penalizing User <code>{reported_id}</code></b> (Report #{report_id})\n\n"
-        "Enter the number of priority points to deduct from this user (e.g., 15):",
+        "Enter the number of priority points to deduct from this user (e.g., 15):\n\n"
+        "<i>(Send /cancel to abort)</i>",
         parse_mode="HTML",
     )
     await callback.answer()
@@ -279,6 +337,11 @@ async def handle_admin_penalize_start(callback: CallbackQuery, state: FSMContext
 async def handle_admin_penalty_amount(message: Message, state: FSMContext) -> None:
     """Process administrator penalty input and update user priority and report."""
     raw_input = message.text.strip()
+    if raw_input.lower() in ["/cancel", "/stop"]:
+        await state.clear()
+        await message.reply("Action cancelled.")
+        return
+
     if not raw_input.isdigit() or int(raw_input) <= 0:
         await message.reply(
             "⚠️ Please enter a valid positive integer (e.g. 10, 20):"
@@ -519,7 +582,7 @@ async def handle_admin_reply_sug_start(callback: CallbackQuery, state: FSMContex
     await callback.message.reply(
         f"✍️ <b>Replying to Student <code>{target_user_id}</code></b> (Suggestion #{suggestion_id})\n\n"
         "Please type your response message below. It will be delivered directly to the student in Telegram:\n\n"
-        "<i>(Send /cancel or /stop to abort)</i>",
+        "<i>(Send /cancel at any time to abort)</i>",
         parse_mode="HTML",
     )
     await callback.answer()

@@ -440,6 +440,11 @@ To ensure the bot always starts automatically whenever your server or computer b
 make autostart
 ```
 
+### 4.5. Cloudflare Dynamic DNS (`cloudflare-ddns`) & Reboot Handling
+The `docker-compose.yml` stack includes the `cloudflare-ddns` service (`favonia/cloudflare-ddns:latest`), which keeps `auahub.am` and `www.auahub.am` pointed at the server's current public IP address:
+- **Zero-Exposure Credentials**: Reads `CLOUDFLARE_API_TOKEN` directly from `.env` via `${CLOUDFLARE_API_TOKEN}` without hardcoding secrets in version control.
+- **Automatic Reboot & IP Change Recovery**: Configured with `restart: unless-stopped`, `PROXIED=true`, and `TZ=Asia/Yerevan`. Whenever the host machine reboots or the ISP assigns a new dynamic public IP, Docker automatically starts `cloudflare-ddns`, which immediately checks the host's public IP and updates the Cloudflare `A`/`AAAA` records for `auahub.am` and `www.auahub.am`.
+
 ### 5. Makefile Server Management Commands
 | Command | Action |
 | :--- | :--- |

@@ -84,6 +84,24 @@ class Settings(BaseSettings):
         description="Maximum outbound verification emails allowed across the bot within 5 minutes",
     )
 
+    # AUA Hub Website & Booking Scraper Configuration
+    BOOKING_AUA_USER: Optional[str] = Field(
+        default=None,
+        description="Username for booking.aua.am room availability scraper",
+    )
+    BOOKING_AUA_PASS: Optional[str] = Field(
+        default=None,
+        description="Password for booking.aua.am room availability scraper",
+    )
+    WEB_JWT_SECRET: str = Field(
+        default="aua_hub_default_jwt_secret_change_me",
+        description="Secret key for signing AUA Hub JWT session tokens",
+    )
+    WEB_PORT: int = Field(
+        default=8000,
+        description="HTTP port for AUA Hub web server",
+    )
+
     @field_validator("ADMIN_IDS", mode="before")
     @classmethod
     def parse_admin_ids(cls, v: Any) -> List[int]:

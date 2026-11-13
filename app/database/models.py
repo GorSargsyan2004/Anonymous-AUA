@@ -60,6 +60,11 @@ class User(Base):
     current_partner_id: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
     target_sexes: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     target_orientations: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    custom_target_sexes: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    custom_target_orientations: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    search_mode: Mapped[Optional[str]] = mapped_column(
+        String(32), default="preferences", nullable=True, server_default=text("'preferences'")
+    )
     show_typing: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False, server_default=func.true())
     is_banned: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False, server_default=func.false(), index=True)
     completed_sessions_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
@@ -389,6 +394,11 @@ class UserBlock(Base):
         nullable=True,
         index=True,
     )
+    reason: Mapped[Optional[str]] = mapped_column(
+        String(32),
+        nullable=True,
+        default=None,
+    )
 
     __table_args__ = (
         UniqueConstraint("user_id", "blocked_user_id", name="uq_user_blocked_pair"),
@@ -463,6 +473,8 @@ class InboxMessage(Base):
     )
     thread_token: Mapped[str] = mapped_column(String(32), unique=True, nullable=False, index=True)
     message_type: Mapped[str] = mapped_column(String(32), default="text", nullable=False)
+    content_text: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    reply_text: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     is_replied: Mapped[bool] = mapped_column(
         Boolean, default=False, nullable=False, server_default=func.false()
     )
@@ -517,5 +529,318 @@ class ChatInvite(Base):
     def __repr__(self) -> str:
         return f"<ChatInvite id={self.id} code={self.invite_code} type={self.invite_type} active={self.is_active} used={self.is_used}>"
 
+class WebUser(Base):
+    """Represents a registered student or alumni on the AUA Hub web platform."""
+    __tablename__ = "web_users"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    name: Mapped[str] = mapped_column(String(128), nullable=False)
+    email: Mapped[str] = mapped_column(String(128), unique=True, nullable=False, index=True)
+    password_hash: Mapped[str] = mapped_column(String(256), nullable=False)
+    bio: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    avatar_url: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
+    inbox_link: Mapped[Optional[str]] = mapped_column(String(256), nullable=True)
+    telegram_user_id: Mapped[Optional[int]] = mapped_column(
+        BigInteger, ForeignKey("users.id", ondelete="SET NULL"), unique=True, nullable=True, index=True
+    )
+    is_deleted: Mapped[bool] = mapped_column(
+        Boolean, default=False, nullable=False, server_default=text("false"), index=True
+    )
+    deleted_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    telegram_user = relationship("User", foreign_keys=[telegram_user_id])
+
+
+class WebOtpCode(Base):
+    """Stores pending registration OTP codes for AUA Hub email verification."""
+    __tablename__ = "web_otp_codes"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    email: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    name: Mapped[str] = mapped_column(String(128), nullable=False)
+    password_hash: Mapped[str] = mapped_column(String(256), nullable=False)
+    otp_code: Mapped[str] = mapped_column(String(16), nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    attempts: Mapped[int] = mapped_column(Integer, default=0, nullable=False, server_default=text("0"))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+class WebSyncCode(Base):
+    """Stores temporary 6-digit sync codes connecting AUA Hub accounts with @aua_anonymous_bot."""
+    __tablename__ = "web_sync_codes"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    web_user_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("web_users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    code: Mapped[str] = mapped_column(String(16), unique=True, nullable=False, index=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    is_used: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False, server_default=text("false"))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    web_user = relationship("WebUser", foreign_keys=[web_user_id])
+
+
+class Course(Base):
+    """Stores AUA courses parsed from Sonis (auasonis.jenzabarcloud.com/GENSRsC.cfm)."""
+    __tablename__ = "courses"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    semester_label: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    school_year_code: Mapped[str] = mapped_column(String(16), nullable=False)
+    semester_code: Mapped[str] = mapped_column(String(16), nullable=False)
+    course_code: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    course_title: Mapped[str] = mapped_column(String(256), nullable=False)
+    section: Mapped[str] = mapped_column(String(32), nullable=False)
+    credits: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)
+    instructor: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    schedule_times: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
+    location: Mapped[Optional[str]] = mapped_column(String(256), nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+class HaveNeedPost(Base):
+    """Stores student course section swap listings on AUA Hub."""
+    __tablename__ = "have_need_posts"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    web_user_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("web_users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    have_course_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("courses.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    need_course_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("courses.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    contact_dm: Mapped[str] = mapped_column(String(128), nullable=False)
+    notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False, server_default=text("true"))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    web_user = relationship("WebUser", foreign_keys=[web_user_id])
+    have_course = relationship("Course", foreign_keys=[have_course_id])
+    need_course = relationship("Course", foreign_keys=[need_course_id])
+
+
+class AnonymousPublicPost(Base):
+    """Stores indexed public anonymous posts created through @aua_anonymous_bot (/post)."""
+    __tablename__ = "anonymous_public_posts"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    telegram_user_id: Mapped[Optional[int]] = mapped_column(
+        BigInteger, ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    content_text: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+class TelegramGroup(Base):
+    """Stores student-submitted Telegram groups and communities on AUA Hub."""
+    __tablename__ = "telegram_groups"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    web_user_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("web_users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    name: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    invite_link: Mapped[str] = mapped_column(String(256), nullable=False)
+    image_url: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    web_user = relationship("WebUser", foreign_keys=[web_user_id])
+
+
+class SpamChatMessage(Base):
+    """Stores messages posted in the AUA Hub Campus Chat / Global Chat."""
+    __tablename__ = "spam_chat_messages"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    web_user_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("web_users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    content_html: Mapped[str] = mapped_column(Text, nullable=False)
+    image_url: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
+    media_type: Mapped[Optional[str]] = mapped_column(String(32), default="image", nullable=True)
+    reply_to_id: Mapped[Optional[int]] = mapped_column(
+        Integer, ForeignKey("spam_chat_messages.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    is_edited: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False, server_default=text("false"))
+    edited_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    web_user = relationship("WebUser", foreign_keys=[web_user_id])
+    reply_to = relationship("SpamChatMessage", remote_side=[id], foreign_keys=[reply_to_id])
+    reactions = relationship("SpamChatReaction", back_populates="message", cascade="all, delete-orphan", lazy="selectin")
+
+
+class SpamChatReaction(Base):
+    """Stores emoji reactions on Campus Chat messages."""
+    __tablename__ = "spam_chat_reactions"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    message_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("spam_chat_messages.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    web_user_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("web_users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    emoji: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    __table_args__ = (
+        UniqueConstraint("message_id", "web_user_id", name="uq_spam_chat_reaction_msg_user"),
+    )
+
+    message = relationship("SpamChatMessage", back_populates="reactions", foreign_keys=[message_id])
+    web_user = relationship("WebUser", foreign_keys=[web_user_id])
+
+
+class SpamChatRead(Base):
+    """Tracks the last read message ID per user in Spam Chat to compute unread counts."""
+    __tablename__ = "spam_chat_reads"
+
+    web_user_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("web_users.id", ondelete="CASCADE"), primary_key=True
+    )
+    last_read_message_id: Mapped[int] = mapped_column(
+        Integer, default=0, nullable=False, server_default=text("0")
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+class AcademicFeedback(Base):
+    """Stores student feedbacks & ratings for AUA Instructors and Courses parsed from Jenzabar."""
+    __tablename__ = "academic_feedbacks"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    web_user_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("web_users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    target_type: Mapped[str] = mapped_column(String(16), nullable=False, index=True)  # "instructor" or "course"
+    target_key: Mapped[str] = mapped_column(String(160), nullable=False, index=True)
+    target_title: Mapped[str] = mapped_column(String(256), nullable=False)
+    target_subtitle: Mapped[Optional[str]] = mapped_column(String(256), nullable=True)
+    rating: Mapped[int] = mapped_column(Integer, default=5, nullable=False, server_default=text("5"))
+    comment: Mapped[str] = mapped_column(Text, nullable=False)
+    is_anonymous: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False, server_default=text("true"))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    web_user = relationship("WebUser", foreign_keys=[web_user_id])
+
+class WebAnalyticsEvent(Base):
+    """Stores user interaction events, button clicks, and module engagements on AUA Hub."""
+    __tablename__ = "web_analytics_events"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    event_type: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    web_user_id: Mapped[Optional[int]] = mapped_column(
+        Integer, ForeignKey("web_users.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    meta_info: Mapped[Optional[str]] = mapped_column(String(256), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False, index=True
+    )
+
+    web_user = relationship("WebUser", foreign_keys=[web_user_id])
+
+
+class UserNotification(Base):
+    """Stores in-app real-time notifications for AUA Hub users."""
+    __tablename__ = "user_notifications"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    recipient_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("web_users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    sender_id: Mapped[Optional[int]] = mapped_column(
+        Integer, ForeignKey("web_users.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    category: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    title: Mapped[str] = mapped_column(String(256), nullable=False)
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    target_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    target_id: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    extra_data: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    is_read: Mapped[bool] = mapped_column(
+        Boolean, default=False, nullable=False, server_default=text("false"), index=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False, index=True
+    )
+
+    recipient = relationship("WebUser", foreign_keys=[recipient_id])
+    sender = relationship("WebUser", foreign_keys=[sender_id])
+
+
+class ReconnectRequest(Base):
+    """Stores reconnection requests sent from /recent to a past chat partner."""
+    __tablename__ = "reconnect_requests"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    session_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("chat_sessions.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    sender_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    recipient_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    reason_tag: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    status: Mapped[str] = mapped_column(
+        String(32), default="pending", nullable=False, server_default=text("'pending'"), index=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    expires_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, index=True
+    )
+
+    __table_args__ = (
+        Index("ix_reconn_sender_recipient", "sender_id", "recipient_id", "created_at"),
+    )
+
+    def __repr__(self) -> str:
+        return (
+            f"<ReconnectRequest id={self.id} session={self.session_id} "
+            f"sender={self.sender_id} -> recipient={self.recipient_id} status={self.status}>"
+        )
 
 

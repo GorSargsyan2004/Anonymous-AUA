@@ -30,16 +30,26 @@ venv.bak/
 
 # Environment Variables & Secrets
 .env
+.env.*
+!.env.example
 *.local
+*.pem
+*.key
+*.crt
 
-# IDEs & Editors
+# IDEs & Editors & OS
 .vscode/
 .idea/
 *.swp
 *.swo
+.DS_Store
 
 # Docker / Database Data
 postgres_data/
+telegram_api_data/
+*.db
+*.sqlite
+*.sqlite3
 
 # Database Backups (Strictly Private)
 backups/
@@ -56,4 +66,8 @@ logs/
 
 # Implementation Plans & Private Notes
 implementation_plan.md
+
+# User Uploads
+uploads/
+
 

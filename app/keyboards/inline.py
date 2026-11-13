@@ -1,6 +1,7 @@
 """Inline keyboards for user onboarding, post-session feedback, and admin actions."""
 
 from datetime import datetime, timezone
+import math
 from typing import List, Optional, Sequence
 from aiogram.types import InlineKeyboardMarkup
 from aiogram.utils.keyboard import InlineKeyboardBuilder
@@ -74,6 +75,33 @@ def get_preferences_keyboard(
     return builder.as_markup()
 
 
+def get_search_mode_keyboard(
+    current_mode: Optional[str] = None,
+    is_currently_searching: bool = False,
+) -> InlineKeyboardMarkup:
+    """Return inline keyboard for selecting the matchmaking search mode on /search."""
+    norm = (current_mode or "").strip().lower()
+    builder = InlineKeyboardBuilder()
+
+    modes = [
+        ("friendship", "🤝 Making friendships"),
+        ("killing_time", "⏳ Killing time"),
+        ("romance", "💘 Looking for romance"),
+        ("preferences", "⚙️ By set /preferences"),
+    ]
+    for key, label in modes:
+        suffix = " ✓" if norm == key else ""
+        builder.button(text=f"{label}{suffix}", callback_data=f"search_mode:{key}")
+
+    builder.button(text="🛠️ Edit /preferences", callback_data="search_open_prefs")
+    if is_currently_searching:
+        builder.button(text="🛑 Cancel Search", callback_data="search_stop_queue")
+        builder.adjust(1, 1, 1, 1, 2)
+    else:
+        builder.adjust(1, 1, 1, 1, 1)
+    return builder.as_markup()
+
+
 def get_feedback_keyboard(
     session_id: int,
     partner_id: int,
@@ -104,11 +132,26 @@ def get_feedback_manage_keyboard(
 ) -> InlineKeyboardMarkup:
     """Return management keyboard allowing user to change or reset their submitted rating."""
     builder = InlineKeyboardBuilder()
-    builder.button(text="✏️ Change Rating", callback_data=f"fb_edit:{session_id}:{partner_id}")
-    builder.button(text="🗑️ Reset / Undo", callback_data=f"fb_reset:{session_id}:{partner_id}")
-    builder.button(text="⚠️ Report Issue...", callback_data=f"report_menu:{session_id}:{partner_id}")
-    builder.button(text="🚫 Don't connect again", callback_data=f"block_prompt:{session_id}:{partner_id}")
-    builder.adjust(2, 2)
+    if current_type == "like":
+        builder.button(text="🔄 Open to Rematch", callback_data=f"fb_rematch_ok:{session_id}:{partner_id}")
+        builder.button(text="🕊️ Close Chapter...", callback_data=f"fb_sunset_prompt:{session_id}:{partner_id}")
+        builder.button(text="✏️ Change Rating", callback_data=f"fb_edit:{session_id}:{partner_id}")
+        builder.button(text="🗑️ Reset / Undo", callback_data=f"fb_reset:{session_id}:{partner_id}")
+        builder.button(text="⚠️ Report Issue...", callback_data=f"report_menu:{session_id}:{partner_id}")
+        builder.adjust(2, 2, 1)
+    elif current_type == "dislike":
+        builder.button(text="🔄 Open to Rematch", callback_data=f"fb_rematch_ok:{session_id}:{partner_id}")
+        builder.button(text="🚫 Avoid Matching...", callback_data=f"block_prompt:{session_id}:{partner_id}:dislike")
+        builder.button(text="✏️ Change Rating", callback_data=f"fb_edit:{session_id}:{partner_id}")
+        builder.button(text="🗑️ Reset / Undo", callback_data=f"fb_reset:{session_id}:{partner_id}")
+        builder.button(text="⚠️ Report Issue...", callback_data=f"report_menu:{session_id}:{partner_id}")
+        builder.adjust(2, 2, 1)
+    else:
+        builder.button(text="✏️ Change Rating", callback_data=f"fb_edit:{session_id}:{partner_id}")
+        builder.button(text="🗑️ Reset / Undo", callback_data=f"fb_reset:{session_id}:{partner_id}")
+        builder.button(text="⚠️ Report Issue...", callback_data=f"report_menu:{session_id}:{partner_id}")
+        builder.button(text="🚫 Don't connect again", callback_data=f"block_prompt:{session_id}:{partner_id}")
+        builder.adjust(2, 2)
     return builder.as_markup()
 
 
@@ -118,8 +161,11 @@ def get_recent_partners_keyboard(
     in_active_chat: bool = False,
     active_session_id: Optional[int] = None,
     active_partner_id: Optional[int] = None,
+    page: int = 1,
+    total_pages: int = 1,
+    page_size: int = 5,
 ) -> InlineKeyboardMarkup:
-    """Return inline keyboard listing recent partners for feedback/reporting."""
+    """Return inline keyboard listing recent partners for feedback/reporting with pagination."""
     builder = InlineKeyboardBuilder()
     adjust_pattern = []
 
@@ -131,6 +177,7 @@ def get_recent_partners_keyboard(
         adjust_pattern.append(1)
 
     now = datetime.now(timezone.utc)
+    start_idx = (max(1, page) - 1) * page_size
     for i, s in enumerate(sessions):
         p_id = s.user2_id if s.user1_id == user_id else s.user1_id
         t = s.ended_at or s.last_activity_at or s.started_at
@@ -150,9 +197,19 @@ def get_recent_partners_keyboard(
             time_str = "recently"
 
         msgs = s.messages_count or 0
-        btn_text = f"👤 Partner #{i + 1} · {time_str} ({msgs} msg{'s' if msgs != 1 else ''})"
-        builder.button(text=btn_text, callback_data=f"past_partner:{s.id}:{p_id}")
+        partner_num = start_idx + i + 1
+        btn_text = f"👤 Partner #{partner_num} · {time_str} ({msgs} msg{'s' if msgs != 1 else ''})"
+        cb_data = f"past_partner:{s.id}:{p_id}:{page}" if page > 1 else f"past_partner:{s.id}:{p_id}"
+        builder.button(text=btn_text, callback_data=cb_data)
         adjust_pattern.append(1)
+
+    if total_pages > 1:
+        prev_data = f"recent_page:{page - 1}" if page > 1 else "recent_noop"
+        next_data = f"recent_page:{page + 1}" if page < total_pages else "recent_noop"
+        builder.button(text="[<]", callback_data=prev_data)
+        builder.button(text=f"[{page}/{total_pages}]", callback_data="recent_noop")
+        builder.button(text="[>]", callback_data=next_data)
+        adjust_pattern.append(3)
 
     builder.button(text="🔙 Close", callback_data="past_partner_close")
     adjust_pattern.append(1)
@@ -161,26 +218,76 @@ def get_recent_partners_keyboard(
     return builder.as_markup()
 
 
-def get_past_partner_action_keyboard(session_id: int, partner_id: int) -> InlineKeyboardMarkup:
+def get_past_partner_action_keyboard(session_id: int, partner_id: int, page: int = 1) -> InlineKeyboardMarkup:
     """Return inline keyboard with actions for a selected past partner."""
     builder = InlineKeyboardBuilder()
+    builder.button(text="🔄 Request Reconnect", callback_data=f"reconn_prompt:{session_id}:{partner_id}")
     builder.button(text="👍 Great Chat", callback_data=f"fb:{session_id}:{partner_id}:like")
     builder.button(text="👎 Not for me", callback_data=f"fb:{session_id}:{partner_id}:dislike")
     builder.button(text="⚠️ Report Issue...", callback_data=f"report_menu:{session_id}:{partner_id}")
     builder.button(text="🚫 Don't connect again", callback_data=f"block_prompt:{session_id}:{partner_id}")
-    builder.button(text="🔙 Back to Recent List", callback_data="recent_list")
-    builder.adjust(2, 2, 1)
+    back_cb = f"recent_page:{page}" if page > 1 else "recent_list"
+    builder.button(text="🔙 Back to Recent List", callback_data=back_cb)
+    builder.adjust(1, 2, 2, 1)
     return builder.as_markup()
 
 
-def get_block_duration_keyboard(session_id: int, partner_id: int) -> InlineKeyboardMarkup:
+def get_reconnect_reason_keyboard(session_id: int, partner_id: int) -> InlineKeyboardMarkup:
+    """Return inline keyboard with 1-tap preset notes for requesting reconnection."""
+    builder = InlineKeyboardBuilder()
+    builder.button(text="⚡ Disconnected by accident", callback_data=f"reconn_send:{session_id}:{partner_id}:accident")
+    builder.button(text="💬 Want to continue our convo", callback_data=f"reconn_send:{session_id}:{partner_id}:continue")
+    builder.button(text="✨ Forgot to tell you something", callback_data=f"reconn_send:{session_id}:{partner_id}:forgot")
+    builder.button(text="📨 Send without note", callback_data=f"reconn_send:{session_id}:{partner_id}:none")
+    builder.button(text="🔙 Back", callback_data=f"past_partner:{session_id}:{partner_id}")
+    builder.adjust(1, 1, 1, 1, 1)
+    return builder.as_markup()
+
+
+def get_reconnect_incoming_keyboard(request_id: int) -> InlineKeyboardMarkup:
+    """Return inline keyboard for recipient of a reconnection request."""
+    builder = InlineKeyboardBuilder()
+    builder.button(text="✅ Accept & Connect", callback_data=f"reconn_accept:{request_id}")
+    builder.button(text="❌ Decline", callback_data=f"reconn_decline:{request_id}")
+    builder.button(text="🚫 Block Partner", callback_data=f"reconn_block:{request_id}")
+    builder.adjust(1, 2)
+    return builder.as_markup()
+
+
+def get_reconnect_ready_keyboard(request_id: int) -> InlineKeyboardMarkup:
+    """Return inline keyboard for sender to connect after recipient accepted while sender was busy."""
+    builder = InlineKeyboardBuilder()
+    builder.button(text="🔗 Connect Now", callback_data=f"reconn_connect_now:{request_id}")
+    builder.button(text="❌ Dismiss", callback_data=f"reconn_dismiss:{request_id}")
+    builder.adjust(1, 1)
+    return builder.as_markup()
+
+
+def get_block_duration_keyboard(
+    session_id: int,
+    partner_id: int,
+    back_callback: Optional[str] = None,
+) -> InlineKeyboardMarkup:
     """Return inline keyboard with cooldown options for not matching again."""
     builder = InlineKeyboardBuilder()
     builder.button(text="⏰ 1 Day", callback_data=f"block_dur:{partner_id}:1d")
     builder.button(text="⏰ 3 Days", callback_data=f"block_dur:{partner_id}:3d")
     builder.button(text="⏰ 1 Week", callback_data=f"block_dur:{partner_id}:7d")
     builder.button(text="⛔ Permanently", callback_data=f"block_dur:{partner_id}:perm")
-    builder.button(text="🔙 Back", callback_data=f"fb_back:{session_id}:{partner_id}")
+    back_data = back_callback if back_callback else f"fb_back:{session_id}:{partner_id}"
+    builder.button(text="🔙 Back", callback_data=back_data)
+    builder.adjust(2, 2, 1)
+    return builder.as_markup()
+
+
+def get_sunset_duration_keyboard(session_id: int, partner_id: int) -> InlineKeyboardMarkup:
+    """Return inline keyboard with cooldown options for closing chapter on a good conversation."""
+    builder = InlineKeyboardBuilder()
+    builder.button(text="⏰ 1 Day", callback_data=f"fb_sunset_dur:{partner_id}:1d")
+    builder.button(text="⏰ 3 Days", callback_data=f"fb_sunset_dur:{partner_id}:3d")
+    builder.button(text="⏰ 1 Week", callback_data=f"fb_sunset_dur:{partner_id}:7d")
+    builder.button(text="🕊️ Permanent", callback_data=f"fb_sunset_dur:{partner_id}:perm")
+    builder.button(text="🔙 Back", callback_data=f"fb_back_like:{session_id}:{partner_id}")
     builder.adjust(2, 2, 1)
     return builder.as_markup()
 
@@ -188,13 +295,36 @@ def get_block_duration_keyboard(session_id: int, partner_id: int) -> InlineKeybo
 def get_blocklist_keyboard(blocks: list, page: int, total_pages: int) -> InlineKeyboardMarkup:
     """Return inline keyboard rendering blocked partners as date buttons with [<] [2/3] [>] pagination."""
     builder = InlineKeyboardBuilder()
+    now = datetime.now(timezone.utc)
 
-    # Add blocked partner buttons (1 per row, showing the block date)
+    # Add blocked partner buttons (1 per row, showing date, remaining time, and category)
     for block in blocks:
-        date_str = block.created_at.strftime("%Y-%m-%d %H:%M")
-        dur_label = " (perm)" if block.expires_at is None else " (temp)"
+        created = block.created_at
+        if created and created.tzinfo is None:
+            created = created.replace(tzinfo=timezone.utc)
+        date_str = created.strftime("%Y-%m-%d %H:%M") if created else "Recently"
+
+        is_chapter = getattr(block, "reason", None) == "closed_chapter"
+        tag = "Chapter" if is_chapter else "Block"
+        prefix = "🕊️" if is_chapter else "🚫"
+
+        if block.expires_at is None:
+            dur_str = "(perm)"
+        else:
+            exp = block.expires_at
+            if exp.tzinfo is None:
+                exp = exp.replace(tzinfo=timezone.utc)
+            rem_sec = max(0, (exp - now).total_seconds())
+            if rem_sec < 3600:
+                rem_str = f"{max(1, int(rem_sec // 60))}m left"
+            elif rem_sec < 86400:
+                rem_str = f"{max(1, int(rem_sec // 3600))}h left"
+            else:
+                rem_str = f"{max(1, int(math.ceil(rem_sec / 86400)))}d left"
+            dur_str = f"(temp) · {rem_str}"
+
         builder.button(
-            text=f"📅 {date_str}{dur_label}",
+            text=f"{prefix} {date_str} {dur_str} ({tag})",
             callback_data=f"bl_select:{block.id}:{page}",
         )
 
@@ -214,10 +344,11 @@ def get_blocklist_keyboard(blocks: list, page: int, total_pages: int) -> InlineK
     return builder.as_markup()
 
 
-def get_unblock_confirmation_keyboard(block_id: int, page: int) -> InlineKeyboardMarkup:
-    """Return inline keyboard prompting confirmation to unblock a partner."""
+def get_unblock_confirmation_keyboard(block_id: int, page: int, is_chapter: bool = False) -> InlineKeyboardMarkup:
+    """Return inline keyboard prompting confirmation to unblock or reopen chapter with a partner."""
     builder = InlineKeyboardBuilder()
-    builder.button(text="✅ Yes, Unblock", callback_data=f"bl_unblock_confirm:{block_id}:{page}")
+    confirm_text = "✨ Reopen Chapter" if is_chapter else "✅ Yes, Unblock"
+    builder.button(text=confirm_text, callback_data=f"bl_unblock_confirm:{block_id}:{page}")
     builder.button(text="🔙 Cancel", callback_data=f"bl_page:{page}")
     builder.adjust(2)
     return builder.as_markup()

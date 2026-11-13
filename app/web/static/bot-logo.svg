@@ -1,0 +1,27 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120" fill="none">
+  <defs>
+    <radialGradient id="bgGlow" cx="50%" cy="35%" r="65%">
+      <stop offset="0%" stop-color="#38BDF8" stop-opacity="0.35"/>
+      <stop offset="55%" stop-color="#0D254C" stop-opacity="0.85"/>
+      <stop offset="100%" stop-color="#050609" stop-opacity="1"/>
+    </radialGradient>
+    <linearGradient id="neonBlue" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#7DD3FC"/>
+      <stop offset="50%" stop-color="#38BDF8"/>
+      <stop offset="100%" stop-color="#0284C7"/>
+    </linearGradient>
+    <filter id="glow" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="3.5" result="blur"/>
+      <feComposite in="SourceGraphic" in2="blur" operator="over"/>
+    </filter>
+  </defs>
+  <rect x="4" y="4" width="112" height="112" rx="28" fill="url(#bgGlow)" stroke="url(#neonBlue)" stroke-width="2.5"/>
+  <!-- Stylized Anonymous Mask / Hood + AUA Pillars -->
+  <path d="M60 22C39 22 26 36.5 26 56.5C26 73 36.5 87.5 52 93.5L60 98L68 93.5C83.5 87.5 94 73 94 56.5C94 36.5 81 22 60 22Z" fill="#081226" stroke="url(#neonBlue)" stroke-width="2.5" filter="url(#glow)"/>
+  <!-- Glowing Eyes -->
+  <path d="M39 53C42 49.5 48.5 49.5 52 53C48.5 55.5 42 55.5 39 53Z" fill="#38BDF8" filter="url(#glow)"/>
+  <path d="M68 53C71.5 49.5 78 49.5 81 53C78 55.5 71.5 55.5 68 53Z" fill="#38BDF8" filter="url(#glow)"/>
+  <!-- Subtle Smile / Mask Mustache Curve -->
+  <path d="M44 71C50 76 70 76 76 71" stroke="#38BDF8" stroke-width="2.5" stroke-linecap="round"/>
+  <path d="M55 78H65" stroke="#7DD3FC" stroke-width="2" stroke-linecap="round"/>
+</svg>

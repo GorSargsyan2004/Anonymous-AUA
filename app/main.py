@@ -21,6 +21,7 @@ from app.services.backup import hourly_backup_worker
 from app.services.ban_manager import sync_banned_users
 from app.services.daily_reminders import daily_reminders_worker
 from app.services.inactivity_monitor import inactivity_monitor_worker
+from app.web.server import start_background_web_server
 
 
 # Configure logging
@@ -41,6 +42,8 @@ async def setup_bot_commands(bot: Bot) -> None:
         BotCommand(command="start", description="Start bot / Profile setup"),
         BotCommand(command="search", description="Search for an anonymous partner"),
         BotCommand(command="link", description="Receive anonymous messages & Q&A 🎭"),
+        BotCommand(command="post", description="Publish anonymous post to AUA Hub 🌐"),
+        BotCommand(command="sync", description="Sync inbox & account with AUA Hub 🔄"),
         BotCommand(command="invite", description="Create direct 1-on-1 chat invite link 🔗"),
         BotCommand(command="next", description="Skip to next chat partner"),
         BotCommand(command="stop", description="End current chat or search"),
@@ -149,10 +152,15 @@ async def main() -> None:
     except Exception as e:
         logger.debug("Could not enforce bot profile: %s", e)
 
-    # 6. Start background workers
+    # 6. Start background workers and AUA Hub Web Server
     backup_task = asyncio.create_task(hourly_backup_worker(bot))
     inactivity_task = asyncio.create_task(inactivity_monitor_worker(bot))
     reminders_task = asyncio.create_task(daily_reminders_worker(bot))
+    web_runner = None
+    try:
+        web_runner = await start_background_web_server(bot=bot)
+    except Exception as e:
+        logger.error("Failed to start AUA Hub Web Server: %s", e)
 
     # 7. Start Polling (preserve pending updates so messages sent during restart are not lost)
     logger.info("Starting polling with admin IDs: %s", settings.ADMIN_IDS)
@@ -165,6 +173,11 @@ async def main() -> None:
         )
     finally:
         logger.info("Stopping background workers...")
+        if web_runner is not None:
+            try:
+                await web_runner.cleanup()
+            except Exception:
+                pass
         inactivity_task.cancel()
         backup_task.cancel()
         reminders_task.cancel()

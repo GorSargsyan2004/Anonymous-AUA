@@ -2,11 +2,78 @@
 
 from datetime import datetime, timedelta, timezone
 from typing import List, Optional, Tuple
-from sqlalchemy import and_, func, or_, select
+from sqlalchemy import and_, case, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.database.models import ChatSession, User, UserBlock
+
+SEARCH_MODE_FRIENDSHIP = "friendship"
+SEARCH_MODE_KILLING_TIME = "killing_time"
+SEARCH_MODE_ROMANCE = "romance"
+SEARCH_MODE_PREFERENCES = "preferences"
+
+VALID_SEARCH_MODES = (
+    SEARCH_MODE_FRIENDSHIP,
+    SEARCH_MODE_KILLING_TIME,
+    SEARCH_MODE_ROMANCE,
+    SEARCH_MODE_PREFERENCES,
+)
+
+ALL_SEXES = ["male", "female"]
+ALL_ORIENTATIONS = ["straight", "bisexual", "lesbian", "gay"]
+
+SEARCH_MODE_LABELS = {
+    SEARCH_MODE_FRIENDSHIP: "🤝 Making friendships",
+    SEARCH_MODE_KILLING_TIME: "⏳ Killing time",
+    SEARCH_MODE_ROMANCE: "💘 Looking for romance",
+    SEARCH_MODE_PREFERENCES: "⚙️ By set /preferences",
+}
+
+
+def get_search_mode_label(mode: Optional[str]) -> str:
+    """Return human-readable label for a given search mode."""
+    norm = (mode or SEARCH_MODE_PREFERENCES).strip().lower()
+    return SEARCH_MODE_LABELS.get(norm, SEARCH_MODE_LABELS[SEARCH_MODE_PREFERENCES])
+
+
+def resolve_search_mode_preferences(
+    user: User,
+    mode: Optional[str] = None,
+) -> Tuple[str, List[str], List[str]]:
+    """Resolve effective (mode, target_sexes, target_orientations) for a user's chosen search mode.
+
+    Modes:
+      - friendship: Any gender & orientation
+      - killing_time: Any gender & orientation
+      - romance: Romantic compatibility based on user's sex & orientation
+      - preferences: User's custom saved /preferences (falling back to romantic defaults)
+    """
+    norm_mode = (mode or getattr(user, "search_mode", None) or SEARCH_MODE_PREFERENCES).strip().lower()
+    if norm_mode not in VALID_SEARCH_MODES:
+        norm_mode = SEARCH_MODE_PREFERENCES
+
+    if norm_mode in (SEARCH_MODE_FRIENDSHIP, SEARCH_MODE_KILLING_TIME):
+        return norm_mode, list(ALL_SEXES), list(ALL_ORIENTATIONS)
+
+    if norm_mode == SEARCH_MODE_ROMANCE:
+        rom_sexes, rom_orients = get_default_preferences(user.sex, user.orientation)
+        return norm_mode, rom_sexes, rom_orients
+
+    # norm_mode == "preferences"
+    raw_sexes = getattr(user, "custom_target_sexes", None) or user.target_sexes or ""
+    raw_orients = getattr(user, "custom_target_orientations", None) or user.target_orientations or ""
+    custom_sexes = [s.strip().lower() for s in raw_sexes.split(",") if s.strip()]
+    custom_orients = [o.strip().lower() for o in raw_orients.split(",") if o.strip()]
+
+    if not custom_sexes or not custom_orients:
+        def_sexes, def_orients = get_default_preferences(user.sex, user.orientation)
+        if not custom_sexes:
+            custom_sexes = def_sexes
+        if not custom_orients:
+            custom_orients = def_orients
+
+    return norm_mode, custom_sexes, custom_orients
 
 
 def normalize_orientation(sex: str, orientation: str) -> str:
@@ -227,11 +294,25 @@ async def match_user_in_queue(
     if allowed_candidate_ids is not None:
         conditions.append(User.id.in_(allowed_candidate_ids))
 
+    current_mode = (getattr(current_user, "search_mode", None) or SEARCH_MODE_PREFERENCES).strip().lower()
+    if current_mode in (SEARCH_MODE_FRIENDSHIP, SEARCH_MODE_KILLING_TIME):
+        intent_rank = case(
+            (User.search_mode == current_mode, 0),
+            (User.search_mode.in_([SEARCH_MODE_FRIENDSHIP, SEARCH_MODE_KILLING_TIME]), 1),
+            else_=2,
+        )
+    else:
+        intent_rank = case(
+            (User.search_mode == current_mode, 0),
+            else_=1,
+        )
+
     candidate_stmt = (
         select(User)
         .where(*conditions)
         .order_by(
             func.abs(User.priority - current_user.priority).asc(),
+            intent_rank.asc(),
             User.priority.desc(),
             User.created_at.asc(),
         )

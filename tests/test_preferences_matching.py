@@ -7,16 +7,21 @@ from sqlalchemy import delete, select, text
 from app.database.session import get_db_session, init_db
 from app.database.models import User, ChatSession
 from app.database.crud import (
+    apply_user_search_mode,
     get_or_create_user,
     update_user_profile,
     update_user_preferences,
     end_active_session,
 )
 from app.services.matcher import (
+    SEARCH_MODE_FRIENDSHIP,
+    SEARCH_MODE_KILLING_TIME,
+    SEARCH_MODE_PREFERENCES,
+    SEARCH_MODE_ROMANCE,
     get_default_preferences,
     match_user_in_queue,
 )
-from app.keyboards.inline import get_preferences_keyboard
+from app.keyboards.inline import get_preferences_keyboard, get_search_mode_keyboard
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("test_preferences")
@@ -256,6 +261,51 @@ async def test_preferences_matching():
         logger.info("Scenario E Passed: Mutual custom preferences connected Lesbian Female and Gay Male (Session %d)", s2.id)
 
         await end_active_session(session, U4)
+
+    # 10. Scenario F: Search Modes (Friendship & Killing Time) + Non-Destructive Custom Preferences + /next Persistence
+    search_kb = get_search_mode_keyboard(current_mode=SEARCH_MODE_FRIENDSHIP, is_currently_searching=False)
+    search_btns = [btn.text for row in search_kb.inline_keyboard for btn in row]
+    assert any("Making friendships" in t for t in search_btns)
+    assert any("Killing time" in t for t in search_btns)
+    assert any("Looking for romance" in t for t in search_btns)
+    assert any("By set /preferences" in t for t in search_btns)
+
+    async with get_db_session() as session:
+        # Reset U1 and U6 to strict custom preferences (only female/lesbian for U1, only female/straight for U6)
+        await update_user_preferences(session, U1, target_sexes=["female"], target_orientations=["lesbian"])
+        await update_user_preferences(session, U6, target_sexes=["female"], target_orientations=["straight"])
+
+        # Both select "Making friendships" and "Killing time"
+        await apply_user_search_mode(session, U1, mode=SEARCH_MODE_FRIENDSHIP)
+        await apply_user_search_mode(session, U6, mode=SEARCH_MODE_KILLING_TIME)
+
+        # They should match because both modes open preferences to any gender & orientation!
+        c1, s1 = await match_user_in_queue(session, U1, allowed_candidate_ids=ALL_TEST_USERS)
+        assert c1 is None and s1 is None
+        c2, s2 = await match_user_in_queue(session, U6, allowed_candidate_ids=ALL_TEST_USERS)
+        assert c2 is not None and c2.id == U1, "Friendship and Killing Time modes should match any gender/orientation!"
+        logger.info("Scenario F1 Passed: Friendship & Killing Time modes matched U1 and U6 (Session %d)", s2.id)
+        await end_active_session(session, U1)
+
+        # Simulate /next (mode=None preserves last selected search_mode)
+        u1_after_next = await apply_user_search_mode(session, U1, mode=None)
+        assert u1_after_next.search_mode == SEARCH_MODE_FRIENDSHIP
+        assert "male" in u1_after_next.target_sexes and "female" in u1_after_next.target_sexes
+        logger.info("Scenario F2 Passed: /next preserves previously selected search_mode (%s)", u1_after_next.search_mode)
+
+        # Switch U1 back to "By set /preferences" -> custom preferences ("female" + "lesbian") must be intact!
+        u1_restored = await apply_user_search_mode(session, U1, mode=SEARCH_MODE_PREFERENCES)
+        assert u1_restored.search_mode == SEARCH_MODE_PREFERENCES
+        assert u1_restored.target_sexes == "female"
+        assert u1_restored.target_orientations == "lesbian"
+        logger.info("Scenario F3 Passed: Switching back to 'preferences' restored custom saved preferences intact.")
+
+        # Switch U1 to "Looking for romance" -> Straight Male gets Female + Straight,Bisexual
+        u1_romance = await apply_user_search_mode(session, U1, mode=SEARCH_MODE_ROMANCE)
+        assert u1_romance.search_mode == SEARCH_MODE_ROMANCE
+        assert u1_romance.target_sexes == "female"
+        assert "straight" in u1_romance.target_orientations and "bisexual" in u1_romance.target_orientations
+        logger.info("Scenario F4 Passed: 'Looking for romance' applied romantic preferences based on sex/orientation.")
 
     await cleanup_users()
     logger.info("ALL PREFERENCES MATCHING TESTS PASSED SUCCESSFULLY! 🎉")

@@ -197,6 +197,31 @@ async def init_db() -> None:
         )
         await conn.execute(
             text(
+                "ALTER TABLE users ADD COLUMN IF NOT EXISTS custom_target_sexes VARCHAR(64);"
+            )
+        )
+        await conn.execute(
+            text(
+                "ALTER TABLE users ADD COLUMN IF NOT EXISTS custom_target_orientations VARCHAR(128);"
+            )
+        )
+        await conn.execute(
+            text(
+                "ALTER TABLE users ADD COLUMN IF NOT EXISTS search_mode VARCHAR(32) DEFAULT 'preferences';"
+            )
+        )
+        await conn.execute(
+            text(
+                """
+                UPDATE users SET
+                    custom_target_sexes = target_sexes,
+                    custom_target_orientations = target_orientations
+                WHERE custom_target_sexes IS NULL AND target_sexes IS NOT NULL;
+                """
+            )
+        )
+        await conn.execute(
+            text(
                 "ALTER TABLE users ADD COLUMN IF NOT EXISTS spam_flags_count INTEGER NOT NULL DEFAULT 0;"
             )
         )
@@ -296,6 +321,16 @@ async def init_db() -> None:
                 "ALTER TABLE inbox_messages ADD COLUMN IF NOT EXISTS replied_at TIMESTAMP WITH TIME ZONE;"
             )
         )
+        await conn.execute(
+            text(
+                "ALTER TABLE inbox_messages ADD COLUMN IF NOT EXISTS content_text TEXT;"
+            )
+        )
+        await conn.execute(
+            text(
+                "ALTER TABLE inbox_messages ADD COLUMN IF NOT EXISTS reply_text TEXT;"
+            )
+        )
         # Reports model refactoring for AI Moderation and Anonymity
         await conn.execute(
             text(
@@ -365,6 +400,31 @@ async def init_db() -> None:
         await conn.execute(
             text(
                 "ALTER TABLE reports ADD COLUMN IF NOT EXISTS thread_token VARCHAR(32);"
+            )
+        )
+        await conn.execute(
+            text(
+                "ALTER TABLE spam_chat_messages ADD COLUMN IF NOT EXISTS media_type VARCHAR(32) DEFAULT 'image';"
+            )
+        )
+        await conn.execute(
+            text(
+                "ALTER TABLE spam_chat_messages ADD COLUMN IF NOT EXISTS reply_to_id INTEGER REFERENCES spam_chat_messages(id) ON DELETE SET NULL;"
+            )
+        )
+        await conn.execute(
+            text(
+                "ALTER TABLE spam_chat_messages ADD COLUMN IF NOT EXISTS is_edited BOOLEAN NOT NULL DEFAULT FALSE;"
+            )
+        )
+        await conn.execute(
+            text(
+                "ALTER TABLE spam_chat_messages ADD COLUMN IF NOT EXISTS edited_at TIMESTAMP WITH TIME ZONE;"
+            )
+        )
+        await conn.execute(
+            text(
+                "ALTER TABLE spam_chat_reactions ALTER COLUMN emoji TYPE VARCHAR(64);"
             )
         )
 

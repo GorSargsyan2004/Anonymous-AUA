@@ -1,0 +1,1125 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <meta name="theme-color" content="#050609" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="AUA Hub" />
+  <title>AUA Hub — American University of Armenia Student Ecosystem</title>
+  <link rel="manifest" href="/manifest.json" />
+  <link rel="apple-touch-icon" href="/static/bot-logo.svg" />
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link
+    href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;700;800&display=swap"
+    rel="stylesheet">
+  <link rel="icon" type="image/svg+xml" href="/static/bot-logo.svg" />
+  <link rel="stylesheet" href="/static/styles.css?v=20261108_2" />
+</head>
+
+<body>
+  <!-- Ambient Obsidian & Dark-Blue / Light-Blue Illuminations + Blurry AUA Watermark -->
+  <div class="ambient-canvas">
+    <div class="ambient-orb orb-1"></div>
+    <div class="ambient-orb orb-2"></div>
+    <div class="ambient-orb orb-3"></div>
+    <div class="ambient-aua-watermark">AUA</div>
+  </div>
+
+  <div class="app-shell">
+    <!-- Top Glassmorphic Navigation Bar -->
+    <header class="glass-panel top-navbar">
+      <div class="brand-cluster" onclick="switchView('home')" title="AUA Hub Home">
+        <div class="brand-shimmer-fx"></div>
+        <span class="brand-dot"></span>
+        <div class="brand-title">AUA <span class="hub-glow">Hub</span></div>
+      </div>
+
+      <nav class="nav-tabs" aria-label="Main Navigation">
+        <button class="nav-tab" data-view="have-need" onclick="switchView('have-need')">
+          Have-Need
+        </button>
+        <button class="nav-tab" data-view="feedbacks" onclick="switchView('feedbacks')">
+          Feedbacks
+        </button>
+        <button class="nav-tab" data-view="anonymous" onclick="switchView('anonymous')">
+          Anonymous
+        </button>
+        <button class="nav-tab" data-view="free-rooms" onclick="switchView('free-rooms')">
+          Free Rooms
+        </button>
+        <button class="nav-tab" data-view="groups" onclick="switchView('groups')">
+          Telegram Groups
+        </button>
+        <button class="nav-tab" data-view="spam-chat" onclick="switchView('spam-chat')">
+          Chat
+          <span id="navUnreadBadge" class="unread-badge hidden">0</span>
+        </button>
+      </nav>
+
+      <div id="navbarAuthArea" class="auth-bar">
+        <button class="btn-glass" onclick="openAuthModal('login')">Sign In</button>
+        <button class="btn-illuminated" onclick="openAuthModal('register')">Register</button>
+      </div>
+    </header>
+
+    <!-- ======================================================================
+         VIEW 0: <Home> Main Landing Page
+         ====================================================================== -->
+    <section id="view-home" class="view-section active">
+      <div id="homeHeroWrapper" class="home-hero-wrapper hero-animate-active">
+        <div class="home-kicker hero-reveal-kicker">American University of Armenia &bull; Student Ecosystem</div>
+
+        <h1 class="home-hero-title" aria-label="All tools and utilities needed for AUA students are here.">
+          <span class="hero-word" style="--d: 0.06s;">All</span>
+          <span class="hero-word" style="--d: 0.12s;">tools</span>
+          <span class="hero-word" style="--d: 0.18s;">and</span>
+          <span class="hero-word" style="--d: 0.24s;">utilities</span>
+          <span class="hero-word" style="--d: 0.30s;">needed</span>
+          <span class="hero-word" style="--d: 0.36s;">for</span>
+          <span class="text-illuminate hero-illuminate-group">
+            <span class="hero-char" style="--d: 0.42s;">A</span><span class="hero-char"
+              style="--d: 0.45s;">U</span><span class="hero-char" style="--d: 0.48s;">A</span><span
+              class="hero-char-space">&nbsp;</span><span class="hero-char" style="--d: 0.52s;">s</span><span
+              class="hero-char" style="--d: 0.55s;">t</span><span class="hero-char" style="--d: 0.58s;">u</span><span
+              class="hero-char" style="--d: 0.61s;">d</span><span class="hero-char" style="--d: 0.64s;">e</span><span
+              class="hero-char" style="--d: 0.67s;">n</span><span class="hero-char" style="--d: 0.70s;">t</span><span
+              class="hero-char" style="--d: 0.73s;">s</span>
+          </span>
+          <span class="hero-word" style="--d: 0.80s;">are</span>
+          <span class="hero-word" style="--d: 0.86s;">here.</span>
+        </h1>
+
+        <p class="home-hero-lead hero-reveal-lead">
+          Swap course sections effortlessly, find empty study rooms across Main Building and PAB in real time, browse
+          anonymous campus posts and your personal inbox, discover student Telegram groups, and connect in the campus
+          lounge.
+        </p>
+
+        <div class="home-modules-grid">
+          <div class="glass-card home-module-card hero-reveal-card" style="--card-d: 0.58s;"
+            onclick="switchView('have-need')">
+            <div>
+              <h3>Have-Need <span class="arrow">&rarr;</span></h3>
+              <p style="margin-top:6px;">Search official Sonis course sections and trade what you have for what you
+                need.</p>
+            </div>
+          </div>
+
+          <div class="glass-card home-module-card hero-reveal-card" style="--card-d: 0.65s;"
+            onclick="switchView('feedbacks')">
+            <div>
+              <h3>Feedbacks <span class="arrow">&rarr;</span></h3>
+              <p style="margin-top:6px;">Read and share student reviews and ratings for AUA instructors and courses.</p>
+            </div>
+          </div>
+
+          <div class="glass-card home-module-card hero-reveal-card" style="--card-d: 0.72s;"
+            onclick="switchView('anonymous')">
+            <div>
+              <h3>Anonymous <span class="arrow">&rarr;</span></h3>
+              <p style="margin-top:6px;">Read indexed campus posts and sync your personal inbox with @aua_anonymous_bot.
+              </p>
+            </div>
+          </div>
+
+          <div class="glass-card home-module-card hero-reveal-card" style="--card-d: 0.79s;"
+            onclick="switchView('free-rooms')">
+            <div>
+              <h3>Free Rooms <span class="arrow">&rarr;</span></h3>
+              <p style="margin-top:6px;">Live Main Building &amp; PAB room availability with 10-minute class gaps
+                filtered out.</p>
+            </div>
+          </div>
+
+          <div class="glass-card home-module-card hero-reveal-card" style="--card-d: 0.86s;"
+            onclick="switchView('groups')">
+            <div>
+              <h3>Telegram Groups <span class="arrow">&rarr;</span></h3>
+              <p style="margin-top:6px;">Explore and share AUA student clubs, study groups, and cohort communities.</p>
+            </div>
+          </div>
+
+          <div class="glass-card home-module-card hero-reveal-card" style="--card-d: 0.93s;"
+            onclick="switchView('spam-chat')">
+            <div>
+              <h3>Chat <span class="arrow">&rarr;</span></h3>
+              <p style="margin-top:6px;">Campus chat for lost &amp; found, ads, club updates, announcements, and campus
+                life.</p>
+            </div>
+          </div>
+        </div>
+
+        <div class="glass-panel home-contact-pill hero-reveal-contact">
+          If you have other suggestions, something is missing, or you found a bug, contact me at
+          <a href="https://t.me/sargsiangor" target="_blank" rel="noopener noreferrer">@sargsiangor</a>
+        </div>
+
+        <button type="button" id="pwaInstallBtn" class="btn-glass"
+          style="display:none; padding:9px 18px; font-size:13px;" onclick="promptPwaInstall()">
+          Install AUA Hub App to Home Screen
+        </button>
+      </div>
+    </section>
+
+    <!-- ======================================================================
+         VIEW 1: <Have-Need> Course Section Exchange
+         ====================================================================== -->
+    <section id="view-have-need" class="view-section">
+      <div class="section-header">
+        <div>
+          <h1 class="section-title">Course Have-Need Exchange</h1>
+          <p class="section-subtitle">
+            Search official Jenzabar Sonis courses, select the section you have and the section you want, and connect
+            with AUA students to swap.
+          </p>
+        </div>
+        <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
+          <span id="activeSemesterPill" class="semester-pill">Loading Semester...</span>
+          <button class="btn-glass" onclick="refreshCoursesFromSonis()" title="Re-sync course list from Sonis">
+            Sync Courses
+          </button>
+        </div>
+      </div>
+
+      <div class="mobile-form-toggle-bar">
+        <button type="button" id="hnMobileFormToggleBtn" class="btn-illuminated mobile-form-toggle-btn"
+          onclick="toggleMobileFormPanel('hnFormPanel', 'hnMobileFormToggleBtn', '+ Post a Course Swap', 'Hide Course Swap Form')">
+          + Post a Course Swap
+        </button>
+      </div>
+
+      <div class="hn-layout">
+        <!-- Left Panel: Post or Edit a Have-Need -->
+        <div id="hnFormPanel" class="glass-panel mobile-collapsible-form" style="padding: 22px;">
+          <h2 id="hnFormTitle" style="font-size: 18px; font-weight: 800; margin-bottom: 6px;">
+            Post a Course Swap
+          </h2>
+          <p style="font-size: 13px; color: var(--text-secondary); margin-bottom: 18px;">
+            Select what course &amp; section you currently hold and what you are looking for.
+          </p>
+
+          <form id="haveNeedForm" onsubmit="submitHaveNeedForm(event)">
+            <input type="hidden" id="hnEditingPostId" value="" />
+
+            <!-- Course I HAVE -->
+            <div style="margin-bottom: 16px;" class="course-picker-wrapper">
+              <label class="field-label" for="haveCourseSearch">Course I Have (Search by name, code, instructor)</label>
+              <input type="text" id="haveCourseSearch" class="input-glass"
+                placeholder="e.g. CS 120, Calculus, Sargsyan..." autocomplete="off" onfocus="openCourseDropdown('have')"
+                oninput="filterCourseDropdown('have', this.value)" />
+              <div id="haveCourseDropdown" class="course-dropdown"></div>
+              <div id="haveSelectedContainer"></div>
+            </div>
+
+            <!-- Course I NEED -->
+            <div style="margin-bottom: 16px;" class="course-picker-wrapper">
+              <label class="field-label" for="needCourseSearch">Course I Need / Want</label>
+              <input type="text" id="needCourseSearch" class="input-glass"
+                placeholder="e.g. CS 120 Section B, Ethics..." autocomplete="off" onfocus="openCourseDropdown('need')"
+                oninput="filterCourseDropdown('need', this.value)" />
+              <div id="needCourseDropdown" class="course-dropdown"></div>
+              <div id="needSelectedContainer"></div>
+            </div>
+
+            <!-- Contact Info (Telegram DM or other) -->
+            <div style="margin-bottom: 14px;">
+              <label class="field-label" for="hnContactDm">Telegram DM / Contact Method</label>
+              <input type="text" id="hnContactDm" class="input-glass"
+                placeholder="e.g. @your_username or t.me/your_username" required />
+              <div class="field-hint">Students who match your swap will contact you here.</div>
+            </div>
+
+            <!-- Optional Note -->
+            <div style="margin-bottom: 18px;">
+              <label class="field-label" for="hnNotes">Optional Note</label>
+              <input type="text" id="hnNotes" class="input-glass"
+                placeholder="e.g. Also open to Section C if morning slot" />
+            </div>
+
+            <div style="display:flex; gap:10px;">
+              <button type="submit" id="hnSubmitBtn" class="btn-illuminated" style="flex:1;">
+                Publish Have-Need
+              </button>
+              <button type="button" id="hnCancelEditBtn" class="btn-glass" style="display:none;"
+                onclick="resetHaveNeedForm()">
+                Cancel
+              </button>
+            </div>
+          </form>
+        </div>
+
+        <!-- Right Panel: Live Feed & Filter (All vs My Posts) -->
+        <div>
+          <div class="glass-panel hn-filter-bar"
+            style="padding: 16px 20px; margin-bottom: 16px; display:flex; align-items:center; justify-content:space-between; gap:14px; flex-wrap:wrap;">
+            <div class="subtabs-bar" style="margin-bottom:0;">
+              <button id="hnTabAll" class="subtab-btn active" onclick="setHaveNeedFilter(false)">
+                All Posts
+              </button>
+              <button id="hnTabMine" class="subtab-btn" onclick="setHaveNeedFilter(true)">
+                My Posts
+              </button>
+            </div>
+            <div class="hn-search-box" style="flex:1; min-width: 220px; max-width: 360px;">
+              <input type="text" id="hnFeedSearch" class="input-glass"
+                placeholder="Filter swaps by course, section, or instructor..." oninput="loadHaveNeedPosts()" />
+            </div>
+          </div>
+
+          <div id="haveNeedList" class="hn-cards-grid"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ======================================================================
+         VIEW 1.5: <Feedbacks> Instructors & Courses Reviews
+         ====================================================================== -->
+    <section id="view-feedbacks" class="view-section">
+      <div class="section-header">
+        <div>
+          <h1 class="section-title">Instructors &amp; Courses Feedbacks</h1>
+          <p class="section-subtitle">
+            Browse honest student reviews or leave your own feedback for any AUA lecturer, professor, or course parsed
+            from Jenzabar Sonis.
+          </p>
+        </div>
+        <div class="subtabs-bar" style="margin-bottom: 0;">
+          <button id="fbTabInstructor" class="subtab-btn active" onclick="switchFeedbackSubtab('instructor')">
+            Instructors
+          </button>
+          <button id="fbTabCourse" class="subtab-btn" onclick="switchFeedbackSubtab('course')">
+            Courses
+          </button>
+        </div>
+      </div>
+
+      <div class="mobile-form-toggle-bar">
+        <button type="button" id="fbMobileFormToggleBtn" class="btn-illuminated mobile-form-toggle-btn"
+          onclick="toggleMobileFormPanel('fbFormPanel', 'fbMobileFormToggleBtn', '+ Leave a Feedback', 'Hide Feedback Form')">
+          + Leave a Feedback
+        </button>
+      </div>
+
+      <div class="hn-layout">
+        <!-- Left Panel: Leave a Feedback -->
+        <div id="fbFormPanel" class="glass-panel mobile-collapsible-form" style="padding: 22px;">
+          <h2 id="fbFormTitle" style="font-size: 18px; font-weight: 800; margin-bottom: 6px;">
+            Leave Instructor Feedback
+          </h2>
+          <p id="fbFormSub" style="font-size: 13px; color: var(--text-secondary); margin-bottom: 18px;">
+            Select an AUA lecturer or professor and share your experience with fellow students.
+          </p>
+
+          <form id="feedbackForm" onsubmit="submitAcademicFeedback(event)">
+            <!-- Searchable Target Picker (Instructor or Course) -->
+            <div style="margin-bottom: 16px;" class="course-picker-wrapper">
+              <label id="fbPickerLabel" class="field-label" for="fbTargetSearch">
+                Select Instructor / Lecturer
+              </label>
+              <input type="text" id="fbTargetSearch" class="input-glass"
+                placeholder="Search instructor name (e.g. Arsen Chilingaryan)..." autocomplete="off"
+                onfocus="openFeedbackTargetDropdown()" oninput="filterFeedbackTargetDropdown(this.value)" />
+              <div id="fbTargetDropdown" class="course-dropdown"></div>
+              <div id="fbSelectedTargetContainer"></div>
+            </div>
+
+            <!-- 5-Star Rating -->
+            <div style="margin-bottom: 16px;">
+              <label class="field-label">Overall Rating</label>
+              <div class="star-rating-picker" id="fbStarPicker">
+                <button type="button" class="star-btn active" onclick="setFeedbackRating(1)">&#9733;</button>
+                <button type="button" class="star-btn active" onclick="setFeedbackRating(2)">&#9733;</button>
+                <button type="button" class="star-btn active" onclick="setFeedbackRating(3)">&#9733;</button>
+                <button type="button" class="star-btn active" onclick="setFeedbackRating(4)">&#9733;</button>
+                <button type="button" class="star-btn active" onclick="setFeedbackRating(5)">&#9733;</button>
+                <span id="fbRatingText"
+                  style="font-size:13px; font-weight:700; color:var(--text-ice); margin-left:8px;">5 / 5</span>
+              </div>
+            </div>
+
+            <!-- Feedback Textarea -->
+            <div style="margin-bottom: 14px;">
+              <label class="field-label" for="fbCommentInput">Your Feedback</label>
+              <textarea id="fbCommentInput" class="textarea-glass" rows="4"
+                placeholder="Share your honest thoughts on teaching style, grading, workload, exams, or tips for taking this class..."
+                required></textarea>
+            </div>
+
+            <!-- Anonymous Toggle -->
+            <div style="margin-bottom: 18px;">
+              <label
+                style="display:inline-flex; align-items:center; gap:9px; cursor:pointer; font-size:13px; color:var(--text-ice); font-weight:600;">
+                <input type="checkbox" id="fbAnonymousCheck" checked
+                  style="accent-color: var(--neon-blue); width: 16px; height: 16px;" />
+                Post anonymously (hides your name on the review)
+              </label>
+            </div>
+
+            <button type="submit" class="btn-illuminated" style="width: 100%;">
+              Publish Feedback
+            </button>
+          </form>
+        </div>
+
+        <!-- Right Panel: Search Target & Recent Written Feedbacks -->
+        <div>
+          <div class="glass-panel"
+            style="padding: 16px 20px; margin-bottom: 16px; display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap;">
+            <div style="flex: 1; min-width: 240px;" class="course-picker-wrapper">
+              <input type="text" id="fbFilterSearch" class="input-glass"
+                placeholder="Search instructor or keywords to view feedbacks..." autocomplete="off"
+                onfocus="openFeedbackFilterSuggestions()" oninput="onFeedbackFilterInput(this.value)" />
+              <div id="fbFilterDropdown" class="course-dropdown"></div>
+            </div>
+
+            <button id="fbClearFilterBtn" class="btn-glass" style="display: none;"
+              onclick="clearFeedbackTargetFilter()">
+              Show All Recent
+            </button>
+          </div>
+
+          <div id="fbTargetOverviewArea"></div>
+          <div id="feedbacksList" class="hn-cards-grid"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ======================================================================
+         VIEW 2: <Anonymous> Indexed Posts & Synced /link Inbox
+         ====================================================================== -->
+    <section id="view-anonymous" class="view-section">
+      <!-- Bot Promo Banner -->
+      <a href="https://t.me/aua_anonymous_bot" target="_blank" rel="noopener noreferrer" class="bot-promo-banner">
+        <div class="bot-promo-left">
+          <img src="/static/bot-logo.svg" alt="AUA Anonymous Bot Logo" class="bot-promo-logo" />
+          <div>
+            <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
+              <h2 style="font-size: 20px; font-weight: 800; color: var(--text-white);">
+                AUA Anonymous Chat Bot
+              </h2>
+              <span class="semester-pill" style="font-size:11.5px;">@aua_anonymous_bot</span>
+            </div>
+            <p style="color: var(--text-ice); font-size: 14px; margin-top: 4px; max-width: 680px;">
+              Want to have fun, chat 1-on-1 anonymously with compatible AUA students, receive anonymous Q&amp;A
+              messages, or publish anonymous posts here? Tap to launch <b>@aua_anonymous_bot</b> on Telegram!
+            </p>
+          </div>
+        </div>
+        <span class="btn-illuminated" style="flex-shrink:0;">
+          Open @aua_anonymous_bot &rarr;
+        </span>
+      </a>
+
+      <!-- Sub-tabs: Posts vs Inbox -->
+      <div
+        style="display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:14px; margin-bottom: 18px;">
+        <div class="subtabs-bar" style="margin-bottom:0;">
+          <button id="anonTabPosts" class="subtab-btn active" onclick="switchAnonymousSubtab('posts')">
+            Posts
+          </button>
+          <button id="anonTabInbox" class="subtab-btn" onclick="switchAnonymousSubtab('inbox')">
+            Inbox (/link)
+          </button>
+        </div>
+
+        <div id="anonPostInstruction" style="font-size: 13px; color: var(--text-secondary);">
+          Posts can only be created via <a href="https://t.me/aua_anonymous_bot" target="_blank"
+            style="color:var(--neon-blue-bright); font-weight:700;">@aua_anonymous_bot</a> using the <code>/post</code>
+          command.
+        </div>
+      </div>
+
+      <!-- Subview 2A: Indexed Anonymous Posts -->
+      <div id="anonPostsView">
+        <div class="search-filter-bar"
+          style="margin-bottom: 18px; display: flex; align-items: center; gap: 12px; flex-wrap: wrap;">
+          <div class="anon-search-wrapper" style="position: relative; flex: 1; min-width: 260px; max-width: 480px;">
+            <svg class="search-icon-svg" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor"
+              stroke-width="2"
+              style="position: absolute; left: 14px; top: 50%; transform: translateY(-50%); color: var(--text-muted); pointer-events: none;">
+              <circle cx="11" cy="11" r="8"></circle>
+              <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
+            </svg>
+            <input type="text" id="anonPostsSearchInput" class="input-glass"
+              style="padding-left: 40px; padding-right: 36px;"
+              placeholder="Search posts by #id or words (e.g. #16, lost keys)..."
+              oninput="handleAnonPostsSearch(this.value)" autocomplete="off" />
+            <button id="anonPostsSearchClear" class="search-clear-btn"
+              style="display: none; position: absolute; right: 10px; top: 50%; transform: translateY(-50%); background: none; border: none; color: var(--text-muted); font-size: 18px; cursor: pointer; padding: 2px 6px; line-height: 1;"
+              onclick="clearAnonPostsSearch()" title="Clear search">&times;</button>
+          </div>
+          <button class="btn-glass" onclick="loadAnonymousPosts(1)" style="padding: 10px 16px; font-size: 13.5px;">🔄
+            Refresh</button>
+        </div>
+        <div id="anonPostsGrid" class="hn-cards-grid"></div>
+        <div id="anonPostsPagination" class="pagination-bar"></div>
+      </div>
+
+      <!-- Subview 2B: Synced Personal Inbox -->
+      <div id="anonInboxView" style="display:none;">
+        <div class="search-filter-bar"
+          style="margin-bottom: 18px; display: flex; align-items: center; gap: 12px; flex-wrap: wrap;">
+          <div class="anon-search-wrapper" style="position: relative; flex: 1; min-width: 260px; max-width: 480px;">
+            <svg class="search-icon-svg" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor"
+              stroke-width="2"
+              style="position: absolute; left: 14px; top: 50%; transform: translateY(-50%); color: var(--text-muted); pointer-events: none;">
+              <circle cx="11" cy="11" r="8"></circle>
+              <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
+            </svg>
+            <input type="text" id="inboxSearchInput" class="input-glass"
+              style="padding-left: 40px; padding-right: 36px;" placeholder="Search inbox by #id or keywords..."
+              oninput="handleInboxSearch(this.value)" autocomplete="off" />
+            <button id="inboxSearchClear" class="search-clear-btn"
+              style="display: none; position: absolute; right: 10px; top: 50%; transform: translateY(-50%); background: none; border: none; color: var(--text-muted); font-size: 18px; cursor: pointer; padding: 2px 6px; line-height: 1;"
+              onclick="clearInboxSearch()" title="Clear search">&times;</button>
+          </div>
+        </div>
+        <div id="anonInboxContainer"></div>
+      </div>
+    </section>
+
+    <!-- ======================================================================
+         VIEW 3: <Free Rooms> Live Main Building & PAB Room Finder
+         ====================================================================== -->
+    <section id="view-free-rooms" class="view-section">
+      <div class="section-header">
+        <div>
+          <h1 class="section-title">Campus Free Rooms Finder</h1>
+          <p class="section-subtitle">
+            Live timetable parsed from <code>booking.aua.am</code> (08:00–22:00). Automatically filters out 10-minute
+            passing gaps between classes so you only see genuinely free rooms (&ge; 20 mins).
+          </p>
+        </div>
+        <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
+          <input type="date" id="freeRoomsDate" class="input-glass" style="width: auto;"
+            onchange="loadFreeRooms(false)" />
+          <button id="freeRoomsRefreshBtn" class="btn-glass" onclick="loadFreeRooms(true)">
+            Refresh Live Table
+          </button>
+        </div>
+      </div>
+
+      <!-- Building & Filter Controls -->
+      <div class="glass-panel free-rooms-controls-bar"
+        style="padding: 16px 20px; margin-bottom: 20px; display:flex; align-items:center; justify-content:space-between; gap:14px; flex-wrap:wrap;">
+        <div class="subtabs-bar building-subtabs-bar" style="margin-bottom:0;">
+          <button class="subtab-btn active" data-building="all" onclick="setBuildingFilter('all')">
+            All Buildings
+          </button>
+          <button class="subtab-btn" data-building="main" onclick="setBuildingFilter('main')">
+            Main Building
+          </button>
+          <button class="subtab-btn" data-building="pab" onclick="setBuildingFilter('pab')">
+            PAB
+          </button>
+        </div>
+
+        <div class="free-rooms-right-filters" style="display:flex; align-items:center; gap:12px; flex-wrap:wrap;">
+          <div class="subtabs-bar avail-subtabs-bar" style="margin-bottom:0;">
+            <button type="button" class="subtab-btn active" data-avail="all" onclick="setRoomAvailabilityFilter('all')">
+              All Rooms
+            </button>
+            <button type="button" class="subtab-btn" data-avail="now" onclick="setRoomAvailabilityFilter('now')">
+              Free Now
+            </button>
+            <button type="button" class="subtab-btn" data-avail="1h" onclick="setRoomAvailabilityFilter('1h')">
+              Free &ge; 1h Now
+            </button>
+          </div>
+          <input type="text" id="roomSearchInput" class="input-glass room-search-input" style="width: 210px;"
+            placeholder="Search room (e.g. 308E)..." oninput="renderFreeRooms()" />
+        </div>
+      </div>
+
+      <div id="freeRoomsSummary" style="margin-bottom: 16px; font-size: 13.5px; color: var(--text-ice);"></div>
+      <div id="freeRoomsGrid" class="rooms-grid"></div>
+    </section>
+
+    <!-- ======================================================================
+         VIEW 4: <Telegram Groups> Campus Directory
+         ====================================================================== -->
+    <section id="view-groups" class="view-section">
+      <div class="section-header">
+        <div>
+          <h1 class="section-title">AUA Telegram Groups Directory</h1>
+          <p class="section-subtitle">
+            Discover student clubs, cohort chats, study groups, and campus communities — or share your own group.
+          </p>
+        </div>
+        <button class="btn-illuminated" onclick="openGroupModal()">
+          Post Telegram Group
+        </button>
+      </div>
+
+      <div class="glass-panel"
+        style="padding: 16px 20px; margin-bottom: 20px; display:flex; align-items:center; gap:14px;">
+        <input type="text" id="groupSearchInput" class="input-glass"
+          placeholder="Search Telegram groups by name or topic..." oninput="loadTelegramGroups(1)" />
+      </div>
+
+      <div id="groupsGrid" class="groups-grid"></div>
+      <div id="groupsPagination" class="pagination-bar"></div>
+    </section>
+
+    <!-- ======================================================================
+         VIEW 5: <Chat> Campus Lounge & Global Student Chat
+         ====================================================================== -->
+    <section id="view-spam-chat" class="view-section">
+      <div class="section-header" style="margin-bottom: 14px;">
+        <div>
+          <h1 class="section-title">Chat</h1>
+          <p class="section-subtitle">
+            Global campus chat for lost &amp; found, ads, club announcements, questions, and connecting with peers.
+          </p>
+        </div>
+      </div>
+
+      <div class="glass-panel spam-chat-container">
+        <!-- Messages Stream Container with Floating Scroll-Down Pill -->
+        <div class="spam-stream-wrapper">
+          <div id="spamMessagesStream" class="spam-messages-stream" onscroll="handleChatScroll(this)"></div>
+          <button type="button" id="chatScrollBottomBtn" class="chat-scroll-bottom-btn hidden"
+            onclick="scrollChatToBottom(true)" title="Scroll to latest messages">
+            <span>&darr; New messages</span>
+            <span id="chatScrollUnreadCount" class="scroll-unread-pill hidden">0</span>
+          </button>
+        </div>
+
+        <!-- Composer Form -->
+        <form class="chat-composer" onsubmit="sendSpamChatMessage(event)">
+          <!-- Telegram Reply Preview Banner -->
+          <div id="chatReplyPreviewStrip" class="chat-reply-preview-strip hidden" style="display: none;">
+            <div class="chat-reply-preview-bar"></div>
+            <div class="chat-reply-preview-content">
+              <div class="chat-reply-preview-header">
+                <svg class="reply-icon" viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor"
+                  stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
+                  <polyline points="9 17 4 12 9 7"></polyline>
+                  <path d="M20 18v-2a4 4 0 0 0-4-4H4"></path>
+                </svg>
+                <span class="chat-reply-preview-title">Reply to <strong id="chatReplyAuthor">User</strong></span>
+              </div>
+              <div id="chatReplySnippet" class="chat-reply-preview-snippet">Original message snippet...</div>
+            </div>
+            <button type="button" class="chat-reply-cancel-btn" onclick="cancelChatReply(event)"
+              title="Cancel reply (Esc)" aria-label="Cancel reply">&times;</button>
+          </div>
+
+          <!-- Telegram Edit Preview Banner -->
+          <div id="chatEditPreviewStrip" class="chat-reply-preview-strip hidden" style="display: none;">
+            <div class="chat-reply-preview-bar edit-bar"></div>
+            <div class="chat-reply-preview-content">
+              <div class="chat-reply-preview-header">
+                <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.4"
+                  stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path>
+                  <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path>
+                </svg>
+                <span class="chat-reply-preview-title" style="color: #FBBF24;">Edit Message</span>
+              </div>
+              <div id="chatEditSnippet" class="chat-reply-preview-snippet">Original message snippet...</div>
+            </div>
+            <button type="button" class="chat-reply-cancel-btn" onclick="cancelChatEdit(event)"
+              title="Cancel edit (Esc)" aria-label="Cancel edit">&times;</button>
+          </div>
+
+          <!-- Formatting & Media Toolbar -->
+          <div class="format-toolbar">
+            <div class="format-btn-group" role="toolbar" aria-label="Text formatting">
+              <button type="button" id="formatBtnBold" class="format-btn" onmousedown="event.preventDefault()"
+                onpointerdown="handleFormatPointerDown(event, 'bold')" onclick="handleFormatButtonClick(event, 'bold')"
+                title="Bold (Ctrl+B)" aria-label="Bold" aria-pressed="false"><b>B</b></button>
+              <button type="button" id="formatBtnItalic" class="format-btn" onmousedown="event.preventDefault()"
+                onpointerdown="handleFormatPointerDown(event, 'italic')"
+                onclick="handleFormatButtonClick(event, 'italic')" title="Italic (Ctrl+I)" aria-label="Italic"
+                aria-pressed="false"><i>I</i></button>
+              <button type="button" id="formatBtnUnderline" class="format-btn" onmousedown="event.preventDefault()"
+                onpointerdown="handleFormatPointerDown(event, 'underline')"
+                onclick="handleFormatButtonClick(event, 'underline')" title="Underline (Ctrl+U)" aria-label="Underline"
+                aria-pressed="false"><u>U</u></button>
+              <button type="button" id="formatBtnStrike" class="format-btn" onmousedown="event.preventDefault()"
+                onpointerdown="handleFormatPointerDown(event, 'strikeThrough')"
+                onclick="handleFormatButtonClick(event, 'strikeThrough')" title="Strikethrough"
+                aria-label="Strikethrough" aria-pressed="false"><s>S</s></button>
+              <button type="button" id="formatBtnCode" class="format-btn" onmousedown="event.preventDefault()"
+                onpointerdown="handleFormatPointerDown(event, 'code')" onclick="handleFormatButtonClick(event, 'code')"
+                title="Inline Code" aria-label="Inline Code" aria-pressed="false">&lt;/&gt;</button>
+            </div>
+
+            <div class="format-btn-divider"></div>
+
+            <div class="format-btn-group">
+              <!-- Emoji Picker Toggle Button -->
+              <button type="button" id="chatEmojiToggleBtn" class="format-btn format-btn-icon"
+                onclick="toggleEmojiPicker(event)" title="Pick Emoji">
+                😀
+              </button>
+
+              <!-- Media Attachment Button (Images, GIFs, Videos) -->
+              <label class="format-btn format-btn-icon"
+                title="Attach Image, GIF, or Video (Videos up to 25MB, Images/GIFs up to 10MB)" style="cursor:pointer;">
+                📎 <span class="media-btn-text">Media</span>
+                <input type="file" id="chatMediaInput"
+                  accept="image/png,image/jpeg,image/webp,image/gif,video/mp4,video/webm,video/quicktime"
+                  style="display:none;" onchange="handleChatMediaUpload(this)" />
+              </label>
+            </div>
+          </div>
+
+          <!-- Pending Media Preview Strip -->
+          <div id="chatPendingMediaStrip" class="chat-pending-media-strip hidden">
+            <div id="chatMediaPreviewContent" class="chat-media-preview-content"></div>
+            <button type="button" class="chat-media-remove-btn" onclick="clearChatMediaAttachment()"
+              title="Remove attachment">&times;</button>
+          </div>
+
+          <!-- Rich Visual Text Input Area (No visible tags!) -->
+          <div class="chat-input-row">
+            <div id="chatRichInput" class="chat-rich-input textarea-glass" contenteditable="true" role="textbox"
+              aria-multiline="true"
+              data-placeholder="Say something in Chat... (Press Enter to send, Shift+Enter for newline)"
+              onkeydown="handleChatKeydown(event)" onkeyup="handleChatKeyup(event)" onmouseup="handleChatMouseup(event)"
+              oninput="handleChatInput(event)" onpaste="handleChatPaste(event)" onfocus="handleChatFocus(event)"></div>
+            <button type="submit" id="chatSendBtn" class="btn-illuminated chat-send-btn" aria-label="Send message">
+              Send
+            </button>
+          </div>
+        </form>
+      </div>
+
+      <!-- Searchable Categorized Emoji Picker Popover / Drawer -->
+      <div id="chatEmojiPicker" class="chat-emoji-picker hidden" onclick="event.stopPropagation()">
+        <div class="emoji-picker-header">
+          <div class="emoji-search-box">
+            <span class="emoji-search-icon">🔍</span>
+            <input type="text" id="emojiSearchInput" class="emoji-search-input"
+              placeholder="Search emojis (smile, fire, heart, party)..." oninput="filterEmojis(this.value)" />
+            <button type="button" id="emojiClearSearchBtn" class="emoji-clear-btn hidden"
+              onclick="clearEmojiSearch()">&times;</button>
+          </div>
+          <button type="button" class="emoji-close-btn" onclick="closeEmojiPicker()" title="Close">&times;</button>
+        </div>
+
+        <div class="emoji-category-tabs" id="emojiCategoryTabs"></div>
+        <div id="emojiGrid" class="emoji-grid"></div>
+
+        <div class="emoji-picker-footer" id="emojiPickerFooter">
+          <span class="emoji-preview-sample" id="emojiPreviewSample">😀</span>
+          <span class="emoji-preview-name" id="emojiPreviewName">Grinning Face</span>
+        </div>
+      </div>
+    </section>
+
+    <!-- ======================================================================
+         VIEW 6: <Profile> User Profile & /link Settings
+         ====================================================================== -->
+    <section id="view-profile" class="view-section">
+      <div class="section-header">
+        <div>
+          <h1 class="section-title">Your AUA Hub Profile</h1>
+          <p class="section-subtitle">
+            Customize your profile picture, name, bio, and connect your personal <code>/link</code> inbox from
+            <b>@aua_anonymous_bot</b>.
+          </p>
+        </div>
+      </div>
+
+      <div id="profileViewContent"></div>
+    </section>
+  </div>
+
+  <!-- ========================================================================
+       MODAL 1: Sign In / Register + 6-Digit OTP Verification
+       ======================================================================== -->
+  <div id="authModal" class="modal-backdrop">
+    <div class="glass-panel modal-card">
+      <div class="modal-drag-handle"></div>
+      <button class="modal-close" onclick="closeAuthModal()">&times;</button>
+
+      <div style="display:flex; gap:8px; margin-bottom:20px;">
+        <button id="authTabLogin" class="subtab-btn active" style="flex:1;" onclick="switchAuthTab('login')">
+          Sign In
+        </button>
+        <button id="authTabRegister" class="subtab-btn" style="flex:1;" onclick="switchAuthTab('register')">
+          Register
+        </button>
+      </div>
+
+      <!-- Sign In Form -->
+      <form id="loginForm" onsubmit="submitLogin(event)">
+        <div style="margin-bottom: 14px;">
+          <label class="field-label">🎓 AUA Email Address</label>
+          <input type="email" id="loginEmail" class="input-glass" placeholder="firstname_lastname@edu.aua.am"
+            required />
+        </div>
+        <div style="margin-bottom: 20px;">
+          <label class="field-label">🔑 Password</label>
+          <input type="password" id="loginPassword" class="input-glass" placeholder="Enter your AUA Hub password"
+            required />
+        </div>
+        <button type="submit" class="btn-illuminated" style="width:100%;">
+          Sign In to AUA Hub
+        </button>
+      </form>
+
+      <!-- Register Step 1: Name, @edu.aua.am / @alumni.aua.am, Password, Confirm Password -->
+      <form id="registerForm" style="display:none;" onsubmit="submitRegister(event)">
+        <div style="margin-bottom: 13px;">
+          <label class="field-label">👤 Full Name</label>
+          <input type="text" id="regName" class="input-glass" placeholder="e.g. Gor Sargsyan" required />
+        </div>
+        <div style="margin-bottom: 13px;">
+          <label class="field-label">🎓 AUA Email (<code>@edu.aua.am</code> or <code>@alumni.aua.am</code> only)</label>
+          <input type="email" id="regEmail" class="input-glass" placeholder="firstname_lastname@edu.aua.am" required />
+        </div>
+        <div style="margin-bottom: 13px;">
+          <label class="field-label">🔑 Choose a Password</label>
+          <input type="password" id="regPassword" class="input-glass" placeholder="At least 6 characters" required />
+          <div class="moodle-password-note">
+            💡 <b>Important:</b> This password is <u>NOT mandatory</u> to be the same as your Moodle or AUA email
+            password — you can choose any password you want!
+          </div>
+        </div>
+        <div style="margin-bottom: 18px;">
+          <label class="field-label">🔑 Confirm Password</label>
+          <input type="password" id="regConfirmPassword" class="input-glass" placeholder="Re-enter your password"
+            required />
+        </div>
+        <button type="submit" id="regSubmitBtn" class="btn-illuminated" style="width:100%;">
+          Send 6-Digit Verification OTP 📧
+        </button>
+      </form>
+
+      <!-- Register Step 2: Enter 6-Digit OTP -->
+      <form id="otpForm" style="display:none;" onsubmit="submitVerifyOtp(event)">
+        <div style="text-align:center; margin-bottom:16px;">
+          <div style="font-size: 32px; margin-bottom: 6px;">📧</div>
+          <h3 style="font-size: 18px; font-weight: 800;">Verify Your AUA Email</h3>
+          <p id="otpSentSubtext" style="font-size: 13px; color: var(--text-secondary); margin-top: 4px;"></p>
+        </div>
+        <div style="margin-bottom: 18px;">
+          <label class="field-label">🔢 6-Digit Verification Code</label>
+          <input type="text" id="otpCodeInput" class="input-glass" inputmode="numeric" pattern="[0-9]*"
+            autocomplete="one-time-code"
+            style="text-align:center; font-size: 22px; font-weight: 800; letter-spacing: 6px;" placeholder="123456"
+            maxlength="6" required />
+        </div>
+        <button type="submit" class="btn-illuminated" style="width:100%;">
+          Verify &amp; Complete Registration ✨
+        </button>
+      </form>
+    </div>
+  </div>
+
+  <!-- ========================================================================
+       MODAL 2: Post Telegram Group
+       ======================================================================== -->
+  <div id="groupModal" class="modal-backdrop">
+    <div class="glass-panel modal-card">
+      <div class="modal-drag-handle"></div>
+      <button class="modal-close" onclick="closeGroupModal()">&times;</button>
+      <h2 style="font-size: 20px; font-weight: 800; margin-bottom: 6px;">✈️ Post a Telegram Group</h2>
+      <p style="font-size: 13px; color: var(--text-secondary); margin-bottom: 18px;">
+        Share a campus club, study group, or student community with AUA Hub.
+      </p>
+
+      <form onsubmit="submitNewGroup(event)">
+        <div style="margin-bottom: 14px;">
+          <label class="field-label">🏷️ Group Name</label>
+          <input type="text" id="groupNameInput" class="input-glass" placeholder="e.g. AUA CS Class of 2028" required />
+        </div>
+        <div style="margin-bottom: 14px;">
+          <label class="field-label">🔗 Telegram Invite Link</label>
+          <input type="text" id="groupLinkInput" class="input-glass"
+            placeholder="https://t.me/+AbCdEfGhIjK or https://t.me/groupname" required />
+        </div>
+        <div style="margin-bottom: 14px;">
+          <label class="field-label">🖼️ Group Picture (Optional)</label>
+          <div style="display:flex; align-items:center; gap:10px;">
+            <label class="btn-glass" style="cursor:pointer;">
+              📤 Upload Picture
+              <input type="file" accept="image/*" style="display:none;" onchange="handleGroupImageUpload(this)" />
+            </label>
+            <span id="groupUploadedPreview" style="font-size:12px; color:var(--neon-blue-bright);">No image
+              selected</span>
+          </div>
+          <input type="hidden" id="groupImageUrlInput" value="" />
+        </div>
+        <div style="margin-bottom: 18px;">
+          <label class="field-label">📝 About the Group</label>
+          <textarea id="groupDescInput" class="textarea-glass" rows="3"
+            placeholder="What is this group about? Who should join?"></textarea>
+        </div>
+        <button type="submit" class="btn-illuminated" style="width:100%;">
+          Publish Group 🚀
+        </button>
+      </form>
+    </div>
+  </div>
+
+  <!-- ========================================================================
+       MODAL 3: Public User Profile Modal (Opened when clicking any user's name or avatar)
+       ======================================================================== -->
+  <div id="userProfileModal" class="modal-backdrop" onclick="if(event.target===this) closeUserProfileModal()">
+    <div class="glass-panel modal-card user-profile-modal-card">
+      <div class="modal-drag-handle"></div>
+      <button class="modal-close user-profile-modal-close" onclick="closeUserProfileModal()"
+        aria-label="Close profile">&times;</button>
+      <div id="userProfileModalBody"></div>
+
+      <!-- In-Menu Enlarged Avatar Viewer -->
+      <div id="profileAvatarModalViewer" class="profile-avatar-modal-viewer hidden" onclick="closeProfileAvatarViewer()"
+        aria-label="Enlarged profile photo preview">
+        <button type="button" class="modal-close profile-avatar-viewer-close" onclick="closeProfileAvatarViewer()"
+          aria-label="Close photo preview">&times;</button>
+
+        <div class="profile-avatar-viewer-content" onclick="event.stopPropagation()">
+          <div class="profile-avatar-viewer-frame">
+            <img id="profileAvatarViewerImg" src="" alt="Profile photo" class="profile-avatar-viewer-img"
+              onclick="closeProfileAvatarViewer()" title="Click to shrink" />
+            <div id="profileAvatarViewerFallback" class="profile-avatar-viewer-fallback"
+              onclick="closeProfileAvatarViewer()"></div>
+          </div>
+          <div class="profile-avatar-viewer-info">
+            <span id="profileAvatarViewerName" class="profile-avatar-viewer-name"></span>
+            <span class="profile-avatar-viewer-hint">Click anywhere to shrink</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Floating Hover Avatar Preview (Shown when hovering over any user's name or avatar) -->
+  <div id="avatarHoverPopover" class="avatar-hover-popover" aria-hidden="true"></div>
+
+  <!-- In-App Real-Time Notifications Popover / Drawer -->
+  <div id="notificationsBackdrop" class="notif-backdrop hidden" style="display: none;"
+    onclick="closeNotificationPopover()"></div>
+  <div id="notificationsPopover" class="notifications-popover hidden" style="display: none;" role="dialog"
+    aria-label="Notifications">
+    <div class="notif-popover-header">
+      <div class="notif-title-wrap">
+        <span class="notif-title">Notifications</span>
+        <span id="notifUnreadBadgePill" class="notif-count-pill hidden">0 new</span>
+      </div>
+      <button type="button" class="notif-mark-all-btn" onclick="markAllNotificationsAsRead()" title="Mark all as read">
+        Mark all read
+      </button>
+    </div>
+    <div id="notificationsList" class="notif-popover-list">
+      <div class="notif-empty-state">No notifications yet</div>
+    </div>
+  </div>
+
+  <!-- User Profile Dropdown Menu / Popover -->
+  <div id="profileMenuBackdrop" class="notif-backdrop hidden" style="display: none;" onclick="closeProfileMenu()"></div>
+  <div id="profileMenuPopover" class="profile-menu-popover hidden" style="display: none;" role="menu"
+    aria-label="User Profile Menu"></div>
+
+  <!-- Toast Notification Container -->
+  <div id="toastStack" class="toast-stack"></div>
+
+  <!-- Telegram Message Spotlight Clone -->
+  <div id="tgHighlightedBubbleContainer" class="tg-highlighted-bubble-container hidden" style="display: none;"
+    aria-hidden="true"></div>
+
+  <!-- Telegram Message Context Menu / Action Sheet -->
+  <div id="telegramMenuBackdrop" class="tg-menu-backdrop hidden" style="display: none;"
+    onclick="closeTelegramMessageMenu()" ontouchstart="closeTelegramMessageMenu()"></div>
+  <div id="telegramMessageMenu" class="tg-msg-menu hidden" style="display: none;" role="menu"
+    aria-label="Message options">
+    <!-- Top Reaction Bar with Quick Emojis & Down-Chevron Expand Button -->
+    <div class="tg-menu-reactions-wrap">
+      <div class="tg-menu-reactions" id="tgMenuReactions"></div>
+      <button type="button" id="tgReactionExpandBtn" class="tg-reaction-expand-btn"
+        onclick="toggleFullReactionsGrid(event)" title="All reactions" aria-label="View all reactions">
+        <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.6"
+          stroke-linecap="round" stroke-linejoin="round">
+          <polyline points="6 9 12 15 18 9"></polyline>
+        </svg>
+      </button>
+    </div>
+
+    <!-- Main View (Actions + Bottom Reactions Row) -->
+    <div id="tgMenuMainView" class="tg-menu-view active">
+      <div class="tg-menu-actions">
+        <button type="button" class="tg-menu-item" onclick="handleMenuReply()">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.2"
+            stroke-linecap="round" stroke-linejoin="round">
+            <polyline points="9 17 4 12 9 7"></polyline>
+            <path d="M20 18v-2a4 4 0 0 0-4-4H4"></path>
+          </svg>
+          <span>Reply</span>
+        </button>
+        <button type="button" class="tg-menu-item" onclick="handleMenuCopy()">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.2"
+            stroke-linecap="round" stroke-linejoin="round">
+            <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+            <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+          </svg>
+          <span>Copy Text</span>
+        </button>
+        <button type="button" class="tg-menu-item" id="tgMenuEditBtn" onclick="handleMenuEdit()">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.2"
+            stroke-linecap="round" stroke-linejoin="round">
+            <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path>
+            <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path>
+          </svg>
+          <span>Edit</span>
+        </button>
+        <button type="button" class="tg-menu-item danger" id="tgMenuDeleteBtn" onclick="handleMenuDelete()">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.2"
+            stroke-linecap="round" stroke-linejoin="round">
+            <polyline points="3 6 5 6 21 6"></polyline>
+            <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
+            <line x1="10" y1="11" x2="10" y2="17"></line>
+            <line x1="14" y1="11" x2="14" y2="17"></line>
+          </svg>
+          <span>Delete</span>
+        </button>
+      </div>
+
+      <!-- Reactions <#> Row at Bottom of Menu (Exactly as in Telegram Desktop Photo 1) -->
+      <div class="tg-menu-divider" id="tgMenuDividerReactions" style="display: none;"></div>
+      <div id="tgMenuReactionsInfoItem" class="tg-menu-reactions-info-btn hidden" style="display: none;"
+        onclick="handleReactionsRowClick(event)" onmouseenter="handleReactionsRowMouseEnter(event)"
+        onmouseleave="handleReactionsRowMouseLeave(event)" title="View who reacted" role="button" tabindex="0">
+        <div class="tg-menu-reactions-info-left">
+          <span class="tg-menu-reactions-icon">👏</span>
+          <span id="tgMenuReactionsCountText" class="tg-menu-reactions-info-title">0 Reactions</span>
+        </div>
+        <div class="tg-menu-reactions-info-right">
+          <div class="tg-menu-reactions-mini-avatars" id="tgMenuMiniAvatars"></div>
+        </div>
+      </div>
+
+      <!-- Message Sent Timestamp Row (as in Telegram Desktop Photo 1) -->
+      <div class="tg-menu-divider" id="tgMenuDividerTime" style="display: none;"></div>
+      <div class="tg-menu-time-item" id="tgMenuTimeItem" style="display: none;">
+        <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.2"
+          stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="12" cy="12" r="10"></circle>
+          <polyline points="12 6 12 12 16 14"></polyline>
+        </svg>
+        <span id="tgMenuMsgTimeText">Nov 2 at 11:17 AM</span>
+      </div>
+    </div>
+
+    <!-- Mobile Sub-View for Reactions (Exactly as in Telegram Mobile Photo 2) -->
+    <div id="tgMenuSubView" class="tg-menu-subview" style="display: none;">
+      <div class="tg-menu-subview-header" onclick="showTgMenuMainView()">
+        <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2.5"
+          stroke-linecap="round" stroke-linejoin="round">
+          <line x1="19" y1="12" x2="5" y2="12"></line>
+          <polyline points="12 19 5 12 12 5"></polyline>
+        </svg>
+        <span>Back</span>
+      </div>
+      <div id="tgMenuMobileReactorsList" class="tg-menu-subview-list"></div>
+    </div>
+  </div>
+
+  <!-- Desktop Reactions Flyout Side Panel (Hover View from Photo 1) -->
+  <div id="tgDesktopReactionsFlyout" class="tg-reactions-flyout hidden" style="display: none;"
+    onmouseenter="handleFlyoutMouseEnter()" onmouseleave="handleFlyoutMouseLeave()">
+    <div id="tgDesktopReactorsList" class="tg-reactions-flyout-list"></div>
+  </div>
+
+  <!-- Full Telegram Reactions Grid Panel (Photo 3) -->
+  <div id="fullReactionsPickerPanel" class="tg-full-reactions-picker hidden" style="display: none;">
+    <div class="tg-picker-search-bar">
+      <svg class="tg-search-icon" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor"
+        stroke-width="2.5">
+        <circle cx="11" cy="11" r="8"></circle>
+        <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
+      </svg>
+      <input type="text" id="tgReactionSearchInput" class="tg-search-input" placeholder="Search" autocomplete="off"
+        oninput="filterReactionsGrid(this.value)" />
+      <button type="button" class="tg-picker-close-btn" onclick="closeFullReactionsGrid()">&times;</button>
+    </div>
+    <div id="tgFullReactionsGrid" class="tg-full-reactions-grid"></div>
+  </div>
+
+  <!-- Delete Message Confirmation Modal -->
+  <div id="deleteMessageModal" class="modal-backdrop hidden" style="display: none;">
+    <div class="modal-card" style="max-width: 380px; text-align: center; padding: 24px;">
+      <div style="font-size: 34px; margin-bottom: 8px;">🗑️</div>
+      <h3 style="font-size: 18px; font-weight: 800; margin-bottom: 8px; color: var(--text-white);">Delete Message?</h3>
+      <p style="font-size: 13.5px; color: var(--text-secondary); margin-bottom: 20px; line-height: 1.45;">
+        Are you sure you want to delete this message? This action cannot be undone.
+      </p>
+      <div style="display: flex; gap: 10px; justify-content: center;">
+        <button type="button" class="btn-glass" onclick="closeDeleteMessageModal()">Cancel</button>
+        <button type="button" class="btn-illuminated"
+          style="background: rgba(239, 68, 68, 0.25); border-color: rgba(239, 68, 68, 0.6); color: #FCA5A5;"
+          onclick="confirmDeleteMessage()">Delete</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Delete Account Confirmation Modal -->
+  <div id="deleteAccountModal" class="modal-backdrop hidden" style="display: none;"
+    onclick="if(event.target===this) closeDeleteAccountModal()">
+    <div class="modal-card" style="max-width: 440px; text-align: left; padding: 26px;">
+      <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 14px;">
+        <div
+          style="font-size: 28px; width: 44px; height: 44px; display: flex; align-items: center; justify-content: center; background: rgba(239, 68, 68, 0.15); border: 1px solid rgba(239, 68, 68, 0.35); border-radius: 12px; color: #EF4444;">
+          ⚠️</div>
+        <div>
+          <h3 style="font-size: 19px; font-weight: 800; color: #FCA5A5; margin: 0;">Delete Account</h3>
+          <div style="font-size: 12px; color: var(--text-secondary); margin-top: 2px;">Permanent &amp; Irreversible
+            Action</div>
+        </div>
+      </div>
+      <p style="font-size: 13.5px; color: var(--text-ice); line-height: 1.5; margin-bottom: 12px;">
+        Are you sure you want to delete your account? The following data will be permanently deleted:
+      </p>
+      <ul style="font-size: 12.5px; color: var(--text-secondary); line-height: 1.6; margin: 0 0 18px 18px; padding: 0;">
+        <li>Your profile information, bio, credentials, and bot synchronization.</li>
+        <li>Your anonymous inbox link (<code style="color:var(--neon-blue-bright);">/link</code>) and all received inbox
+          messages.</li>
+        <li>Your active Have-Need course swap postings.</li>
+        <li>In all locations where you chatted or left feedback, your account name will change to <b
+            style="color:var(--text-white);">"Deleted Account"</b> and the anonymous image will replace your profile
+          picture.</li>
+      </ul>
+      <div style="display: flex; gap: 10px; justify-content: flex-end; margin-top: 10px;">
+        <button type="button" class="btn-glass" onclick="closeDeleteAccountModal()">Cancel</button>
+        <button type="button" id="confirmDeleteAccountBtn" class="btn-illuminated"
+          style="background: rgba(239, 68, 68, 0.3); border-color: #EF4444; color: #FEE2E2; font-weight: 700;"
+          onclick="confirmDeleteAccount()">Yes, Delete Account</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Telegram Message Reactions Details Modal -->
+  <div id="messageReactionsModal" class="modal-backdrop hidden" style="display: none;"
+    onclick="if(event.target === this) closeMessageReactionsModal()">
+    <div class="modal-card tg-reactions-modal-card" role="dialog" aria-modal="true"
+      aria-labelledby="tgReactionsModalTitle">
+      <div class="tg-reactions-modal-header">
+        <div class="tg-reactions-modal-title-wrap">
+          <span style="font-size: 20px;">⚡</span>
+          <h3 id="tgReactionsModalTitle" class="tg-reactions-modal-title">Reactions (<span
+              id="tgReactionsModalTotalCount">0</span>)</h3>
+        </div>
+        <button type="button" class="modal-close-btn" onclick="closeMessageReactionsModal()"
+          aria-label="Close reactions modal">&times;</button>
+      </div>
+
+      <!-- Emoji filter tabs (All, ❤️ 3, 🔥 1, etc.) -->
+      <div id="tgReactionsTabs" class="tg-reactions-tabs-bar" style="display: none;"></div>
+
+      <!-- Reactors list -->
+      <div id="tgReactionsList" class="tg-reactions-list-stream"></div>
+    </div>
+  </div>
+
+  <script src="/static/app.js?v=20261111_1"></script>
+</body>
+
+</html>

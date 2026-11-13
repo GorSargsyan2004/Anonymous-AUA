@@ -4,6 +4,7 @@ import asyncio
 import html
 import io
 import logging
+import math
 from typing import Dict, Optional
 from aiogram import Bot, F, Router
 from aiogram.exceptions import (
@@ -18,6 +19,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.database.crud import (
+    apply_user_search_mode,
+    count_recent_sessions_for_user,
     end_active_session,
     get_active_session_by_user_id,
     get_latest_session_for_user,
@@ -39,11 +42,17 @@ from app.keyboards.inline import (
     get_feedback_keyboard,
     get_gender_mismatch_keyboard,
     get_recent_partners_keyboard,
+    get_search_mode_keyboard,
 )
 from app.services.email_verification import get_partner_verification_badge
 from app.services.ai_moderator import session_buffer
 from app.services.link_shield import link_shield
-from app.services.matcher import match_user_in_queue
+from app.services.matcher import (
+    SEARCH_MODE_PREFERENCES,
+    get_search_mode_label,
+    match_user_in_queue,
+    resolve_search_mode_preferences,
+)
 from app.services.media_batcher import media_batcher
 from app.services.one_time_media import (
     DEFAULT_OTM_DURATION_SECONDS,
@@ -222,10 +231,38 @@ async def maybe_send_bot_feedback_prompt(bot: Bot, session: AsyncSession, user_i
             logger.debug("Could not send bot improvement prompt to %s: %s", user_id, e)
 
 
-async def perform_search(user_id: int, bot: Bot, message: Message) -> None:
-    """Execute queue search or enqueue user."""
+def _format_mode_prefs_brief(sexes: list[str], orientations: list[str]) -> str:
+    """Format short readable summary of target sexes & orientations."""
+    sex_set = set(sexes)
+    if {"male", "female"}.issubset(sex_set):
+        sex_label = "Any Gender"
+    else:
+        sex_label = ", ".join(s.capitalize() for s in sexes)
+    orient_set = set(orientations)
+    if {"straight", "bisexual", "lesbian", "gay"}.issubset(orient_set):
+        orient_label = "Any Orientation"
+    else:
+        orient_label = ", ".join(o.capitalize() for o in orientations)
+    return f"{sex_label} • {orient_label}"
+
+
+async def perform_search(
+    user_id: int,
+    bot: Bot,
+    message: Message,
+    username: Optional[str] = None,
+    mode_override: Optional[str] = None,
+    allow_requeue: bool = False,
+) -> None:
+    """Execute queue search or enqueue user using their active search mode."""
+    resolved_username = username
+    if resolved_username is None and getattr(message, "from_user", None):
+        resolved_username = getattr(message.from_user, "username", None)
+
+    active_mode = mode_override or SEARCH_MODE_PREFERENCES
+
     async with get_db_session() as session:
-        user = await get_or_create_user(session, user_id=user_id, username=message.from_user.username)
+        user = await get_or_create_user(session, user_id=user_id, username=resolved_username)
 
         # Check if user is banned
         if getattr(user, "is_banned", False):
@@ -275,7 +312,7 @@ async def perform_search(user_id: int, bot: Bot, message: Message) -> None:
             return
 
         # Check if already searching
-        if user.is_searching:
+        if user.is_searching and not allow_requeue:
             await message.answer(
                 "🔍 <b>You are already in the search queue...</b>\n\n"
                 "Please wait while we find a compatible student, or send /stop to cancel.",
@@ -283,8 +320,19 @@ async def perform_search(user_id: int, bot: Bot, message: Message) -> None:
             )
             return
 
+        # Apply the selected (or persisted) search mode preferences before matching
+        active_mode = mode_override or getattr(user, "search_mode", None) or SEARCH_MODE_PREFERENCES
+        if not isinstance(active_mode, str):
+            active_mode = SEARCH_MODE_PREFERENCES
+        updated_user = await apply_user_search_mode(session, user_id=user_id, mode=active_mode)
+        if updated_user is not None:
+            user = updated_user
+            active_mode = getattr(user, "search_mode", None) or active_mode
+
         # Try to find a match
         partner, chat_session = await match_user_in_queue(session, user_id=user_id)
+
+    mode_label = get_search_mode_label(active_mode)
 
     if partner and chat_session:
         partner_verified_badge = get_partner_verification_badge(partner)
@@ -292,21 +340,24 @@ async def perform_search(user_id: int, bot: Bot, message: Message) -> None:
 
         user_match_msg = (
             "✨ <b>Partner found!</b> 🎭\n\n"
+            f"🎯 Mode: <b>{mode_label}</b>\n"
             f"{partner_verified_badge}"
             "You are now connected anonymously. Say hello! 👾\n\n"
             "⚡ <b>Commands:</b>\n"
             "• /report — Emergency report & block partner\n"
-            "• /next — Skip to the next partner\n"
+            "• /next — Skip to the next partner (keeps your selected mode)\n"
             "• /stop — End this chat\n\n"
             "🔒 <i>Privacy Shield Active: Your profile, phone number, and IP are strictly hidden.</i>"
         )
+        partner_mode_label = get_search_mode_label(getattr(partner, "search_mode", None))
         partner_match_msg = (
             "✨ <b>Partner found!</b> 🎭\n\n"
+            f"🎯 Mode: <b>{partner_mode_label}</b>\n"
             f"{current_verified_badge}"
             "You are now connected anonymously. Say hello! 👾\n\n"
             "⚡ <b>Commands:</b>\n"
             "• /report — Emergency report & block partner\n"
-            "• /next — Skip to the next partner\n"
+            "• /next — Skip to the next partner (keeps your selected mode)\n"
             "• /stop — End this chat\n\n"
             "🔒 <i>Privacy Shield Active: Your profile, phone number, and IP are strictly hidden.</i>"
         )
@@ -320,6 +371,7 @@ async def perform_search(user_id: int, bot: Bot, message: Message) -> None:
     else:
         await message.answer(
             "🔍 <b>Searching for a compatible AUA partner...</b> 🥷\n\n"
+            f"🎯 Mode: <b>{mode_label}</b>\n"
             "Please wait while we connect you, or send /stop to cancel.",
             parse_mode="HTML",
         )
@@ -335,7 +387,9 @@ async def handle_report_command(message: Message, bot: Bot, state: FSMContext) -
         user = await get_or_create_user(session, user_id=user_id)
         partner_id = user.current_partner_id
         active_chat = await get_active_session_by_user_id(session, user_id=user_id) if partner_id else None
-        recent_sessions = await get_recent_sessions_for_user(session, user_id=user_id, limit=5)
+        recent_sessions = await get_recent_sessions_for_user(session, user_id=user_id, limit=5, offset=0)
+        total_recent = await count_recent_sessions_for_user(session, user_id=user_id)
+        total_pages = max(1, math.ceil(total_recent / 5))
 
         # 1. If user is in an active chat
         if partner_id and active_chat:
@@ -346,6 +400,8 @@ async def handle_report_command(message: Message, bot: Bot, state: FSMContext) -
                     in_active_chat=True,
                     active_session_id=active_chat.id,
                     active_partner_id=partner_id,
+                    page=1,
+                    total_pages=total_pages,
                 )
                 await message.answer(
                     "🚨 <b>Emergency Safety & Report Shield</b> 🛡️\n"
@@ -378,6 +434,8 @@ async def handle_report_command(message: Message, bot: Bot, state: FSMContext) -
                 sessions=recent_sessions,
                 user_id=user_id,
                 in_active_chat=False,
+                page=1,
+                total_pages=total_pages,
             )
             await message.answer(
                 "🚨 <b>Report a Recent Partner</b> 🛡️\n"
@@ -406,7 +464,8 @@ async def handle_recent_command(message: Message, bot: Bot, state: FSMContext) -
         user = await get_or_create_user(session, user_id=user_id)
         partner_id = user.current_partner_id
         active_chat = await get_active_session_by_user_id(session, user_id=user_id) if partner_id else None
-        recent_sessions = await get_recent_sessions_for_user(session, user_id=user_id, limit=5)
+        recent_sessions = await get_recent_sessions_for_user(session, user_id=user_id, limit=5, offset=0)
+        total_recent = await count_recent_sessions_for_user(session, user_id=user_id)
 
     if not recent_sessions and not active_chat:
         await message.answer(
@@ -416,16 +475,19 @@ async def handle_recent_command(message: Message, bot: Bot, state: FSMContext) -
         )
         return
 
+    total_pages = max(1, math.ceil(total_recent / 5))
     kb = get_recent_partners_keyboard(
         sessions=recent_sessions,
         user_id=user_id,
         in_active_chat=bool(active_chat and partner_id),
         active_session_id=active_chat.id if active_chat else None,
         active_partner_id=partner_id,
+        page=1,
+        total_pages=total_pages,
     )
     await message.answer(
         "📋 <b>Your Recent Chat Partners</b> 🥷\n\n"
-        "Select a partner below to view details, update your rating, or submit a report:",
+        "Select a partner below to request a reconnection, update your rating, or submit a report:",
         reply_markup=kb,
         parse_mode="HTML",
     )
@@ -433,9 +495,138 @@ async def handle_recent_command(message: Message, bot: Bot, state: FSMContext) -
 
 @router.message(Command("search"))
 async def handle_search(message: Message, bot: Bot, state: FSMContext) -> None:
-    """Handle /search command to find a chat partner."""
+    """Handle /search command by showing the interactive search mode selection menu."""
     await state.clear()
-    await perform_search(message.from_user.id, bot, message)
+    user_id = message.from_user.id
+
+    async with get_db_session() as session:
+        user = await get_or_create_user(session, user_id=user_id, username=message.from_user.username)
+
+        if getattr(user, "is_banned", False):
+            await message.answer(
+                "🚫 <b>Access Denied</b>\n\n"
+                "You have been banned by an administrator from using Anonymous AUA.",
+                parse_mode="HTML",
+            )
+            return
+
+        if not user.sex or not user.orientation:
+            await message.answer(
+                "⚠️ <b>Profile not set up yet!</b>\n\n"
+                "Please configure your sex and sexual orientation before searching.\n"
+                "Send /start to complete your profile setup.",
+                parse_mode="HTML",
+            )
+            return
+
+        if getattr(user, "gender_mismatch", False):
+            inferred = (user.inferred_gender or "other").capitalize()
+            current = (user.sex or "other").capitalize()
+            kb = get_gender_mismatch_keyboard(inferred_gender=user.inferred_gender or "other")
+            await message.answer(
+                f"⚠️ <b>Matchmaking Paused: Gender Verification Conflict</b>\n\n"
+                f"Your verified university email name indicates <b>{inferred}</b>, but your profile is currently set to <b>{current}</b>.\n\n"
+                f"To protect our student community from catfishing and false identity claims, "
+                f"you cannot enter the matchmaking queue until this conflict is resolved.\n\n"
+                f"<b>Options:</b>\n"
+                f"• Tap <b>Switch Profile to {inferred}</b> to instantly correct your profile.\n"
+                f"• If your name is unisex, rare, or the system misclassified it, tap <b>Appeal to Admin</b>.",
+                reply_markup=kb,
+                parse_mode="HTML",
+            )
+            return
+
+        if user.current_partner_id is not None:
+            await message.answer(
+                "💬 <b>You are already in an active chat!</b>\n\n"
+                "• Send /next to switch to a new partner\n"
+                "• Send /stop to end this chat",
+                parse_mode="HTML",
+            )
+            return
+
+        current_mode = getattr(user, "search_mode", None) or SEARCH_MODE_PREFERENCES
+        is_currently_searching = bool(user.is_searching)
+        _, romance_sexes, romance_orients = resolve_search_mode_preferences(user, "romance")
+        _, pref_sexes, pref_orients = resolve_search_mode_preferences(user, "preferences")
+
+    romance_summary = _format_mode_prefs_brief(romance_sexes, romance_orients)
+    pref_summary = _format_mode_prefs_brief(pref_sexes, pref_orients)
+    current_label = get_search_mode_label(current_mode)
+
+    status_banner = (
+        f"⏳ <i>Currently in queue with:</i> <b>{current_label}</b>\n"
+        "<i>Tap any option below to switch your active search mode immediately:</i>\n\n"
+        if is_currently_searching
+        else ""
+    )
+
+    menu_text = (
+        "🔍 <b>Choose Your Search Mode</b> 🎭\n\n"
+        f"{status_banner}"
+        "What brings you to Anonymous AUA right now?\n\n"
+        "• 🤝 <b>Making friendships</b> — Any gender &amp; orientation\n"
+        "• ⏳ <b>Killing time</b> — Casual chat with anyone on campus\n"
+        f"• 💘 <b>Looking for romance</b> — Romantic match (<i>{romance_summary}</i>)\n"
+        f"• ⚙️ <b>By set /preferences</b> — Your custom filter (<i>{pref_summary}</i>)\n\n"
+        "💡 <i>Once chosen, /next will automatically search using your last selected option!</i>"
+    )
+
+    await message.answer(
+        menu_text,
+        reply_markup=get_search_mode_keyboard(
+            current_mode=current_mode,
+            is_currently_searching=is_currently_searching,
+        ),
+        parse_mode="HTML",
+    )
+
+
+@router.callback_query(F.data.startswith("search_mode:"))
+async def handle_search_mode_selected(callback: CallbackQuery, bot: Bot, state: FSMContext) -> None:
+    """Handle selection of a search mode from the /search menu."""
+    await state.clear()
+    mode = callback.data.split(":", 1)[1]
+    mode_label = get_search_mode_label(mode)
+
+    await callback.answer(f"Searching: {mode_label}")
+    try:
+        await callback.message.edit_text(
+            f"🎯 <b>Selected Search Mode:</b> {mode_label}\n"
+            "<i>Tip: /next will remember and use this mode automatically.</i>",
+            parse_mode="HTML",
+        )
+    except TelegramAPIError:
+        pass
+
+    await perform_search(
+        user_id=callback.from_user.id,
+        bot=bot,
+        message=callback.message,
+        username=callback.from_user.username,
+        mode_override=mode,
+        allow_requeue=True,
+    )
+
+
+@router.callback_query(F.data == "search_stop_queue")
+async def handle_search_stop_queue(callback: CallbackQuery) -> None:
+    """Allow cancelling active search directly from the /search menu."""
+    user_id = callback.from_user.id
+    async with get_db_session() as session:
+        user = await get_or_create_user(session, user_id=user_id, username=callback.from_user.username)
+        if user.is_searching:
+            await set_user_searching(session, user_id=user_id, is_searching=False)
+
+    await callback.answer("Search cancelled.")
+    try:
+        await callback.message.edit_text(
+            "🛑 <b>Search cancelled.</b>\n\n"
+            "Send /search whenever you are ready to find a partner! ×͜×",
+            parse_mode="HTML",
+        )
+    except TelegramAPIError:
+        pass
 
 
 @router.message(Command("stop"))
@@ -540,8 +731,15 @@ async def handle_next(message: Message, bot: Bot, state: FSMContext) -> None:
                 except TelegramAPIError as e:
                     logger.warning("Failed to notify partner %s on /next: %s", partner_id, e)
 
-    # Immediately initiate search for this user
-    await perform_search(user_id, bot, message)
+    # Immediately initiate search for this user using their persisted search_mode
+    await perform_search(
+        user_id=user_id,
+        bot=bot,
+        message=message,
+        username=message.from_user.username,
+        mode_override=None,
+        allow_requeue=True,
+    )
 
 
 @router.message(Command("pause", "sleep"))

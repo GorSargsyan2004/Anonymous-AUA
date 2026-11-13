@@ -9,6 +9,7 @@ from app.handlers.invites import router as invites_router
 from app.handlers.matchmaking import router as matchmaking_router
 from app.handlers.start import router as start_router
 from app.handlers.verification import router as verification_router
+from app.handlers.web_bridge import router as web_bridge_router
 
 
 def register_handlers(dp: Dispatcher) -> None:
@@ -20,14 +21,16 @@ def register_handlers(dp: Dispatcher) -> None:
     3. inbox_router (handles /link personal inbox and two-way replies)
     4. invites_router (handles /invite direct chat links)
     5. verification_router (handles /verify email confirmation flow)
-    6. feedback_router (handles ratings and report reason input)
-    7. matchmaking_router (handles /search, /stop, /next, and anonymous message relay fallback)
+    6. web_bridge_router (handles /post and /sync for AUA Hub website)
+    7. feedback_router (handles ratings and report reason input)
+    8. matchmaking_router (handles /search, /stop, /next, and anonymous message relay fallback)
     """
     dp.include_router(admin_router)
     dp.include_router(start_router)
     dp.include_router(inbox_router)
     dp.include_router(invites_router)
     dp.include_router(verification_router)
+    dp.include_router(web_bridge_router)
     dp.include_router(feedback_router)
     dp.include_router(matchmaking_router)
 

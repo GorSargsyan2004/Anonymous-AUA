@@ -46,4 +46,11 @@ class InboxState(StatesGroup):
     waiting_for_reply = State()
 
 
+class WebBridgeState(StatesGroup):
+    """FSM states for AUA Hub website integration (/post and /sync)."""
+    waiting_for_post_text = State()
+    waiting_for_sync_code = State()
+
+
+
 

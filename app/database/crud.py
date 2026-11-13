@@ -16,6 +16,7 @@ from app.database.models import (
     Feedback,
     InboxBlock,
     InboxMessage,
+    ReconnectRequest,
     Report,
     Suggestion,
     User,
@@ -116,6 +117,10 @@ async def update_user_profile(
     def_sexes, def_orients = get_default_preferences(user.sex, user.orientation)
     user.target_sexes = ",".join(def_sexes)
     user.target_orientations = ",".join(def_orients)
+    user.custom_target_sexes = user.target_sexes
+    user.custom_target_orientations = user.target_orientations
+    if not getattr(user, "search_mode", None):
+        user.search_mode = "preferences"
 
     await session.commit()
     await session.refresh(user)
@@ -137,14 +142,53 @@ async def update_user_preferences(
     if user:
         if target_sexes is not None:
             clean_sexes = list(dict.fromkeys(s.lower().strip() for s in target_sexes if s.strip()))
-            user.target_sexes = ",".join(clean_sexes)
+            joined_sexes = ",".join(clean_sexes)
+            user.target_sexes = joined_sexes
+            user.custom_target_sexes = joined_sexes
         if target_orientations is not None:
             clean_orients = list(dict.fromkeys(o.lower().strip() for o in target_orientations if o.strip()))
-            user.target_orientations = ",".join(clean_orients)
+            joined_orients = ",".join(clean_orients)
+            user.target_orientations = joined_orients
+            user.custom_target_orientations = joined_orients
+        if target_sexes is not None or target_orientations is not None:
+            user.search_mode = "preferences"
         if show_typing is not None:
             user.show_typing = show_typing
         await session.commit()
         await session.refresh(user)
+    return user
+
+
+async def apply_user_search_mode(
+    session: AsyncSession,
+    user_id: int,
+    mode: Optional[str] = None,
+) -> Optional[User]:
+    """Set or re-apply user's active search mode and update active target_sexes & target_orientations.
+
+    Preserves user's saved custom /preferences in custom_target_sexes and custom_target_orientations.
+    """
+    from app.services.matcher import resolve_search_mode_preferences
+
+    stmt = select(User).where(User.id == user_id).with_for_update()
+    result = await session.execute(stmt)
+    user = result.scalar_one_or_none()
+    if not user:
+        return None
+
+    # Preserve custom preferences if not backed up yet
+    if not user.custom_target_sexes and user.target_sexes:
+        user.custom_target_sexes = user.target_sexes
+    if not user.custom_target_orientations and user.target_orientations:
+        user.custom_target_orientations = user.target_orientations
+
+    resolved_mode, sexes, orients = resolve_search_mode_preferences(user, mode=mode)
+    user.search_mode = resolved_mode
+    user.target_sexes = ",".join(sexes)
+    user.target_orientations = ",".join(orients)
+
+    await session.commit()
+    await session.refresh(user)
     return user
 
 
@@ -788,6 +832,7 @@ async def get_recent_sessions_for_user(
     session: AsyncSession,
     user_id: int,
     limit: int = 5,
+    offset: int = 0,
 ) -> List[ChatSession]:
     """Retrieve the most recent completed chat sessions for a user."""
     stmt = (
@@ -797,10 +842,24 @@ async def get_recent_sessions_for_user(
             ChatSession.is_active == False,  # noqa: E712
         )
         .order_by(ChatSession.ended_at.desc().nullslast(), ChatSession.id.desc())
+        .offset(offset)
         .limit(limit)
     )
     res = await session.execute(stmt)
     return list(res.scalars().all())
+
+
+async def count_recent_sessions_for_user(
+    session: AsyncSession,
+    user_id: int,
+) -> int:
+    """Return the total number of completed chat sessions for a user."""
+    stmt = select(func.count(ChatSession.id)).where(
+        or_(ChatSession.user1_id == user_id, ChatSession.user2_id == user_id),
+        ChatSession.is_active == False,  # noqa: E712
+    )
+    res = await session.execute(stmt)
+    return int(res.scalar() or 0)
 
 
 async def create_report(
@@ -1327,6 +1386,7 @@ async def add_or_update_user_block(
     user_id: int,
     blocked_user_id: int,
     expires_at: Optional[datetime],
+    reason: Optional[str] = None,
 ) -> UserBlock:
     """Add or update a user-to-partner block/cooldown."""
     stmt = select(UserBlock).where(
@@ -1340,12 +1400,15 @@ async def add_or_update_user_block(
     if block:
         block.created_at = now
         block.expires_at = expires_at
+        if reason is not None:
+            block.reason = reason
     else:
         block = UserBlock(
             user_id=user_id,
             blocked_user_id=blocked_user_id,
             created_at=now,
             expires_at=expires_at,
+            reason=reason,
         )
         session.add(block)
 
@@ -2217,6 +2280,7 @@ async def record_inbox_message(
     owner_id: int,
     sender_id: int,
     message_type: str = "text",
+    content_text: Optional[str] = None,
 ) -> InboxMessage:
     """Record an anonymous inbox message and generate a thread token for replies."""
     thread_token = secrets.token_hex(8)
@@ -2225,6 +2289,7 @@ async def record_inbox_message(
         sender_id=sender_id,
         thread_token=thread_token,
         message_type=message_type,
+        content_text=content_text,
     )
     session.add(msg)
     await session.commit()
@@ -2245,16 +2310,21 @@ async def get_inbox_message_by_thread(
 async def mark_inbox_message_replied(
     session: AsyncSession,
     thread_token: str,
+    reply_text: Optional[str] = None,
 ) -> bool:
     """Mark an anonymous inbox message as replied and increment its reply count."""
+    values_dict = {
+        "is_replied": True,
+        "reply_count": InboxMessage.reply_count + 1,
+        "replied_at": func.now(),
+    }
+    if reply_text is not None:
+        values_dict["reply_text"] = reply_text
+
     stmt = (
         update(InboxMessage)
         .where(InboxMessage.thread_token == thread_token)
-        .values(
-            is_replied=True,
-            reply_count=InboxMessage.reply_count + 1,
-            replied_at=func.now(),
-        )
+        .values(**values_dict)
     )
     res = await session.execute(stmt)
     await session.commit()
@@ -2349,6 +2419,107 @@ async def consume_chat_invite(
     )
     await session.execute(stmt)
     await session.commit()
+
+
+# ==============================================================================
+# Reconnection Requests (/recent -> Request Reconnect) CRUD Operations
+# ==============================================================================
+
+async def get_recent_reconnect_request_between(
+    session: AsyncSession,
+    sender_id: int,
+    recipient_id: int,
+    cooldown_hours: int = 24,
+) -> Optional[ReconnectRequest]:
+    """Return an active or recent reconnection request sent from sender to recipient within cooldown window."""
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=cooldown_hours)
+    stmt = (
+        select(ReconnectRequest)
+        .where(
+            ReconnectRequest.sender_id == sender_id,
+            ReconnectRequest.recipient_id == recipient_id,
+            ReconnectRequest.created_at >= cutoff,
+        )
+        .order_by(ReconnectRequest.created_at.desc(), ReconnectRequest.id.desc())
+        .limit(1)
+    )
+    res = await session.execute(stmt)
+    return res.scalar_one_or_none()
+
+
+async def is_user_blocked_by_partner(
+    session: AsyncSession,
+    partner_id: int,
+    user_id: int,
+) -> bool:
+    """Check if partner_id has an active block or cooldown on user_id."""
+    now = datetime.now(timezone.utc)
+    stmt = select(func.count(UserBlock.id)).where(
+        UserBlock.user_id == partner_id,
+        UserBlock.blocked_user_id == user_id,
+        or_(UserBlock.expires_at.is_(None), UserBlock.expires_at > now),
+    )
+    res = await session.execute(stmt)
+    return bool((res.scalar() or 0) > 0)
+
+
+async def create_reconnect_request(
+    session: AsyncSession,
+    session_id: int,
+    sender_id: int,
+    recipient_id: int,
+    reason_tag: Optional[str] = None,
+    status: str = "pending",
+    ttl_hours: int = 24,
+) -> ReconnectRequest:
+    """Create a reconnection request and auto-lift any block the sender had placed on recipient."""
+    now = datetime.now(timezone.utc)
+    # Auto-lift sender's own block/closed-chapter on recipient
+    del_stmt = delete(UserBlock).where(
+        UserBlock.user_id == sender_id,
+        UserBlock.blocked_user_id == recipient_id,
+    )
+    await session.execute(del_stmt)
+
+    req = ReconnectRequest(
+        session_id=session_id,
+        sender_id=sender_id,
+        recipient_id=recipient_id,
+        reason_tag=reason_tag,
+        status=status,
+        expires_at=now + timedelta(hours=ttl_hours),
+    )
+    session.add(req)
+    await session.commit()
+    await session.refresh(req)
+    return req
+
+
+async def get_reconnect_request_by_id(
+    session: AsyncSession,
+    request_id: int,
+) -> Optional[ReconnectRequest]:
+    """Retrieve a reconnection request by primary key."""
+    stmt = select(ReconnectRequest).where(ReconnectRequest.id == request_id)
+    res = await session.execute(stmt)
+    return res.scalar_one_or_none()
+
+
+async def update_reconnect_request_status(
+    session: AsyncSession,
+    request_id: int,
+    status: str,
+) -> bool:
+    """Update the status of a reconnection request."""
+    stmt = (
+        update(ReconnectRequest)
+        .where(ReconnectRequest.id == request_id)
+        .values(status=status)
+    )
+    res = await session.execute(stmt)
+    await session.commit()
+    return bool((res.rowcount or 0) > 0)
+
 
 
 

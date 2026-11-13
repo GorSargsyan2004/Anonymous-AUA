@@ -1,0 +1,20 @@
+{
+  "name": "AUA Hub — Student Ecosystem",
+  "short_name": "AUA Hub",
+  "description": "All tools and utilities needed for AUA students: Course Have-Need Exchange, Instructor & Course Feedbacks, Anonymous Posts & Synced Inbox, Live Free Rooms, Telegram Groups, and Spam Chat.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait-primary",
+  "background_color": "#050609",
+  "theme_color": "#050609",
+  "icons": [
+    {
+      "src": "/static/bot-logo.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}
+

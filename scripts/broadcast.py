@@ -33,33 +33,17 @@ logging.basicConfig(
 logger = logging.getLogger("broadcast")
 
 BROADCAST_MESSAGE = (
-    "🚀 <b>Exciting News for the AUA Community!</b> 🇦🇲\n"
-    "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-    "Dear AUA students,\n\n"
-    "Our fellow mates <b>Vahe</b> (@gnunyann) and <b>Arman</b> (@Arman_6204) have built an awesome new project dedicated to bringing our university community closer together, one of the same purposes of Anonymous Bot:\n\n"
-    "🌐 <b><a href=\"https://findaua.com\">findaua.com</a></b>\n\n"
-    "Whether you want to meet new people or make the most of campus life, <b>findaua.com</b> lets you:\n\n"
-    "• 📅 <b>Plan Meetups & Hangouts:</b> Organize gatherings with students on and around campus.\n"
-    "• 📚 <b>Study Sessions:</b> Find study partners and collaborate on coursework and exams.\n"
-    "• 📢 <b>Post & Discover Events:</b> Share student initiatives, club activities, and campus happenings.\n"
-    "• 🤝 <b>Expand Your Network:</b> Build genuine connections with students across all majors and cohorts.\n\n"
-    "I strongly recommend checking it out and giving it a spin! Let’s support student-built initiatives that make our campus vibrant. 🎓✨\n\n"
-    "👉 <b>Visit:</b> <a href=\"https://findaua.com\">findaua.com</a>\n"
-    "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-    "Best wishes,\n"
-    "<b>Gor Sargsyan</b>"
+    "🚀 <b>New Feature: Match by Your Mood!</b> 🎭\n\n"
+    "Hitting <b>/search</b> now lets you choose your vibe in 1 tap:\n"
+    "• 🤝 <b>Making friendships</b> (anyone)\n"
+    "• ⏳ <b>Killing time</b> (casual campus chats)\n"
+    "• 💘 <b>Looking for romance</b>\n"
+    "• ⚙️ <b>By your custom /preferences</b>\n\n"
+    "💡 <b>/next</b> automatically remembers your choice for seamless chatting!\n\n"
+    "Ready? Hit /search and see who's around! 👾"
 )
 
-BROADCAST_KEYBOARD = InlineKeyboardMarkup(
-    inline_keyboard=[
-        [
-            InlineKeyboardButton(
-                text="🌐 Visit findaua.com",
-                url="https://findaua.com",
-            )
-        ]
-    ]
-)
+BROADCAST_KEYBOARD: Optional[InlineKeyboardMarkup] = None
 
 
 async def get_target_users(gender: Optional[str] = "all", test_user_id: Optional[int] = None) -> List[int]:
@@ -69,7 +53,11 @@ async def get_target_users(gender: Optional[str] = "all", test_user_id: Optional
 
     async with get_db_session() as session:
         banned_ids = set(await get_all_banned_user_ids(session))
-        stmt = select(User.id).where(User.id.notin_(banned_ids))
+        stmt = (
+            select(User.id)
+            .where(User.id.notin_(banned_ids))
+            .where(User.is_bot_blocked == False)
+        )
         if gender and gender.lower() != "all":
             stmt = stmt.where(User.sex == gender.lower())
         stmt = stmt.order_by(User.id)

@@ -59,6 +59,17 @@ async def handle_start(
             code = args[5:]
             await handle_invite_deeplink(message=message, invite_code=code, state=state, bot=bot)
             return
+        elif args == "getlink":
+            from app.handlers.web_bridge import handle_getlink_deeplink
+
+            await handle_getlink_deeplink(message=message, state=state, bot=bot)
+            return
+        elif args.startswith("sync_") or args.startswith("sync-"):
+            from app.handlers.web_bridge import execute_sync_flow
+
+            code = args[5:]
+            await execute_sync_flow(message=message, code=code, state=state, bot=bot)
+            return
 
     user_id = message.from_user.id
     username = message.from_user.username
@@ -106,8 +117,10 @@ async def handle_start(
             await state.clear()
             safe_name = html.escape(message.from_user.first_name or "Student")
             def_sexes, def_orients = get_default_preferences(user.sex, user.orientation)
-            p_sexes = [s.strip().capitalize() for s in (user.target_sexes or "").split(",") if s.strip()] or [s.capitalize() for s in def_sexes]
-            p_orients = [o.strip().capitalize() for o in (user.target_orientations or "").split(",") if o.strip()] or [o.capitalize() for o in def_orients]
+            raw_sexes = getattr(user, "custom_target_sexes", None) or user.target_sexes or ""
+            raw_orients = getattr(user, "custom_target_orientations", None) or user.target_orientations or ""
+            p_sexes = [s.strip().capitalize() for s in raw_sexes.split(",") if s.strip()] or [s.capitalize() for s in def_sexes]
+            p_orients = [o.strip().capitalize() for o in raw_orients.split(",") if o.strip()] or [o.capitalize() for o in def_orients]
 
             await message.answer(
                 f"👋 <b>Welcome back to Anonymous AUA, {safe_name}!</b> 🎭\n\n"
@@ -200,14 +213,16 @@ async def handle_preferences_command(message: Message, state: FSMContext) -> Non
             return
 
         def_sexes, def_orients = get_default_preferences(user.sex, user.orientation)
+        raw_sexes = getattr(user, "custom_target_sexes", None) or user.target_sexes or ""
+        raw_orients = getattr(user, "custom_target_orientations", None) or user.target_orientations or ""
         selected_sexes = [
             s.strip().lower()
-            for s in (user.target_sexes or "").split(",")
+            for s in raw_sexes.split(",")
             if s.strip()
         ] or def_sexes
         selected_orientations = [
             o.strip().lower()
-            for o in (user.target_orientations or "").split(",")
+            for o in raw_orients.split(",")
             if o.strip()
         ] or def_orients
         show_typing = getattr(user, "show_typing", True)
@@ -231,6 +246,48 @@ async def handle_preferences_command(message: Message, state: FSMContext) -> Non
         reply_markup=get_preferences_keyboard(selected_sexes, selected_orientations, show_typing=show_typing),
         parse_mode="HTML",
     )
+
+
+@router.callback_query(F.data == "search_open_prefs")
+async def handle_open_preferences_from_search(callback: CallbackQuery, state: FSMContext) -> None:
+    """Open the custom /preferences configuration menu directly from the /search menu."""
+    user_id = callback.from_user.id
+    async with get_db_session() as session:
+        user = await get_or_create_user(session, user_id=user_id, username=callback.from_user.username)
+        if user.current_partner_id is not None:
+            await callback.answer("Cannot update preferences during an active chat!", show_alert=True)
+            return
+        if not user.sex or not user.orientation:
+            await callback.answer("Please complete /start setup first!", show_alert=True)
+            return
+
+        def_sexes, def_orients = get_default_preferences(user.sex, user.orientation)
+        raw_sexes = getattr(user, "custom_target_sexes", None) or user.target_sexes or ""
+        raw_orients = getattr(user, "custom_target_orientations", None) or user.target_orientations or ""
+        selected_sexes = [s.strip().lower() for s in raw_sexes.split(",") if s.strip()] or def_sexes
+        selected_orientations = [o.strip().lower() for o in raw_orients.split(",") if o.strip()] or def_orients
+        show_typing = getattr(user, "show_typing", True)
+        if show_typing is None:
+            show_typing = True
+
+    await state.set_state(PreferencesState.configuring)
+    await state.update_data(
+        pref_sexes=selected_sexes,
+        pref_orientations=selected_orientations,
+        pref_show_typing=show_typing,
+        is_onboarding=False,
+    )
+
+    await callback.message.edit_text(
+        "⚙️ <b>Preferences</b>\n\n"
+        "• Select who you want to be able to connect with when choosing <b>By set /preferences</b>.\n"
+        "• Matches occur when <b>both</b> students' preferences mutually match!\n"
+        "• Toggle whether your partner sees when you are typing.\n\n"
+        "<i>Toggle checkboxes below and press 'Save Preferences':</i>",
+        reply_markup=get_preferences_keyboard(selected_sexes, selected_orientations, show_typing=show_typing),
+        parse_mode="HTML",
+    )
+    await callback.answer()
 
 
 @router.message(Command("cancel"))
@@ -582,9 +639,11 @@ async def handle_help_command(message: Message) -> None:
         "• /pause (or /sleep) — Put chat in Sleep Mode for the night (freezes inactivity up to 24h) 🌙\n"
         "• /report — Emergency panic button: severs chat, auto-blocks, and accepts evidence 🚨\n"
         "• /safety — Anti-scam shield, blackmail defense & verifiable privacy facts 🛡️\n\n"
-        "🔗 <b>Anonymous Links & Invites:</b>\n"
+        "🔗 <b>Anonymous Links, Invites & AUA Hub:</b>\n"
         "• /link (or /inbox) — Shareable link to receive anonymous questions & media messages 🎭\n"
-        "• /invite (or /chatlink) — Direct invitation link for a 1-on-1 private chat session 👥\n\n"
+        "• /invite (or /chatlink) — Direct invitation link for a 1-on-1 private chat session 👥\n"
+        "• /post — Publish an indexed anonymous post to the AUA Hub website 🌐\n"
+        "• /sync — Sync your personal inbox & verification status with AUA Hub 🔄\n\n"
         "🔒 <b>Media & Privacy Features:</b>\n"
         "• /onetime (or /once, /viewonce) — Toggle 15s View-Once mode for outgoing media\n"
         "  ↳ <i>Tip: You can also send view-once photos/videos anytime by adding <code>#once</code> to the caption or using Telegram's 'Hide with Spoiler'! Media self-destructs after 15s and blocks screenshots/saving.</i>\n"
@@ -858,9 +917,10 @@ async def handle_blocklist_command(message: Message) -> None:
 
     if total_count == 0:
         await message.answer(
-            "📋 <b>Your Blocklist is empty.</b>\n\n"
-            "You haven't blocked any partners yet. After stopping any conversation, "
-            "you can tap <b>'🚫 Don't connect again'</b> to avoid matching with that partner for 1 day, 3 days, 1 week, or permanently.",
+            "📋 <b>Your Blocklist & Chapters is empty.</b>\n\n"
+            "You haven't blocked any partners or closed any chapters.\n"
+            "After stopping any conversation, you can choose to pause or close the chapter on good chats, "
+            "or prevent rematches for 1 day, 3 days, 1 week, or permanently.",
             parse_mode="HTML",
         )
         return
@@ -869,8 +929,8 @@ async def handle_blocklist_command(message: Message) -> None:
     reply_markup = get_blocklist_keyboard(blocks, page=1, total_pages=total_pages)
 
     await message.answer(
-        f"📋 <b>Your Blocklist ({total_count} blocked):</b>\n\n"
-        "Tap any date button to unblock that partner and allow matching with them again:",
+        f"📋 <b>Match Restrictions & Chapters ({total_count} total):</b>\n\n"
+        "Tap any entry below to bring that partner back into your matching pool:",
         reply_markup=reply_markup,
         parse_mode="HTML",
     )
@@ -887,8 +947,8 @@ async def handle_blocklist_page(callback: CallbackQuery) -> None:
 
     if total_count == 0:
         await callback.message.edit_text(
-            "📋 <b>Your Blocklist is empty.</b>\n\n"
-            "You haven't blocked any partners.",
+            "📋 <b>Your Blocklist & Chapters is empty.</b>\n\n"
+            "You haven't blocked any partners or closed any chapters.",
             parse_mode="HTML",
         )
         await callback.answer()
@@ -899,8 +959,8 @@ async def handle_blocklist_page(callback: CallbackQuery) -> None:
     reply_markup = get_blocklist_keyboard(blocks, page=page, total_pages=total_pages)
 
     await callback.message.edit_text(
-        f"📋 <b>Your Blocklist ({total_count} blocked):</b>\n\n"
-        "Tap any date button to unblock that partner and allow matching with them again:",
+        f"📋 <b>Match Restrictions & Chapters ({total_count} total):</b>\n\n"
+        "Tap any entry below to bring that partner back into your matching pool:",
         reply_markup=reply_markup,
         parse_mode="HTML",
     )
@@ -915,7 +975,7 @@ async def handle_blocklist_noop(callback: CallbackQuery) -> None:
 
 @router.callback_query(F.data.startswith("bl_select:"))
 async def handle_blocklist_select(callback: CallbackQuery) -> None:
-    """Prompt user with confirmation before unblocking a partner."""
+    """Prompt user with confirmation before unblocking or reopening a chapter with a partner."""
     parts = callback.data.split(":")
     block_id = int(parts[1])
     page = int(parts[2])
@@ -926,15 +986,48 @@ async def handle_blocklist_select(callback: CallbackQuery) -> None:
         block = await session.get(UserBlock, block_id)
 
     if not block or block.user_id != user_id:
-        await callback.answer("Block record not found or already unblocked.", show_alert=True)
+        await callback.answer("Record not found or already restored.", show_alert=True)
         return
 
-    date_str = block.created_at.strftime("%Y-%m-%d %H:%M")
+    now = datetime.now(timezone.utc)
+    created = block.created_at
+    if created and created.tzinfo is None:
+        created = created.replace(tzinfo=timezone.utc)
+    date_str = created.strftime("%Y-%m-%d %H:%M") if created else "Recently"
+
+    is_chapter = getattr(block, "reason", None) == "closed_chapter"
+    if block.expires_at is None:
+        status_str = "Permanent"
+    else:
+        exp = block.expires_at
+        if exp.tzinfo is None:
+            exp = exp.replace(tzinfo=timezone.utc)
+        rem_sec = max(0, (exp - now).total_seconds())
+        if rem_sec < 3600:
+            status_str = f"{max(1, int(rem_sec // 60))} minutes remaining"
+        elif rem_sec < 86400:
+            status_str = f"{max(1, int(rem_sec // 3600))} hours remaining"
+        else:
+            status_str = f"{max(1, int(math.ceil(rem_sec / 86400)))} days remaining"
+
+    if is_chapter:
+        card_text = (
+            "🕊️ <b>Reopen Chapter with Partner?</b>\n\n"
+            f"You closed the chapter on <b>{date_str}</b>.\n"
+            f"⏳ <b>Status:</b> {status_str}\n\n"
+            "Would you like to reopen this chapter and allow matching with this partner again in future chats?"
+        )
+    else:
+        card_text = (
+            "❓ <b>Unblock Partner?</b>\n\n"
+            f"You blocked this partner on <b>{date_str}</b>.\n"
+            f"⏳ <b>Status:</b> {status_str}\n\n"
+            "Once unblocked, you will be able to connect with them again in future anonymous chats."
+        )
+
     await callback.message.edit_text(
-        "❓ <b>Unblock Partner?</b>\n\n"
-        f"Do you want to unblock the partner you blocked on <b>{date_str}</b>?\n\n"
-        "Once unblocked, you will be able to connect with them again in future anonymous chats.",
-        reply_markup=get_unblock_confirmation_keyboard(block_id=block_id, page=page),
+        card_text,
+        reply_markup=get_unblock_confirmation_keyboard(block_id=block_id, page=page, is_chapter=is_chapter),
         parse_mode="HTML",
     )
     await callback.answer()
@@ -953,14 +1046,14 @@ async def handle_unblock_confirm(callback: CallbackQuery) -> None:
         blocks, total_count = await get_user_blocks(session, user_id=user_id, page=page, page_size=5)
 
     if not deleted:
-        await callback.answer("Already unblocked.", show_alert=True)
+        await callback.answer("Already restored.", show_alert=True)
     else:
-        await callback.answer("Partner unblocked! ✅", show_alert=False)
+        await callback.answer("Partner restored! ✅", show_alert=False)
 
     if total_count == 0:
         await callback.message.edit_text(
-            "✅ <b>Partner unblocked!</b>\n\n"
-            "Your blocklist is now empty. You can now connect with this partner again in future chats! 🎭",
+            "✅ <b>Partner unblocked / restored!</b>\n\n"
+            "Your list is now empty. You can now connect with this partner again in future chats! 🎭",
             parse_mode="HTML",
         )
         return
@@ -970,9 +1063,9 @@ async def handle_unblock_confirm(callback: CallbackQuery) -> None:
     reply_markup = get_blocklist_keyboard(blocks, page=page, total_pages=total_pages)
 
     await callback.message.edit_text(
-        f"✅ <b>Partner unblocked!</b>\n\n"
-        f"📋 <b>Your Blocklist ({total_count} blocked):</b>\n\n"
-        "Tap any date button to unblock that partner and allow matching with them again:",
+        f"✅ <b>Partner unblocked / restored!</b>\n\n"
+        f"📋 <b>Match Restrictions & Chapters ({total_count} total):</b>\n\n"
+        "Tap any entry below to bring that partner back into your matching pool:",
         reply_markup=reply_markup,
         parse_mode="HTML",
     )

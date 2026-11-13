@@ -31,8 +31,13 @@ from app.database.crud import (
     mark_inbox_message_replied,
     record_inbox_message,
 )
-from app.database.models import User
+from app.database.models import User, WebUser
 from app.database.session import get_db_session
+from app.database.web_crud import (
+    create_user_notification,
+    get_unread_notification_count,
+    serialize_user_notification,
+)
 from app.keyboards.inline import (
     get_inbox_block_confirm_keyboard,
     get_inbox_message_keyboard,
@@ -310,9 +315,41 @@ async def handle_inbox_message_submission(message: Message, bot: Bot, state: FSM
             msg_type = "sticker"
 
         # Record inbox message
+        raw_content = message.text or message.caption or f"[{msg_type.title()} Attachment]"
         inbox_msg = await record_inbox_message(
-            session, owner_id=owner_id, sender_id=sender_id, message_type=msg_type
+            session,
+            owner_id=owner_id,
+            sender_id=sender_id,
+            message_type=msg_type,
+            content_text=raw_content,
         )
+
+        # Check if inbox owner has a linked WebUser account for Web Real-time Push notifications
+        stmt_web = select(WebUser).where(WebUser.telegram_user_id == owner_id)
+        web_user = (await session.execute(stmt_web)).scalar_one_or_none()
+        if web_user:
+            snippet = raw_content[:85] + ("…" if len(raw_content) > 85 else "")
+            try:
+                notif = await create_user_notification(
+                    session=session,
+                    recipient_id=web_user.id,
+                    category="inbox_message",
+                    title="New Anonymous Message",
+                    content=snippet,
+                    target_type="inbox",
+                    target_id=inbox_msg.thread_token,
+                    extra_data={"thread_token": inbox_msg.thread_token},
+                )
+                unread_cnt = await get_unread_notification_count(session, web_user.id)
+                from app.web.server import broadcast_ws_event
+                await broadcast_ws_event({
+                    "type": "new_notification",
+                    "recipient_id": web_user.id,
+                    "notification": serialize_user_notification(notif),
+                    "unread_count": unread_cnt,
+                })
+            except Exception as e:
+                logger.warning("Failed to dispatch web notification for inbox message: %s", e)
 
         # Sender badge verification status
         stmt = select(User).where(User.id == sender_id)
@@ -539,7 +576,8 @@ async def handle_inbox_reply_submit(message: Message, bot: Bot, state: FSMContex
 
         await message.reply("✅ <b>Reply delivered successfully!</b>", parse_mode="HTML")
         async with get_db_session() as session:
-            await mark_inbox_message_replied(session, thread_token=thread_token)
+            reply_content = (message.text or message.caption) if is_owner_reply else None
+            await mark_inbox_message_replied(session, thread_token=thread_token, reply_text=reply_content)
     except TelegramAPIError as e:
         logger.error("Failed to deliver reply to %s: %s", recipient_id, e)
         await message.reply("⚠️ Could not deliver reply (recipient may have blocked the bot).")
