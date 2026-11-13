@@ -923,7 +923,66 @@ class AIChatSessionState:
     session_id: str
     prompts_used: int = 0
     turns: List[AIChatTurn] = field(default_factory=list)
+    exchanges: List[Dict[str, Any]] = field(default_factory=list)
     updated_at: float = field(default_factory=time.time)
+
+    def restore_from_client_history(self, client_history: List[Dict[str, Any]]) -> None:
+        """Restore session state from client-persisted history if server session is empty."""
+        if self.exchanges or not isinstance(client_history, list):
+            return
+        valid_exchanges: List[Dict[str, Any]] = []
+        restored_turns: List[AIChatTurn] = []
+        for item in client_history[:MAX_PROMPTS_PER_SESSION]:
+            if not isinstance(item, dict):
+                continue
+            p_txt = str(item.get("prompt") or "").strip()
+            a_txt = str(item.get("answer") or "").strip()
+            if not p_txt or not a_txt:
+                continue
+            ts = str(item.get("timestamp") or datetime.now(timezone.utc).isoformat())
+            steps = item.get("steps") if isinstance(item.get("steps"), list) else []
+            sources = item.get("sources") if isinstance(item.get("sources"), list) else []
+            valid_exchanges.append(
+                {
+                    "prompt": p_txt[:1200],
+                    "answer": a_txt,
+                    "steps": steps[:10],
+                    "sources": sources[:10],
+                    "timestamp": ts,
+                }
+            )
+            restored_turns.append(AIChatTurn(role="user", content=p_txt[:1200], timestamp=ts))
+            restored_turns.append(AIChatTurn(role="assistant", content=a_txt, timestamp=ts))
+
+        if valid_exchanges:
+            self.exchanges = valid_exchanges
+            self.turns = restored_turns
+            self.prompts_used = max(self.prompts_used, len(valid_exchanges))
+            self.updated_at = time.time()
+
+    def get_history_payload(self) -> List[Dict[str, Any]]:
+        """Return serialized list of exchanges for frontend persistence/restoration."""
+        if self.exchanges:
+            return list(self.exchanges)
+        reconstructed: List[Dict[str, Any]] = []
+        i = 0
+        while i + 1 < len(self.turns):
+            u_turn = self.turns[i]
+            a_turn = self.turns[i + 1]
+            if u_turn.role == "user" and a_turn.role == "assistant":
+                reconstructed.append(
+                    {
+                        "prompt": u_turn.content,
+                        "answer": a_turn.content,
+                        "steps": [],
+                        "sources": [],
+                        "timestamp": a_turn.timestamp,
+                    }
+                )
+                i += 2
+            else:
+                i += 1
+        return reconstructed
 
 
 class AISessionStore:
@@ -1248,9 +1307,19 @@ class AUAAssistantOrchestrator:
         )
 
         # Record turns and increment prompt counter
+        now_iso = datetime.now(timezone.utc).isoformat()
         chat_state.prompts_used += 1
-        chat_state.turns.append(AIChatTurn(role="user", content=user_prompt))
-        chat_state.turns.append(AIChatTurn(role="assistant", content=answer_markdown))
+        chat_state.turns.append(AIChatTurn(role="user", content=user_prompt, timestamp=now_iso))
+        chat_state.turns.append(AIChatTurn(role="assistant", content=answer_markdown, timestamp=now_iso))
+        chat_state.exchanges.append(
+            {
+                "prompt": user_prompt,
+                "answer": answer_markdown,
+                "steps": executed_steps,
+                "sources": unique_sources[:8],
+                "timestamp": now_iso,
+            }
+        )
         chat_state.updated_at = time.time()
 
         return {
@@ -1262,6 +1331,7 @@ class AUAAssistantOrchestrator:
             "answer": answer_markdown,
             "steps": executed_steps,
             "sources": unique_sources[:8],
+            "history": chat_state.get_history_payload(),
         }
 
     async def _synthesize_with_gemini(

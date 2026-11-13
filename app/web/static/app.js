@@ -11,6 +11,27 @@ function getCachedUser() {
   }
 }
 
+function getCachedAiHistory() {
+  try {
+    const raw = localStorage.getItem("aua_hub_ai_history");
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter(
+      (item) =>
+        item &&
+        typeof item === "object" &&
+        typeof item.prompt === "string" &&
+        item.prompt.trim().length > 0 &&
+        typeof item.answer === "string"
+    );
+  } catch {
+    return [];
+  }
+}
+
+const initialAiHistory = getCachedAiHistory();
+
 const state = {
   user: getCachedUser(),
   token: localStorage.getItem("aua_hub_token") || null,
@@ -49,7 +70,11 @@ const state = {
   editingGroupId: null,
   // AI Assistant state
   aiSessionId: localStorage.getItem("aua_hub_ai_session_id") || "",
-  aiPromptsUsed: Number(localStorage.getItem("aua_hub_ai_prompts_used") || 0),
+  aiHistory: initialAiHistory,
+  aiPromptsUsed:
+    initialAiHistory.length > 0
+      ? Math.max(initialAiHistory.length, Number(localStorage.getItem("aua_hub_ai_prompts_used") || 0))
+      : Number(localStorage.getItem("aua_hub_ai_prompts_used") || 0),
   aiMaxPrompts: 5,
   aiIsGenerating: false,
   // Campus Chat state
@@ -6519,9 +6544,150 @@ function renderClickableUserNameHtml(userObj, extraClass = "") {
   let aiPlaceholderCharIdx = 0;
   let aiPlaceholderDeleting = false;
   let aiTypewriterInitialized = false;
+  let aiSessionSyncedOnce = false;
+
+  function saveAiHistoryToStorage() {
+    try {
+      localStorage.setItem("aua_hub_ai_history", JSON.stringify(state.aiHistory || []));
+      localStorage.setItem("aua_hub_ai_prompts_used", String(state.aiPromptsUsed || 0));
+      if (state.aiSessionId) {
+        localStorage.setItem("aua_hub_ai_session_id", state.aiSessionId);
+      }
+    } catch { }
+  }
+
+  function renderAiStepsHtml(steps, allDone = true) {
+    if (!Array.isArray(steps) || steps.length === 0) return "";
+    return steps
+      .map(
+        (st, idx) => `
+        <span class="ai-step-pill ${allDone ? "done" : idx === 0 ? "active-pulse" : ""}" data-step-idx="${idx}">
+          <span>${escapeHtml(st.icon || "✓")}</span>
+          <span>${escapeHtml(st.label || "")}</span>
+        </span>
+      `
+      )
+      .join("");
+  }
+
+  function renderAiSourcesBarHtml(sources) {
+    if (!Array.isArray(sources) || sources.length === 0) return "";
+    const chips = sources
+      .map((s) => {
+        const url = s.url || "#";
+        const isInternal = url.startsWith("#");
+        const clickAttr = isInternal
+          ? `onclick="event.preventDefault(); switchView('${escapeHtml(url.slice(1))}');"`
+          : `target="_blank" rel="noopener noreferrer"`;
+        return `
+          <a href="${escapeHtml(url)}" class="ai-source-link-chip" ${clickAttr} title="${escapeHtml(s.source_type || "Source")}">
+            <span>🔗</span>
+            <span>${escapeHtml(s.title || s.source_type || "Source")}</span>
+          </a>
+        `;
+      })
+      .join("");
+
+    return `
+      <div class="ai-sources-bar">
+        <span class="ai-sources-label">Sources:</span>
+        ${chips}
+      </div>
+    `;
+  }
+
+  function renderAiHistoryThread() {
+    if (state.aiIsGenerating) return;
+    const welcomeEl = document.getElementById("aiWelcomeState");
+    const threadEl = document.getElementById("aiChatThread");
+    if (!welcomeEl || !threadEl) return;
+
+    const history = Array.isArray(state.aiHistory) ? state.aiHistory : [];
+    if (history.length === 0) {
+      threadEl.innerHTML = "";
+      threadEl.classList.add("hidden");
+      welcomeEl.classList.remove("hidden");
+      return;
+    }
+
+    welcomeEl.classList.add("hidden");
+    threadEl.classList.remove("hidden");
+
+    threadEl.innerHTML = history
+      .map((item, idx) => {
+        const turnId = `ai-history-turn-${idx}`;
+        const stepsHtml = renderAiStepsHtml(
+          Array.isArray(item.steps) && item.steps.length > 0
+            ? item.steps
+            : [{ icon: "✨", label: "Synthesized from AUA campus sources" }],
+          true
+        );
+        const outputHtml = renderAiMarkdownHtml(item.answer || "");
+        const sourcesHtml = renderAiSourcesBarHtml(item.sources || []);
+        return `
+          <div class="ai-turn-user">${escapeHtml(item.prompt || "")}</div>
+          <div class="ai-turn-assistant" id="${turnId}">
+            <div class="ai-assistant-avatar" aria-hidden="true">✦</div>
+            <div class="ai-assistant-body">
+              <div class="ai-activity-steps" id="${turnId}-steps">${stepsHtml}</div>
+              <div class="ai-markdown-output" id="${turnId}-output">${outputHtml}</div>
+              <div id="${turnId}-sources">${sourcesHtml}</div>
+            </div>
+          </div>
+        `;
+      })
+      .join("");
+
+    threadEl.scrollTop = threadEl.scrollHeight;
+  }
+
+  async function syncAiSessionWithServer() {
+    if (aiSessionSyncedOnce) return;
+    aiSessionSyncedOnce = true;
+
+    if (!state.aiSessionId) {
+      if ((!state.aiHistory || state.aiHistory.length === 0) && state.aiPromptsUsed > 0) {
+        state.aiPromptsUsed = 0;
+        saveAiHistoryToStorage();
+        updateAiQuotaUI();
+      }
+      return;
+    }
+
+    try {
+      const data = await apiFetch(
+        `/api/ai/session?session_id=${encodeURIComponent(state.aiSessionId)}`
+      );
+      if (!data || !data.ok) return;
+
+      const serverHistory = Array.isArray(data.history) ? data.history : [];
+      if (serverHistory.length > (state.aiHistory || []).length) {
+        state.aiHistory = serverHistory;
+        state.aiPromptsUsed = Math.max(Number(data.prompts_used) || 0, serverHistory.length);
+        saveAiHistoryToStorage();
+        renderAiHistoryThread();
+        updateAiQuotaUI();
+      } else if ((state.aiHistory || []).length > 0) {
+        state.aiPromptsUsed = Math.max(state.aiHistory.length, Number(data.prompts_used) || 0);
+        saveAiHistoryToStorage();
+        renderAiHistoryThread();
+        updateAiQuotaUI();
+      } else if (serverHistory.length === 0 && (state.aiHistory || []).length === 0) {
+        // Neither client nor server has any turns; ensure quota counter reflects empty chat
+        state.aiPromptsUsed = 0;
+        saveAiHistoryToStorage();
+        renderAiHistoryThread();
+        updateAiQuotaUI();
+      }
+    } catch {
+      // Offline or transient error: rely on localStorage history
+    }
+  }
 
   function initAiAssistantView() {
+    renderAiHistoryThread();
     updateAiQuotaUI();
+    syncAiSessionWithServer();
     if (!aiTypewriterInitialized) {
       aiTypewriterInitialized = true;
       startAiTypewriterLoop();
@@ -6846,6 +7012,7 @@ function renderClickableUserNameHtml(userObj, extraClass = "") {
         body: JSON.stringify({
           prompt: promptText,
           session_id: state.aiSessionId || undefined,
+          client_history: state.aiHistory || [],
         }),
       });
 
@@ -6855,23 +7022,30 @@ function renderClickableUserNameHtml(userObj, extraClass = "") {
         state.aiSessionId = data.session_id;
         localStorage.setItem("aua_hub_ai_session_id", data.session_id);
       }
-      if (typeof data.prompts_used === "number") {
-        state.aiPromptsUsed = data.prompts_used;
-        localStorage.setItem("aua_hub_ai_prompts_used", String(data.prompts_used));
+
+      if (Array.isArray(data.history) && data.history.length > 0) {
+        state.aiHistory = data.history;
+      } else {
+        state.aiHistory = Array.isArray(state.aiHistory) ? state.aiHistory : [];
+        state.aiHistory.push({
+          prompt: promptText,
+          answer: data.answer || "",
+          steps: Array.isArray(data.steps) ? data.steps : [],
+          sources: Array.isArray(data.sources) ? data.sources : [],
+          timestamp: new Date().toISOString(),
+        });
       }
+
+      if (typeof data.prompts_used === "number") {
+        state.aiPromptsUsed = Math.max(data.prompts_used, state.aiHistory.length);
+      } else {
+        state.aiPromptsUsed = state.aiHistory.length;
+      }
+      saveAiHistoryToStorage();
 
       const stepsContainer = document.getElementById(`${turnId}-steps`);
       if (stepsContainer && Array.isArray(data.steps) && data.steps.length > 0) {
-        stepsContainer.innerHTML = data.steps
-          .map(
-            (st) => `
-            <span class="ai-step-pill done">
-              <span>${escapeHtml(st.icon || "✓")}</span>
-              <span>${escapeHtml(st.label || "")}</span>
-            </span>
-          `
-          )
-          .join("");
+        stepsContainer.innerHTML = renderAiStepsHtml(data.steps, true);
       }
 
       const outputContainer = document.getElementById(`${turnId}-output`);
@@ -6881,28 +7055,7 @@ function renderClickableUserNameHtml(userObj, extraClass = "") {
 
       const sourcesContainer = document.getElementById(`${turnId}-sources`);
       if (sourcesContainer && Array.isArray(data.sources) && data.sources.length > 0) {
-        const chips = data.sources
-          .map((s) => {
-            const url = s.url || "#";
-            const isInternal = url.startsWith("#");
-            const clickAttr = isInternal
-              ? `onclick="event.preventDefault(); switchView('${escapeHtml(url.slice(1))}');"`
-              : `target="_blank" rel="noopener noreferrer"`;
-            return `
-              <a href="${escapeHtml(url)}" class="ai-source-link-chip" ${clickAttr} title="${escapeHtml(s.source_type || "Source")}">
-                <span>🔗</span>
-                <span>${escapeHtml(s.title || s.source_type || "Source")}</span>
-              </a>
-            `;
-          })
-          .join("");
-
-        sourcesContainer.innerHTML = `
-          <div class="ai-sources-bar">
-            <span class="ai-sources-label">Sources:</span>
-            ${chips}
-          </div>
-        `;
+        sourcesContainer.innerHTML = renderAiSourcesBarHtml(data.sources);
       }
 
       if (threadEl) {
@@ -6913,7 +7066,7 @@ function renderClickableUserNameHtml(userObj, extraClass = "") {
       const errMsg = err?.message || "Failed to generate AI response.";
       if (errMsg.includes("5-prompt limit")) {
         state.aiPromptsUsed = state.aiMaxPrompts;
-        localStorage.setItem("aua_hub_ai_prompts_used", String(state.aiMaxPrompts));
+        saveAiHistoryToStorage();
       }
       const outputContainer = document.getElementById(`${turnId}-output`);
       if (outputContainer) {
@@ -6943,9 +7096,13 @@ function renderClickableUserNameHtml(userObj, extraClass = "") {
       localStorage.removeItem("aua_hub_ai_session_id");
     }
 
+    state.aiHistory = [];
     state.aiPromptsUsed = 0;
     state.aiIsGenerating = false;
-    localStorage.setItem("aua_hub_ai_prompts_used", "0");
+    try {
+      localStorage.removeItem("aua_hub_ai_history");
+      localStorage.setItem("aua_hub_ai_prompts_used", "0");
+    } catch { }
 
     const threadEl = document.getElementById("aiChatThread");
     const welcomeEl = document.getElementById("aiWelcomeState");
@@ -6974,6 +7131,8 @@ function renderClickableUserNameHtml(userObj, extraClass = "") {
 
   window.addEventListener("DOMContentLoaded", async () => {
     initPwaSupport();
+    renderAiHistoryThread();
+    updateAiQuotaUI();
     await checkCurrentSession();
     initNavigationHistory();
     await loadCoursesCatalog(false);

@@ -2577,6 +2577,34 @@ async def api_delete_feedback(request: web.Request) -> web.Response:
 # 8.5. AI Assistant (Multi-Source RAG with 5-Prompt Session Limit)
 # ------------------------------------------------------------------------------
 
+@routes.get("/api/ai/session")
+async def api_ai_session(request: web.Request) -> web.Response:
+    session_id = (request.query.get("session_id") or "").strip() or None
+    if not session_id:
+        return web.json_response(
+            {
+                "ok": True,
+                "session_id": "",
+                "prompts_used": 0,
+                "max_prompts": MAX_PROMPTS_PER_SESSION,
+                "limit_reached": False,
+                "history": [],
+            }
+        )
+    chat_state = ai_session_store.get_or_create(session_id)
+    history = chat_state.get_history_payload()
+    return web.json_response(
+        {
+            "ok": True,
+            "session_id": chat_state.session_id,
+            "prompts_used": chat_state.prompts_used,
+            "max_prompts": MAX_PROMPTS_PER_SESSION,
+            "limit_reached": chat_state.prompts_used >= MAX_PROMPTS_PER_SESSION,
+            "history": history,
+        }
+    )
+
+
 @routes.post("/api/ai/chat")
 async def api_ai_chat(request: web.Request) -> web.Response:
     user = await get_current_web_user(request)
@@ -2596,11 +2624,14 @@ async def api_ai_chat(request: web.Request) -> web.Response:
     prompt = (data.get("prompt") or "").strip()
     session_id = (data.get("session_id") or "").strip() or None
     reset = bool(data.get("reset", False))
+    client_history = data.get("client_history")
 
     if reset:
         chat_state = ai_session_store.reset_session(session_id)
     else:
         chat_state = ai_session_store.get_or_create(session_id)
+        if isinstance(client_history, list) and client_history:
+            chat_state.restore_from_client_history(client_history)
 
     if chat_state.prompts_used >= MAX_PROMPTS_PER_SESSION:
         return web.json_response(
@@ -2610,6 +2641,7 @@ async def api_ai_chat(request: web.Request) -> web.Response:
                 "session_id": chat_state.session_id,
                 "prompts_used": chat_state.prompts_used,
                 "max_prompts": MAX_PROMPTS_PER_SESSION,
+                "history": chat_state.get_history_payload(),
                 "error": (
                     "You've reached the 5-prompt limit for this session. "
                     "Please start a new chat to continue."
@@ -2652,6 +2684,7 @@ async def api_ai_reset(request: web.Request) -> web.Response:
             "prompts_used": 0,
             "max_prompts": MAX_PROMPTS_PER_SESSION,
             "limit_reached": False,
+            "history": [],
         }
     )
 

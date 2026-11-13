@@ -1181,15 +1181,33 @@ class TestAuaHub(unittest.IsolatedAsyncioTestCase):
                 self.assertTrue(resp["ok"])
                 self.assertEqual(resp["prompts_used"], i)
                 self.assertEqual(resp["max_prompts"], 5)
+                self.assertEqual(len(resp["history"]), i)
+                self.assertEqual(
+                    resp["history"][-1]["prompt"],
+                    f"Find discussions about CS courses in chat #{i}",
+                )
+                self.assertTrue(resp["history"][-1]["answer"])
                 if i < 5:
                     self.assertFalse(resp["limit_reached"])
                 else:
                     self.assertTrue(resp["limit_reached"])
 
-        # Reset session -> prompts_used back to 0
+        # Verify session history persistence and restoration from client_history
+        saved_history = st.get_history_payload()
+        self.assertEqual(len(saved_history), 5)
+
+        restored_st = store.get_or_create("restored_session_after_restart")
+        self.assertEqual(restored_st.prompts_used, 0)
+        restored_st.restore_from_client_history(saved_history[:3])
+        self.assertEqual(restored_st.prompts_used, 3)
+        self.assertEqual(len(restored_st.get_history_payload()), 3)
+        self.assertEqual(len(restored_st.turns), 6)
+
+        # Reset session -> prompts_used back to 0 and history cleared
         fresh_st = store.reset_session("test_session_123")
         self.assertNotEqual(fresh_st.session_id, "test_session_123")
         self.assertEqual(fresh_st.prompts_used, 0)
+        self.assertEqual(fresh_st.get_history_payload(), [])
 
 
 if __name__ == "__main__":
