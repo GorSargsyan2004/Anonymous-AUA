@@ -1795,7 +1795,7 @@ class TestAuaHub(unittest.IsolatedAsyncioTestCase):
         app = create_web_app()
         async with TestClient(TestServer(app)) as client:
             # 1. Versioned static bundle gets immutable cache header
-            r_css = await client.get("/static/styles.css?v=20261114_13")
+            r_css = await client.get("/static/styles.css?v=20261114_14")
             self.assertEqual(r_css.status, 200)
             self.assertIn("max-age=604800", r_css.headers.get("Cache-Control", ""))
             css_body = await r_css.text()
@@ -1808,6 +1808,7 @@ class TestAuaHub(unittest.IsolatedAsyncioTestCase):
             home_html = await r_home.text()
             self.assertIn("/static/partners/jenzareviews-logo.png", home_html)
             self.assertIn('id="googleFontsCss"', home_html)
+            self.assertNotIn("ai-suggestions-grid", home_html)
 
             # 3. Optimized partner PNG assets serve cleanly
             for asset in ("/static/partners/jenzareviews-logo.png", "/static/partners/findaua-logo.png"):

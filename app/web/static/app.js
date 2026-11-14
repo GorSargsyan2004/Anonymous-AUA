@@ -7513,21 +7513,6 @@ function renderAiMarkdownHtml(mdText) {
   return out.join("");
 }
 
-function useAiSuggestedPrompt(promptText) {
-  if (state.aiIsGenerating) return;
-  if (state.aiPromptsUsed >= state.aiMaxPrompts) {
-    updateAiQuotaUI();
-    showToast("You've reached the 5-prompt limit. Click 'New Chat' to continue.", true);
-    return;
-  }
-  const input = document.getElementById("aiPromptInput");
-  if (input) {
-    input.value = promptText;
-    handleAiInputChanged(input);
-  }
-  submitAiPrompt(new Event("submit"));
-}
-
 async function submitAiPrompt(e) {
   if (e && typeof e.preventDefault === "function") e.preventDefault();
   if (state.aiIsGenerating) return;
