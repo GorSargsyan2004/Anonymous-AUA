@@ -19,7 +19,7 @@
   <link rel="icon" type="image/png" sizes="32x32" href="/static/favicon-32x32.png?v=20261113_1" />
   <link rel="icon" type="image/png" sizes="192x192" href="/static/favicon-192x192.png?v=20261113_1" />
   <link rel="shortcut icon" href="/favicon.ico?v=20261113_1" />
-  <link rel="stylesheet" href="/static/styles.css?v=20261113_9" />
+  <link rel="stylesheet" href="/static/styles.css?v=20261114_12" />
 </head>
 
 <body>
@@ -841,7 +841,7 @@
           <div id="spamMessagesStream" class="spam-messages-stream" onscroll="handleChatScroll(this)"></div>
           <button type="button" id="chatScrollBottomBtn" class="chat-scroll-bottom-btn hidden"
             onclick="scrollChatToBottom(true)" title="Scroll to latest messages">
-            <span>&darr; New messages</span>
+            <span id="chatScrollBottomLabel">&darr; Latest</span>
             <span id="chatScrollUnreadCount" class="scroll-unread-pill hidden">0</span>
           </button>
         </div>
@@ -1422,7 +1422,7 @@
     </div>
   </div>
 
-  <script src="/static/app.js?v=20261114_11"></script>
+  <script src="/static/app.js?v=20261114_12"></script>
 </body>
 
 </html>

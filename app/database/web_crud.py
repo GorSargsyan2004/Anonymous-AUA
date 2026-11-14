@@ -1220,13 +1220,21 @@ async def get_message_reactions(
     return list(grouped.values())
 
 
+async def get_spam_chat_last_read_id(
+    session: AsyncSession,
+    web_user_id: int,
+) -> int:
+    """Return the user's last read Spam Chat message ID (0 if never recorded)."""
+    read_stmt = select(SpamChatRead.last_read_message_id).where(SpamChatRead.web_user_id == web_user_id)
+    return int((await session.execute(read_stmt)).scalar_one_or_none() or 0)
+
+
 async def get_spam_chat_unread_count(
     session: AsyncSession,
     web_user_id: int,
 ) -> int:
     """Count how many Spam Chat messages have been posted since the user last viewed Spam Chat."""
-    read_stmt = select(SpamChatRead.last_read_message_id).where(SpamChatRead.web_user_id == web_user_id)
-    last_read_id = (await session.execute(read_stmt)).scalar_one_or_none() or 0
+    last_read_id = await get_spam_chat_last_read_id(session, web_user_id)
 
     count_stmt = select(func.count(SpamChatMessage.id)).where(
         SpamChatMessage.id > last_read_id,
@@ -1234,6 +1242,73 @@ async def get_spam_chat_unread_count(
     )
     unread = (await session.execute(count_stmt)).scalar_one() or 0
     return int(unread)
+
+
+async def list_spam_chat_messages_for_user(
+    session: AsyncSession,
+    web_user_id: Optional[int] = None,
+    limit: int = 100,
+    after_id: Optional[int] = None,
+) -> Tuple[List[SpamChatMessage], int, int, Optional[int]]:
+    """Load Spam Chat messages with read-cursor context so UI can open right at the last read
+    message and anchor the Telegram-style 'Unread messages' divider before unread messages.
+    Returns (messages_chronological, unread_count, last_read_message_id, first_unread_message_id).
+    """
+    last_read_id = await get_spam_chat_last_read_id(session, web_user_id) if web_user_id else 0
+    unread_count = await get_spam_chat_unread_count(session, web_user_id) if web_user_id else 0
+
+    if after_id is not None and after_id > 0:
+        messages = await list_spam_chat_messages(session, limit=limit, after_id=after_id)
+    elif web_user_id and last_read_id > 0 and unread_count > 0:
+        options = [
+            selectinload(SpamChatMessage.web_user),
+            selectinload(SpamChatMessage.reply_to).selectinload(SpamChatMessage.web_user),
+            selectinload(SpamChatMessage.reactions).selectinload(SpamChatReaction.web_user),
+        ]
+        # Fetch context right up to the user's last read message
+        before_stmt = (
+            select(SpamChatMessage)
+            .options(*options)
+            .where(SpamChatMessage.id <= last_read_id)
+            .order_by(SpamChatMessage.id.desc())
+            .limit(25)
+        )
+        before_rows = list((await session.execute(before_stmt)).scalars().all())
+        before_rows.reverse()
+
+        # Fetch unread/newer messages (cap at 200 latest unread if huge backlog)
+        if unread_count <= 200:
+            after_stmt = (
+                select(SpamChatMessage)
+                .options(*options)
+                .where(SpamChatMessage.id > last_read_id)
+                .order_by(SpamChatMessage.id.asc())
+                .limit(220)
+            )
+            after_rows = list((await session.execute(after_stmt)).scalars().all())
+        else:
+            after_stmt = (
+                select(SpamChatMessage)
+                .options(*options)
+                .where(SpamChatMessage.id > last_read_id)
+                .order_by(SpamChatMessage.id.desc())
+                .limit(200)
+            )
+            after_rows = list((await session.execute(after_stmt)).scalars().all())
+            after_rows.reverse()
+
+        messages = before_rows + after_rows
+    else:
+        messages = await list_spam_chat_messages(session, limit=max(limit, 100))
+
+    first_unread_id: Optional[int] = None
+    if web_user_id and unread_count > 0:
+        for m in messages:
+            if m.id > last_read_id and m.web_user_id != web_user_id:
+                first_unread_id = int(m.id)
+                break
+
+    return messages, int(unread_count), int(last_read_id), first_unread_id
 
 
 async def mark_spam_chat_read(

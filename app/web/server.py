@@ -63,6 +63,7 @@ from app.database.web_crud import (
     get_feedback_catalog,
     get_message_reactions,
     get_reported_anon_post_ids,
+    get_spam_chat_last_read_id,
     get_spam_chat_unread_count,
     get_synced_web_inbox,
     get_unread_notification_count,
@@ -71,7 +72,7 @@ from app.database.web_crud import (
     list_academic_feedbacks,
     list_anonymous_public_posts,
     list_have_need_posts,
-    list_spam_chat_messages,
+    list_spam_chat_messages_for_user,
     list_telegram_groups,
     list_user_notifications,
     mark_all_notifications_read,
@@ -218,27 +219,30 @@ def _parse_ip_str(candidate: Optional[str]) -> Optional[str]:
         return None
 
 
-_TRUSTED_PROXY_NETS = (
-    ipaddress.ip_network("127.0.0.0/8"),
-    ipaddress.ip_network("10.0.0.0/8"),
-    ipaddress.ip_network("172.16.0.0/12"),
-    ipaddress.ip_network("192.168.0.0/16"),
-    ipaddress.ip_network("::1/128"),
-    ipaddress.ip_network("fc00::/7"),
+_TRUSTED_PROXY_V4_NETS = (
+    ipaddress.IPv4Network("127.0.0.0/8"),
+    ipaddress.IPv4Network("10.0.0.0/8"),
+    ipaddress.IPv4Network("172.16.0.0/12"),
+    ipaddress.IPv4Network("192.168.0.0/16"),
+)
+_TRUSTED_PROXY_V6_NETS = (
+    ipaddress.IPv6Network("::1/128"),
+    ipaddress.IPv6Network("fc00::/7"),
 )
 
 
 def _is_trusted_proxy_ip(ip_str: Optional[str]) -> bool:
-    """Return True only if the immediate TCP peer is a trusted loopback or RFC1918 proxy."""
+    """Return True only if the immediate TCP peer is loopback or an RFC 1918/ULA proxy."""
     if not ip_str:
         return False
     try:
         addr = ipaddress.ip_address(ip_str.strip())
-        if getattr(addr, "ipv4_mapped", None):
-            addr = addr.ipv4_mapped
-        return any(addr in net for net in _TRUSTED_PROXY_NETS)
     except ValueError:
         return False
+    if isinstance(addr, ipaddress.IPv6Address) and addr.ipv4_mapped:
+        addr = addr.ipv4_mapped
+    nets = _TRUSTED_PROXY_V4_NETS if addr.version == 4 else _TRUSTED_PROXY_V6_NETS
+    return any(addr in net for net in nets)
 
 
 def get_client_ip(request: web.Request) -> str:
@@ -2283,14 +2287,20 @@ async def api_list_spam_chat(request: web.Request) -> web.Response:
     after_id = int(after_id_str) if (after_id_str and after_id_str.isdigit()) else None
 
     async with get_db_session() as session:
-        messages = await list_spam_chat_messages(session, limit=80, after_id=after_id)
+        messages, unread_count, last_read_id, first_unread_id = await list_spam_chat_messages_for_user(
+            session,
+            web_user_id=user.id if user else None,
+            limit=100,
+            after_id=after_id,
+        )
         serialized = [serialize_spam_message(m) for m in messages]
-        unread_count = await get_spam_chat_unread_count(session, user.id) if user else 0
 
     return web.json_response(
         {
             "messages": serialized,
             "unread_count": unread_count,
+            "last_read_message_id": last_read_id,
+            "first_unread_message_id": first_unread_id,
         }
     )
 
@@ -2606,9 +2616,16 @@ async def api_get_spam_chat_unread(request: web.Request) -> web.Response:
     async with get_db_session() as session:
         max_id = int((await session.execute(select(func.max(SpamChatMessage.id)))).scalar_one_or_none() or 0)
         if not user:
-            return web.json_response({"unread_count": 0, "latest_id": max_id})
+            return web.json_response({"unread_count": 0, "latest_id": max_id, "last_read_message_id": 0})
         unread = await get_spam_chat_unread_count(session, user.id)
-        return web.json_response({"unread_count": unread, "latest_id": max_id})
+        last_read_id = await get_spam_chat_last_read_id(session, user.id)
+        return web.json_response(
+            {
+                "unread_count": unread,
+                "latest_id": max_id,
+                "last_read_message_id": last_read_id,
+            }
+        )
 
 
 @routes.post("/api/spam-chat/read")
@@ -2628,8 +2645,15 @@ async def api_mark_spam_chat_read(request: web.Request) -> web.Response:
 
     async with get_db_session() as session:
         marked_id = await mark_spam_chat_read(session, web_user_id=user.id, latest_message_id=latest_id)
+        remaining_unread = await get_spam_chat_unread_count(session, user.id)
 
-    return web.json_response({"ok": True, "last_read_message_id": marked_id, "unread_count": 0})
+    return web.json_response(
+        {
+            "ok": True,
+            "last_read_message_id": marked_id,
+            "unread_count": remaining_unread,
+        }
+    )
 
 
 @routes.get("/ws/spam-chat")

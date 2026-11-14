@@ -61,6 +61,7 @@ from app.database.web_crud import (
     list_anonymous_public_posts,
     list_have_need_posts,
     list_spam_chat_messages,
+    list_spam_chat_messages_for_user,
     list_telegram_groups,
     list_user_notifications,
     mark_all_notifications_read,
@@ -533,6 +534,25 @@ class TestAuaHub(unittest.IsolatedAsyncioTestCase):
             serialized_vid = serialize_spam_message(video_msg)
             self.assertEqual(serialized_vid["media_type"], "video")
             self.assertEqual(serialized_vid["image_url"], "/uploads/1762000000_1122334455667788.mp4")
+
+            # Check read cursor context & Telegram unread anchor (`first_unread_message_id`)
+            msgs_u2, uc_u2, lr_u2, first_unread_u2 = await list_spam_chat_messages_for_user(
+                session, web_user_id=u2.id
+            )
+            self.assertEqual(uc_u2, 2)
+            self.assertLess(lr_u2, spam_msg.id)
+            self.assertEqual(first_unread_u2, spam_msg.id)
+
+            # Partial read up to spam_msg -> remaining unread is 1 (video_msg)
+            await mark_spam_chat_read(session, web_user_id=u2.id, latest_message_id=spam_msg.id)
+            msgs_p, uc_p, lr_p, first_unread_p = await list_spam_chat_messages_for_user(
+                session, web_user_id=u2.id
+            )
+            self.assertEqual(uc_p, 1)
+            self.assertEqual(lr_p, spam_msg.id)
+            self.assertEqual(first_unread_p, video_msg.id)
+            self.assertTrue(any(m.id == spam_msg.id for m in msgs_p))
+            self.assertTrue(any(m.id == video_msg.id for m in msgs_p))
 
             # User 2 reads Spam Chat -> unread count resets to 0
             await mark_spam_chat_read(session, web_user_id=u2.id, latest_message_id=video_msg.id)
@@ -1686,6 +1706,86 @@ class TestAuaHub(unittest.IsolatedAsyncioTestCase):
                 await session.commit()
         ai_session_store._sessions.clear()
         ai_session_store._user_sessions.clear()
+        reset_rate_limits()
+
+    async def test_spam_chat_telegram_unread_cursor_api(self) -> None:
+        """Verify Campus Chat API returns last_read_message_id, first_unread_message_id, and partial remaining unread counts."""
+        from app.database.models import SpamChatRead
+        from app.web.server import create_web_app
+
+        reset_rate_limits()
+        uid_a = uid_b = None
+        msg_ids = []
+        async with get_db_session() as session:
+            await session.execute(delete(WebUser).where(WebUser.email.in_(["chat_a@edu.aua.am", "chat_b@edu.aua.am"])))
+            await session.commit()
+
+            otp_a, _ = await create_web_registration_otp(session, "Chat Author", "chat_a@edu.aua.am", "Pass1234!")
+            _, u_a, _ = await verify_web_otp_and_register(session, "chat_a@edu.aua.am", otp_a)
+            otp_b, _ = await create_web_registration_otp(session, "Chat Reader", "chat_b@edu.aua.am", "Pass1234!")
+            _, u_b, _ = await verify_web_otp_and_register(session, "chat_b@edu.aua.am", otp_b)
+            uid_a, uid_b = u_a.id, u_b.id
+
+            m1 = await create_spam_chat_message(session, web_user_id=uid_a, content_html="Read baseline msg")
+            await mark_spam_chat_read(session, web_user_id=uid_b, latest_message_id=m1.id)
+            m2 = await create_spam_chat_message(session, web_user_id=uid_a, content_html="Unread msg #1")
+            m3 = await create_spam_chat_message(session, web_user_id=uid_a, content_html="Unread msg #2")
+            msg_ids = [m1.id, m2.id, m3.id]
+
+        app = create_web_app()
+        tok_b = create_jwt_token(uid_b)
+        async with TestClient(TestServer(app)) as client:
+            # 1. Guest gets zero unread / null anchor cleanly
+            r_guest = await client.get("/api/spam-chat/messages")
+            self.assertEqual(r_guest.status, 200)
+            d_guest = await r_guest.json()
+            self.assertEqual(d_guest["unread_count"], 0)
+            self.assertEqual(d_guest["last_read_message_id"], 0)
+            self.assertIsNone(d_guest["first_unread_message_id"])
+
+            # 2. Signed-in reader receives last_read_message_id=m1, first_unread_message_id=m2, unread_count=2
+            r_list = await client.get("/api/spam-chat/messages", headers={"Authorization": f"Bearer {tok_b}"})
+            self.assertEqual(r_list.status, 200)
+            d_list = await r_list.json()
+            self.assertEqual(d_list["last_read_message_id"], msg_ids[0])
+            self.assertEqual(d_list["first_unread_message_id"], msg_ids[1])
+            self.assertGreaterEqual(d_list["unread_count"], 2)
+            returned_ids = [int(m["id"]) for m in d_list["messages"]]
+            for mid in msg_ids:
+                self.assertIn(mid, returned_ids)
+
+            # 3. Partial scroll read up to m2 leaves m3 unread
+            r_part = await client.post(
+                "/api/spam-chat/read",
+                json={"latest_message_id": msg_ids[1]},
+                headers={"Authorization": f"Bearer {tok_b}"},
+            )
+            self.assertEqual(r_part.status, 200)
+            d_part = await r_part.json()
+            self.assertEqual(d_part["last_read_message_id"], msg_ids[1])
+            self.assertGreaterEqual(d_part["unread_count"], 1)
+
+            # 4. Reading up to m3 clears remaining unread from m1..m3
+            r_full = await client.post(
+                "/api/spam-chat/read",
+                json={"latest_message_id": msg_ids[2]},
+                headers={"Authorization": f"Bearer {tok_b}"},
+            )
+            self.assertEqual(r_full.status, 200)
+            d_full = await r_full.json()
+            self.assertEqual(d_full["last_read_message_id"], msg_ids[2])
+            self.assertEqual(d_full["unread_count"], 0)
+
+            r_after = await client.get("/api/spam-chat/messages", headers={"Authorization": f"Bearer {tok_b}"})
+            d_after = await r_after.json()
+            self.assertEqual(d_after["unread_count"], 0)
+            self.assertIsNone(d_after["first_unread_message_id"])
+
+        async with get_db_session() as session:
+            await session.execute(delete(SpamChatMessage).where(SpamChatMessage.id.in_(msg_ids)))
+            await session.execute(delete(SpamChatRead).where(SpamChatRead.web_user_id.in_([uid_a, uid_b])))
+            await session.execute(delete(WebUser).where(WebUser.id.in_([uid_a, uid_b])))
+            await session.commit()
         reset_rate_limits()
 
 
