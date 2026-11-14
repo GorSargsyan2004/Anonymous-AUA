@@ -1103,6 +1103,48 @@ a,
   line-height: 1.45;
 }
 
+.auth-label-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.auth-inline-link,
+.auth-back-link {
+  background: none;
+  border: none;
+  padding: 0;
+  color: var(--neon-cyan, #38bdf8);
+  font-size: 12.5px;
+  font-weight: 600;
+  font-family: inherit;
+  cursor: pointer;
+  transition: color 0.18s ease, opacity 0.18s ease;
+}
+
+.auth-inline-link:hover,
+.auth-back-link:hover {
+  color: var(--text-white);
+  text-decoration: underline;
+}
+
+.auth-reset-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 14px;
+}
+
+.auth-otp-input {
+  text-align: center;
+  font-size: 22px;
+  font-weight: 800;
+  letter-spacing: 6px;
+}
+
 /* Section Headers */
 .section-header {
   display: flex;
@@ -1180,8 +1222,32 @@ a,
   }
 }
 
+.fb-filter-bar,
+.hn-filter-bar {
+  position: relative;
+  z-index: 25;
+}
+
+#fbFormPanel,
+#hnFormPanel {
+  position: relative;
+  z-index: 30;
+}
+
+.glass-panel:focus-within,
+.glass-panel:has(.course-dropdown.open) {
+  position: relative;
+  z-index: 35;
+}
+
 .course-picker-wrapper {
   position: relative;
+  z-index: 1;
+}
+
+.course-picker-wrapper:focus-within,
+.course-picker-wrapper:has(.course-dropdown.open) {
+  z-index: 45;
 }
 
 .course-dropdown {
@@ -1191,12 +1257,12 @@ a,
   right: 0;
   max-height: 260px;
   overflow-y: auto;
-  background: rgba(8, 13, 26, 0.96);
+  background: rgba(8, 13, 26, 0.97);
   backdrop-filter: blur(20px);
   border: 1px solid var(--neon-blue);
   border-radius: var(--radius-sm);
   box-shadow: 0 16px 40px rgba(0, 0, 0, 0.9), var(--glow-blue-sm);
-  z-index: 40;
+  z-index: 48;
   display: none;
 }
 

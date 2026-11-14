@@ -43,6 +43,7 @@ from app.database.models import (
     UserNotification,
     WebAnalyticsEvent,
     WebOtpCode,
+    WebPasswordResetCode,
     WebSyncCode,
     WebUser,
     WebUserAIChatSession,
@@ -219,6 +220,121 @@ async def authenticate_web_user(
     if not verify_password(password, user.password_hash):
         return None
     return user
+
+
+def _hash_otp_code(code: str, salt: Optional[str] = None) -> str:
+    """Hash a 6-digit OTP code using salted SHA-256 so DB records never expose raw codes."""
+    if salt is None:
+        salt = secrets.token_hex(16)
+    digest = hashlib.sha256(f"{salt}:{code.strip()}".encode("utf-8")).hexdigest()
+    return f"{salt}${digest}"
+
+
+def _verify_otp_hash(code: str, stored_hash: str) -> bool:
+    """Verify a plaintext OTP code against a stored salted SHA-256 digest."""
+    try:
+        salt, expected_digest = stored_hash.split("$", 1)
+    except ValueError:
+        return False
+    actual_digest = hashlib.sha256(f"{salt}:{code.strip()}".encode("utf-8")).hexdigest()
+    return hmac.compare_digest(actual_digest, expected_digest)
+
+
+async def create_web_password_reset_otp(
+    session: AsyncSession,
+    email: str,
+    ttl_minutes: int = 15,
+) -> Tuple[Optional[str], Optional[WebUser]]:
+    """Issue a new 6-digit password reset OTP for an active WebUser, or (None, None) if absent/deleted."""
+    clean_email = (email or "").strip().lower()
+    user = await get_web_user_by_email(session, clean_email)
+    if not user or getattr(user, "is_deleted", False):
+        return None, None
+
+    await session.execute(
+        delete(WebPasswordResetCode).where(
+            or_(
+                WebPasswordResetCode.web_user_id == user.id,
+                func.lower(WebPasswordResetCode.email) == clean_email,
+            )
+        )
+    )
+
+    code = f"{secrets.randbelow(900000) + 100000:06d}"
+    expires_at = datetime.now(timezone.utc) + timedelta(minutes=ttl_minutes)
+    reset_obj = WebPasswordResetCode(
+        web_user_id=user.id,
+        email=clean_email,
+        otp_hash=_hash_otp_code(code),
+        expires_at=expires_at,
+        attempts=0,
+    )
+    session.add(reset_obj)
+    await session.commit()
+    return code, user
+
+
+async def verify_web_password_reset_otp(
+    session: AsyncSession,
+    email: str,
+    otp_code: str,
+    new_password: str,
+) -> Tuple[bool, Optional[WebUser], str]:
+    """Verify the 6-digit reset OTP, update password_hash, and rotate token_version."""
+    clean_email = (email or "").strip().lower()
+    clean_code = (otp_code or "").strip()
+
+    stmt = (
+        select(WebPasswordResetCode)
+        .where(func.lower(WebPasswordResetCode.email) == clean_email)
+        .order_by(WebPasswordResetCode.created_at.desc())
+        .limit(1)
+    )
+    reset_obj = (await session.execute(stmt)).scalar_one_or_none()
+    if not reset_obj:
+        return False, None, "Invalid or expired reset code. Please request a new code."
+
+    now = datetime.now(timezone.utc)
+    expires_utc = (
+        reset_obj.expires_at
+        if reset_obj.expires_at.tzinfo
+        else reset_obj.expires_at.replace(tzinfo=timezone.utc)
+    )
+    if now > expires_utc:
+        await session.delete(reset_obj)
+        await session.commit()
+        return False, None, "Reset code has expired. Please request a new code."
+
+    if reset_obj.attempts >= 5:
+        await session.delete(reset_obj)
+        await session.commit()
+        return False, None, "Too many failed attempts. Please request a new reset code."
+
+    if not _verify_otp_hash(clean_code, reset_obj.otp_hash):
+        reset_obj.attempts += 1
+        if reset_obj.attempts >= 5:
+            await session.delete(reset_obj)
+            await session.commit()
+            return False, None, "Too many failed attempts. Please request a new reset code."
+        remaining = max(0, 5 - reset_obj.attempts)
+        await session.commit()
+        return False, None, f"Invalid reset code ({remaining} attempts remaining)."
+
+    user = await get_web_user_by_id(session, reset_obj.web_user_id)
+    if not user or getattr(user, "is_deleted", False):
+        await session.delete(reset_obj)
+        await session.commit()
+        return False, None, "Invalid or expired reset code. Please request a new code."
+
+    user.password_hash = hash_password(new_password)
+    user.token_version = int(getattr(user, "token_version", 1) or 1) + 1
+    user.updated_at = now
+    await session.execute(
+        delete(WebPasswordResetCode).where(WebPasswordResetCode.web_user_id == user.id)
+    )
+    await session.commit()
+    await session.refresh(user)
+    return True, user, "Password reset complete!"
 
 
 async def update_web_user_profile(

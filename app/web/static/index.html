@@ -24,7 +24,7 @@
   <link rel="icon" type="image/png" sizes="32x32" href="/static/favicon-32x32.png?v=20261113_1" />
   <link rel="icon" type="image/png" sizes="192x192" href="/static/favicon-192x192.png?v=20261113_1" />
   <link rel="shortcut icon" href="/favicon.ico?v=20261113_1" />
-  <link rel="stylesheet" href="/static/styles.css?v=20261114_14" />
+  <link rel="stylesheet" href="/static/styles.css?v=20261114_16" />
 </head>
 
 <body>
@@ -587,7 +587,7 @@
 
         <!-- Right Panel: Search Target & Recent Written Feedbacks -->
         <div>
-          <div class="glass-panel"
+          <div class="glass-panel fb-filter-bar"
             style="padding: 16px 20px; margin-bottom: 16px; display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap;">
             <div style="flex: 1; min-width: 240px;" class="course-picker-wrapper">
               <input type="text" id="fbFilterSearch" class="input-glass"
@@ -983,7 +983,11 @@
             required />
         </div>
         <div style="margin-bottom: 20px;">
-          <label class="field-label">🔑 Password</label>
+          <div class="auth-label-row">
+            <label class="field-label" style="margin-bottom:0;">🔑 Password</label>
+            <button type="button" id="forgotPasswordBtn" class="auth-inline-link"
+              onclick="openForgotPasswordStep()">Forgot password?</button>
+          </div>
           <input type="password" id="loginPassword" class="input-glass" placeholder="Enter your AUA Hub password"
             required />
         </div>
@@ -1037,6 +1041,65 @@
         <button type="submit" class="btn-illuminated" style="width:100%;">
           Verify &amp; Complete Registration ✨
         </button>
+      </form>
+
+      <!-- Forgot Password Step 1: Enter AUA Email -->
+      <form id="forgotForm" style="display:none;" onsubmit="submitForgotPassword(event)">
+        <div style="text-align:center; margin-bottom:16px;">
+          <div style="font-size: 32px; margin-bottom: 6px;">🔐</div>
+          <h3 style="font-size: 18px; font-weight: 800;">Reset Your Password</h3>
+          <p style="font-size: 13px; color: var(--text-secondary); margin-top: 4px;">
+            Enter your AUA email and we&apos;ll send a 6-digit password reset code.
+          </p>
+        </div>
+        <div style="margin-bottom: 18px;">
+          <label class="field-label">🎓 AUA Email Address</label>
+          <input type="email" id="forgotEmail" class="input-glass" placeholder="firstname_lastname@edu.aua.am"
+            required />
+        </div>
+        <button type="submit" id="forgotSubmitBtn" class="btn-illuminated" style="width:100%;">
+          Send 6-Digit Reset Code 📧
+        </button>
+        <div class="auth-reset-actions" style="justify-content:center;">
+          <button type="button" class="auth-back-link" onclick="switchAuthTab('login')">
+            &larr; Back to Sign In
+          </button>
+        </div>
+      </form>
+
+      <!-- Forgot Password Step 2: Enter 6-Digit OTP & New Password -->
+      <form id="resetPasswordForm" style="display:none;" onsubmit="submitResetPassword(event)">
+        <div style="text-align:center; margin-bottom:16px;">
+          <div style="font-size: 32px; margin-bottom: 6px;">🔑</div>
+          <h3 style="font-size: 18px; font-weight: 800;">Set New Password</h3>
+          <p id="resetSentSubtext" style="font-size: 13px; color: var(--text-secondary); margin-top: 4px;"></p>
+        </div>
+        <div style="margin-bottom: 14px;">
+          <label class="field-label">🔢 6-Digit Reset Code</label>
+          <input type="text" id="resetOtpInput" class="input-glass auth-otp-input" inputmode="numeric"
+            pattern="[0-9]*" autocomplete="one-time-code" placeholder="123456" maxlength="6" required />
+        </div>
+        <div style="margin-bottom: 13px;">
+          <label class="field-label">🔑 New Password</label>
+          <input type="password" id="resetNewPassword" class="input-glass" placeholder="At least 6 characters"
+            required />
+        </div>
+        <div style="margin-bottom: 18px;">
+          <label class="field-label">🔑 Confirm New Password</label>
+          <input type="password" id="resetConfirmPassword" class="input-glass" placeholder="Re-enter your new password"
+            required />
+        </div>
+        <button type="submit" id="resetSubmitBtn" class="btn-illuminated" style="width:100%;">
+          Reset Password &amp; Sign In ✨
+        </button>
+        <div class="auth-reset-actions">
+          <button type="button" class="auth-back-link" onclick="switchAuthTab('forgot')">
+            Resend / Change Email
+          </button>
+          <button type="button" class="auth-back-link" onclick="switchAuthTab('login')">
+            &larr; Back to Sign In
+          </button>
+        </div>
       </form>
     </div>
   </div>
@@ -1385,7 +1448,7 @@
     </div>
   </div>
 
-  <script src="/static/app.js?v=20261114_14"></script>
+  <script src="/static/app.js?v=20261114_15"></script>
 </body>
 
 </html>

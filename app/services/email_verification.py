@@ -208,57 +208,17 @@ def generate_otp_code() -> str:
     return f"{secrets.randbelow(900000) + 100000}"
 
 
-def _send_smtp_sync(
+def _deliver_smtp_message_sync(
     host: str,
     port: int,
     user: Optional[str],
     password: Optional[str],
     from_addr: str,
     to_addr: str,
-    code: str,
+    msg: MIMEMultipart,
     use_tls: bool = True,
 ) -> None:
-    """Synchronous SMTP email delivery."""
-    is_alumni = to_addr.lower().endswith("@alumni.aua.am")
-    role_label = "AUA Graduate / Alum" if is_alumni else "AUA Student"
-    role_subject = "Alumni" if is_alumni else "Student"
-
-    msg = MIMEMultipart("alternative")
-    msg["Subject"] = f"Your Anonymous AUA {role_subject} Verification Code: {code}"
-    msg["From"] = from_addr
-    msg["To"] = to_addr
-
-    plain_text = (
-        f"Hello {role_label},\n\n"
-        f"Your verification code for the Anonymous AUA Telegram Bot is: {code}\n\n"
-        f"This code will expire in 15 minutes.\n\n"
-        f"If you did not request this verification, you can safely ignore this email.\n"
-    )
-
-    html_content = f"""<!DOCTYPE html>
-<html>
-<head><meta charset="utf-8"></head>
-<body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; background-color: #f8fafc; padding: 24px; margin: 0;">
-  <div style="max-width: 520px; margin: 0 auto; background: #ffffff; border-radius: 12px; padding: 32px; border: 1px solid #e2e8f0; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.05);">
-    <div style="text-align: center; margin-bottom: 24px;">
-      <h2 style="color: #1e293b; margin: 0; font-size: 22px;">🎭 Anonymous AUA</h2>
-      <p style="color: #64748b; font-size: 14px; margin-top: 4px;">American University of Armenia {role_subject} Verification</p>
-    </div>
-    <p style="color: #334155; font-size: 15px; line-height: 1.5;">Hello {role_label},</p>
-    <p style="color: #334155; font-size: 15px; line-height: 1.5;">You requested {role_subject.lower()} verification for your Anonymous AUA Telegram account. Use the 6-digit code below to confirm your status:</p>
-    <div style="background-color: #f1f5f9; border-radius: 8px; padding: 18px; text-align: center; margin: 24px 0; letter-spacing: 6px; font-size: 32px; font-weight: bold; color: #0284c7;">
-      {code}
-    </div>
-    <p style="color: #64748b; font-size: 13px; line-height: 1.5;">This code will expire in <b>15 minutes</b>. If you did not request this verification, you can safely ignore this email.</p>
-    <hr style="border: none; border-top: 1px solid #e2e8f0; margin: 24px 0;" />
-    <p style="color: #94a3b8; font-size: 12px; text-align: center; margin: 0;">American University of Armenia • Anonymous Student Network</p>
-  </div>
-</body>
-</html>"""
-
-    msg.attach(MIMEText(plain_text, "plain", "utf-8"))
-    msg.attach(MIMEText(html_content, "html", "utf-8"))
-
+    """Transmit a prepared MIME message synchronously over SMTP/SSL or STARTTLS."""
     if port == 465:
         with smtplib.SMTP_SSL(host, port, timeout=15) as server:
             if user and password:
@@ -273,17 +233,131 @@ def _send_smtp_sync(
             server.sendmail(from_addr, [to_addr], msg.as_string())
 
 
-async def send_verification_email(to_email: str, code: str) -> Tuple[bool, Optional[str]]:
-    """Send verification OTP code to target AUA email asynchronously.
+_OTP_EMAIL_TEMPLATES = {
+    "verification": {
+        "subject": "Your Anonymous AUA {role_subject} Verification Code: {code}",
+        "subtitle": "American University of Armenia {role_subject} Verification",
+        "plain_intro": "Your verification code for the Anonymous AUA Telegram Bot is: {code}",
+        "html_intro": (
+            "You requested {role_lower} verification for your Anonymous AUA account. "
+            "Use the 6-digit code below to confirm your status:"
+        ),
+        "footer_note": (
+            "This code will expire in <b>15 minutes</b>. "
+            "If you did not request this verification, you can safely ignore this email."
+        ),
+        "plain_footer": "If you did not request this verification, you can safely ignore this email.",
+    },
+    "password_reset": {
+        "subject": "AUA Hub Password Reset Code: {code}",
+        "subtitle": "AUA Hub Password Reset",
+        "plain_intro": "Your password reset code for AUA Hub is: {code}",
+        "html_intro": (
+            "We received a request to reset the password for your AUA Hub account. "
+            "Enter the 6-digit code below to choose a new password:"
+        ),
+        "footer_note": (
+            "This code will expire in <b>15 minutes</b>. "
+            "If you did not request a password reset, you can safely ignore this email."
+        ),
+        "plain_footer": "If you did not request a password reset, you can safely ignore this email.",
+    },
+}
 
-    Returns:
-        (success: bool, info_or_error: Optional[str])
-    """
+
+def _send_otp_email_sync(
+    host: str,
+    port: int,
+    user: Optional[str],
+    password: Optional[str],
+    from_addr: str,
+    to_addr: str,
+    code: str,
+    use_tls: bool = True,
+    purpose: str = "verification",
+) -> None:
+    """Synchronous SMTP delivery for verification or password-reset OTP codes."""
+    is_alumni = to_addr.lower().endswith("@alumni.aua.am")
+    role_label = "AUA Graduate / Alum" if is_alumni else "AUA Student"
+    role_subject = "Alumni" if is_alumni else "Student"
+    tpl = _OTP_EMAIL_TEMPLATES.get(purpose, _OTP_EMAIL_TEMPLATES["verification"])
+
+    msg = MIMEMultipart("alternative")
+    msg["Subject"] = tpl["subject"].format(role_subject=role_subject, code=code)
+    msg["From"] = from_addr
+    msg["To"] = to_addr
+
+    plain_text = (
+        f"Hello {role_label},\n\n"
+        f"{tpl['plain_intro'].format(code=code)}\n\n"
+        f"This code will expire in 15 minutes.\n\n"
+        f"{tpl['plain_footer']}\n"
+    )
+
+    subtitle = tpl["subtitle"].format(role_subject=role_subject)
+    html_intro = tpl["html_intro"].format(role_lower=role_subject.lower())
+    html_content = f"""<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"></head>
+<body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; background-color: #f8fafc; padding: 24px; margin: 0;">
+  <div style="max-width: 520px; margin: 0 auto; background: #ffffff; border-radius: 12px; padding: 32px; border: 1px solid #e2e8f0; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.05);">
+    <div style="text-align: center; margin-bottom: 24px;">
+      <h2 style="color: #1e293b; margin: 0; font-size: 22px;">🎭 Anonymous AUA</h2>
+      <p style="color: #64748b; font-size: 14px; margin-top: 4px;">{subtitle}</p>
+    </div>
+    <p style="color: #334155; font-size: 15px; line-height: 1.5;">Hello {role_label},</p>
+    <p style="color: #334155; font-size: 15px; line-height: 1.5;">{html_intro}</p>
+    <div style="background-color: #f1f5f9; border-radius: 8px; padding: 18px; text-align: center; margin: 24px 0; letter-spacing: 6px; font-size: 32px; font-weight: bold; color: #0284c7;">
+      {code}
+    </div>
+    <p style="color: #64748b; font-size: 13px; line-height: 1.5;">{tpl['footer_note']}</p>
+    <hr style="border: none; border-top: 1px solid #e2e8f0; margin: 24px 0;" />
+    <p style="color: #94a3b8; font-size: 12px; text-align: center; margin: 0;">American University of Armenia • Anonymous Student Network</p>
+  </div>
+</body>
+</html>"""
+
+    msg.attach(MIMEText(plain_text, "plain", "utf-8"))
+    msg.attach(MIMEText(html_content, "html", "utf-8"))
+    _deliver_smtp_message_sync(host, port, user, password, from_addr, to_addr, msg, use_tls=use_tls)
+
+
+def _send_smtp_sync(
+    host: str,
+    port: int,
+    user: Optional[str],
+    password: Optional[str],
+    from_addr: str,
+    to_addr: str,
+    code: str,
+    use_tls: bool = True,
+) -> None:
+    """Synchronous SMTP email delivery (verification OTP)."""
+    _send_otp_email_sync(
+        host=host,
+        port=port,
+        user=user,
+        password=password,
+        from_addr=from_addr,
+        to_addr=to_addr,
+        code=code,
+        use_tls=use_tls,
+        purpose="verification",
+    )
+
+
+async def _send_otp_email_async(
+    to_email: str,
+    code: str,
+    purpose: str = "verification",
+) -> Tuple[bool, Optional[str]]:
+    """Send an OTP code asynchronously for verification or password reset."""
     clean_email = to_email.strip().lower()
 
     if not settings.SMTP_HOST:
         logger.warning(
-            "SMTP_HOST is not configured. (Dev/Simulated mode): Verification code for %s is: %s",
+            "SMTP_HOST is not configured. (Dev/Simulated mode): %s OTP for %s is: %s",
+            purpose,
             clean_email,
             code,
         )
@@ -291,24 +365,42 @@ async def send_verification_email(to_email: str, code: str) -> Tuple[bool, Optio
         return True, "simulated"
 
     from_addr = settings.SMTP_FROM_EMAIL or f"verification@{settings.SMTP_HOST}"
+    sender_fn = _send_smtp_sync if purpose == "verification" else _send_otp_email_sync
+    sender_kwargs = dict(
+        host=settings.SMTP_HOST,
+        port=settings.SMTP_PORT,
+        user=settings.SMTP_USER,
+        password=settings.SMTP_PASSWORD,
+        from_addr=from_addr,
+        to_addr=clean_email,
+        code=code,
+        use_tls=settings.SMTP_USE_TLS,
+    )
+    if purpose != "verification":
+        sender_kwargs["purpose"] = purpose
+
     try:
-        await asyncio.to_thread(
-            _send_smtp_sync,
-            host=settings.SMTP_HOST,
-            port=settings.SMTP_PORT,
-            user=settings.SMTP_USER,
-            password=settings.SMTP_PASSWORD,
-            from_addr=from_addr,
-            to_addr=clean_email,
-            code=code,
-            use_tls=settings.SMTP_USE_TLS,
-        )
+        await asyncio.to_thread(sender_fn, **sender_kwargs)
         record_global_email_sent()
-        logger.info("Successfully sent AUA verification OTP email to %s", clean_email)
+        logger.info("Successfully sent AUA %s OTP email to %s", purpose, clean_email)
         return True, None
     except Exception as e:
-        logger.error("Failed to send verification email to %s: %s", clean_email, e)
+        logger.error("Failed to send %s email to %s: %s", purpose, clean_email, e)
         return False, str(e)
+
+
+async def send_verification_email(to_email: str, code: str) -> Tuple[bool, Optional[str]]:
+    """Send verification OTP code to target AUA email asynchronously.
+
+    Returns:
+        (success: bool, info_or_error: Optional[str])
+    """
+    return await _send_otp_email_async(to_email=to_email, code=code, purpose="verification")
+
+
+async def send_password_reset_email(to_email: str, code: str) -> Tuple[bool, Optional[str]]:
+    """Send a 6-digit password reset OTP code to an AUA Hub user email asynchronously."""
+    return await _send_otp_email_async(to_email=to_email, code=code, purpose="password_reset")
 
 
 def _send_have_need_match_smtp_sync(
@@ -417,19 +509,7 @@ def _send_have_need_match_smtp_sync(
 
     msg.attach(MIMEText(plain_text, "plain", "utf-8"))
     msg.attach(MIMEText(html_content, "html", "utf-8"))
-
-    if port == 465:
-        with smtplib.SMTP_SSL(host, port, timeout=15) as server:
-            if user and password:
-                server.login(user, password)
-            server.sendmail(from_addr, [to_addr], msg.as_string())
-    else:
-        with smtplib.SMTP(host, port, timeout=15) as server:
-            if use_tls:
-                server.starttls()
-            if user and password:
-                server.login(user, password)
-            server.sendmail(from_addr, [to_addr], msg.as_string())
+    _deliver_smtp_message_sync(host, port, user, password, from_addr, to_addr, msg, use_tls=use_tls)
 
 
 async def send_have_need_match_email(

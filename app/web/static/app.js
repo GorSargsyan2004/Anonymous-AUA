@@ -37,6 +37,7 @@ const state = {
   token: localStorage.getItem("aua_hub_token") || null,
   activeView: "home",
   pendingRegEmail: "",
+  pendingResetEmail: "",
   // Have-Need state
   courses: [],
   semesterLabel: "Upcoming Semester",
@@ -958,12 +959,50 @@ function closeAuthModal() {
   document.getElementById("authModal").classList.remove("open");
 }
 
+const _AUTH_MODAL_FORMS = {
+  login: "loginForm",
+  register: "registerForm",
+  otp: "otpForm",
+  forgot: "forgotForm",
+  reset: "resetPasswordForm",
+};
+
 function switchAuthTab(tab) {
-  document.getElementById("authTabLogin").classList.toggle("active", tab === "login");
-  document.getElementById("authTabRegister").classList.toggle("active", tab === "register" || tab === "otp");
-  document.getElementById("loginForm").style.display = tab === "login" ? "block" : "none";
-  document.getElementById("registerForm").style.display = tab === "register" ? "block" : "none";
-  document.getElementById("otpForm").style.display = tab === "otp" ? "block" : "none";
+  const isRegisterSide = tab === "register" || tab === "otp";
+  document.getElementById("authTabLogin").classList.toggle("active", !isRegisterSide);
+  document.getElementById("authTabRegister").classList.toggle("active", isRegisterSide);
+  for (const [key, formId] of Object.entries(_AUTH_MODAL_FORMS)) {
+    const el = document.getElementById(formId);
+    if (el) el.style.display = tab === key ? "block" : "none";
+  }
+}
+
+function openForgotPasswordStep() {
+  const loginEmail = (document.getElementById("loginEmail")?.value || "").trim();
+  const forgotInput = document.getElementById("forgotEmail");
+  if (forgotInput && loginEmail) {
+    forgotInput.value = loginEmail;
+  }
+  switchAuthTab("forgot");
+  forgotInput?.focus();
+}
+
+function _applySignedInAuthSession(res) {
+  state.token = res.token;
+  localStorage.setItem("aua_hub_token", res.token);
+  state.user = res.user;
+  try { localStorage.setItem("aua_hub_user", JSON.stringify(res.user)); } catch { }
+  try {
+    if (state.ws && state.ws.readyState === WebSocket.OPEN) {
+      state.ws.send(JSON.stringify({ type: "auth", token: res.token }));
+    }
+  } catch { }
+  updateUnreadBadge(res.unread_spam_count || 0);
+  loadNotifications();
+  syncAiSessionWithServer(true);
+  renderNavbarAuth();
+  closeAuthModal();
+  refreshActiveViewData();
 }
 
 async function submitLogin(e) {
@@ -975,22 +1014,8 @@ async function submitLogin(e) {
       method: "POST",
       body: JSON.stringify({ email, password }),
     });
-    state.token = res.token;
-    localStorage.setItem("aua_hub_token", res.token);
-    state.user = res.user;
-    try { localStorage.setItem("aua_hub_user", JSON.stringify(res.user)); } catch { }
-    try {
-      if (state.ws && state.ws.readyState === WebSocket.OPEN) {
-        state.ws.send(JSON.stringify({ type: "auth", token: res.token }));
-      }
-    } catch { }
-    updateUnreadBadge(res.unread_spam_count || 0);
-    loadNotifications();
-    syncAiSessionWithServer(true);
-    renderNavbarAuth();
-    closeAuthModal();
+    _applySignedInAuthSession(res);
     showToast(`Welcome back, ${res.user.name}!`);
-    refreshActiveViewData();
   } catch (err) {
     showToast(err.message, true);
   }
@@ -1033,24 +1058,77 @@ async function submitVerifyOtp(e) {
       method: "POST",
       body: JSON.stringify({ email: state.pendingRegEmail, code }),
     });
-    state.token = res.token;
-    localStorage.setItem("aua_hub_token", res.token);
-    state.user = res.user;
-    try { localStorage.setItem("aua_hub_user", JSON.stringify(res.user)); } catch { }
-    try {
-      if (state.ws && state.ws.readyState === WebSocket.OPEN) {
-        state.ws.send(JSON.stringify({ type: "auth", token: res.token }));
-      }
-    } catch { }
-    updateUnreadBadge(res.unread_spam_count || 0);
-    loadNotifications();
-    syncAiSessionWithServer(true);
-    renderNavbarAuth();
-    closeAuthModal();
+    _applySignedInAuthSession(res);
     showToast("Account verified and signed in! Welcome to AUA Hub ✨");
-    refreshActiveViewData();
   } catch (err) {
     showToast(err.message, true);
+  }
+}
+
+async function submitForgotPassword(e) {
+  e.preventDefault();
+  const email = document.getElementById("forgotEmail").value.trim().toLowerCase();
+  const btn = document.getElementById("forgotSubmitBtn");
+  btn.disabled = true;
+  btn.textContent = "Sending Reset Code...";
+
+  try {
+    const res = await apiFetch("/api/auth/forgot-password", {
+      method: "POST",
+      body: JSON.stringify({ email }),
+    });
+    state.pendingResetEmail = res.email || email;
+    const subtext =
+      res.message ||
+      `If an active AUA Hub account exists for ${state.pendingResetEmail}, a 6-digit password reset code has been sent.`;
+    document.getElementById("resetSentSubtext").textContent = subtext;
+    document.getElementById("resetOtpInput").value = "";
+    document.getElementById("resetNewPassword").value = "";
+    document.getElementById("resetConfirmPassword").value = "";
+    switchAuthTab("reset");
+    document.getElementById("resetOtpInput")?.focus();
+    showToast("If an account exists for that email, a 6-digit reset code was sent.");
+  } catch (err) {
+    showToast(err.message, true);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "Send 6-Digit Reset Code 📧";
+  }
+}
+
+async function submitResetPassword(e) {
+  e.preventDefault();
+  const email = (state.pendingResetEmail || document.getElementById("forgotEmail").value).trim().toLowerCase();
+  const code = document.getElementById("resetOtpInput").value.trim();
+  const new_password = document.getElementById("resetNewPassword").value;
+  const confirm_password = document.getElementById("resetConfirmPassword").value;
+
+  if (new_password !== confirm_password) {
+    showToast("Passwords do not match.", true);
+    return;
+  }
+
+  const btn = document.getElementById("resetSubmitBtn");
+  btn.disabled = true;
+  btn.textContent = "Resetting Password...";
+
+  try {
+    const res = await apiFetch("/api/auth/reset-password", {
+      method: "POST",
+      body: JSON.stringify({ email, code, new_password, confirm_password }),
+    });
+    const loginEmailEl = document.getElementById("loginEmail");
+    const loginPwdEl = document.getElementById("loginPassword");
+    if (loginEmailEl) loginEmailEl.value = email;
+    if (loginPwdEl) loginPwdEl.value = "";
+    state.pendingResetEmail = "";
+    _applySignedInAuthSession(res);
+    showToast("Password reset successful! You are now signed in.");
+  } catch (err) {
+    showToast(err.message, true);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "Reset Password & Sign In ✨";
   }
 }
 

@@ -50,6 +50,7 @@ from app.database.web_crud import (
     create_spam_chat_message,
     create_telegram_group,
     create_user_notification,
+    create_web_password_reset_otp,
     create_web_registration_otp,
     delete_academic_feedback,
     delete_have_need_post,
@@ -87,6 +88,7 @@ from app.database.web_crud import (
     update_telegram_group,
     update_web_user_profile,
     verify_web_otp_and_register,
+    verify_web_password_reset_otp,
     ANON_POST_REPORT_HIDE_THRESHOLD,
     get_full_admin_stata_payload,
 )
@@ -103,8 +105,10 @@ from app.services.booking_scraper import (
 )
 from app.services.email_verification import (
     BLOCKED_LOCAL_TERMS,
+    check_global_email_rate_limit,
     is_valid_aua_email,
     send_have_need_match_email,
+    send_password_reset_email,
     send_verification_email,
 )
 from app.services.jenzareviews_sync import (
@@ -518,11 +522,12 @@ def _get_jwt_secret() -> bytes:
     return secret.encode("utf-8")
 
 
-def create_jwt_token(web_user_id: int, expires_days: int = 30) -> str:
-    """Create a signed JWT token for a WebUser."""
+def create_jwt_token(web_user_id: int, expires_days: int = 30, token_version: int = 1) -> str:
+    """Create a signed JWT token bound to the user's current token_version."""
     header = {"alg": "HS256", "typ": "JWT"}
     payload = {
         "sub": int(web_user_id),
+        "ver": int(token_version or 1),
         "iat": int(time.time()),
         "exp": int(time.time()) + expires_days * 86400,
     }
@@ -534,8 +539,8 @@ def create_jwt_token(web_user_id: int, expires_days: int = 30) -> str:
     return f"{h_b64}.{p_b64}.{s_b64}"
 
 
-def decode_jwt_token(token: Optional[str]) -> Optional[int]:
-    """Verify a JWT token and return web_user_id if valid."""
+def decode_jwt_payload(token: Optional[str]) -> Optional[Dict[str, Any]]:
+    """Verify a JWT signature + expiry and return the decoded payload dict if valid."""
     if not token:
         return None
     try:
@@ -552,9 +557,33 @@ def decode_jwt_token(token: Optional[str]) -> Optional[int]:
         payload = json.loads(base64.urlsafe_b64decode(p_b64 + pad).decode("utf-8"))
         if int(payload.get("exp", 0)) < int(time.time()):
             return None
-        return int(payload["sub"])
+        int(payload["sub"])
+        return payload
     except Exception:
         return None
+
+
+def decode_jwt_token(token: Optional[str]) -> Optional[int]:
+    """Verify a JWT token and return web_user_id if valid."""
+    payload = decode_jwt_payload(token)
+    return int(payload["sub"]) if payload else None
+
+
+async def resolve_web_user_from_token(token: Optional[str]) -> Optional[WebUser]:
+    """Resolve an active WebUser from a raw JWT string, enforcing token_version match."""
+    payload = decode_jwt_payload(token)
+    if not payload:
+        return None
+    user_id = int(payload["sub"])
+    token_ver = int(payload.get("ver", 1) or 1)
+
+    async with get_db_session() as session:
+        user = await get_web_user_by_id(session, user_id)
+        if not user or getattr(user, "is_deleted", False):
+            return None
+        if int(getattr(user, "token_version", 1) or 1) != token_ver:
+            return None
+        return user
 
 
 async def get_current_web_user(request: web.Request) -> Optional[WebUser]:
@@ -566,15 +595,7 @@ async def get_current_web_user(request: web.Request) -> Optional[WebUser]:
     if not token:
         token = request.cookies.get("aua_hub_token")
 
-    user_id = decode_jwt_token(token)
-    if not user_id:
-        return None
-
-    async with get_db_session() as session:
-        user = await get_web_user_by_id(session, user_id)
-        if not user or getattr(user, "is_deleted", False):
-            return None
-        return user
+    return await resolve_web_user_from_token(token)
 
 
 # ==============================================================================
@@ -1041,6 +1062,32 @@ async def api_health(request: web.Request) -> web.Response:
 # 1. Authentication & Registration
 # ------------------------------------------------------------------------------
 
+def _validate_aua_auth_email(email: str) -> Optional[str]:
+    """Validate official @edu.aua.am / @alumni.aua.am format and block dummy prefixes."""
+    if not is_valid_aua_email(email):
+        return (
+            "Only official @edu.aua.am (students) and @alumni.aua.am (graduates) "
+            "email addresses are allowed."
+        )
+    local_part = email.split("@", 1)[0]
+    if local_part in BLOCKED_LOCAL_TERMS:
+        return "Generic or dummy email addresses are not permitted. Please use your personal AUA email."
+    return None
+
+
+def _set_auth_cookie(response: web.Response, request: web.Request, token: str) -> None:
+    """Attach the signed session JWT as an HttpOnly SameSite=Lax cookie."""
+    response.set_cookie(
+        "aua_hub_token",
+        token,
+        max_age=30 * 86400,
+        httponly=True,
+        secure=_is_https_request(request),
+        samesite="Lax",
+        path="/",
+    )
+
+
 @routes.post("/api/auth/register")
 async def api_auth_register(request: web.Request) -> web.Response:
     client_ip = get_client_ip(request)
@@ -1064,20 +1111,9 @@ async def api_auth_register(request: web.Request) -> web.Response:
     if len(name) < 2 or len(name) > 80:
         return web.json_response({"error": "Please enter your full name (2–80 characters)."}, status=400)
 
-    if not is_valid_aua_email(email):
-        return web.json_response(
-            {
-                "error": "Only official @edu.aua.am (students) and @alumni.aua.am (graduates) email addresses are allowed."
-            },
-            status=400,
-        )
-
-    local_part = email.split("@", 1)[0]
-    if local_part in BLOCKED_LOCAL_TERMS:
-        return web.json_response(
-            {"error": "Generic or dummy email addresses are not permitted. Please use your personal AUA email."},
-            status=400,
-        )
+    email_err = _validate_aua_auth_email(email)
+    if email_err:
+        return web.json_response({"error": email_err}, status=400)
 
     allowed_email, retry_email = check_rate_limit("auth_register_email", email, max_calls=4, window_sec=600)
     if not allowed_email:
@@ -1163,7 +1199,7 @@ async def api_auth_verify_otp(request: web.Request) -> web.Response:
         unread_count = await get_spam_chat_unread_count(session, web_user.id)
         user_dict = serialize_web_user(web_user)
 
-    token = create_jwt_token(web_user.id)
+    token = create_jwt_token(web_user.id, token_version=getattr(web_user, "token_version", 1))
     response = web.json_response(
         {
             "ok": True,
@@ -1173,15 +1209,7 @@ async def api_auth_verify_otp(request: web.Request) -> web.Response:
             "message": msg,
         }
     )
-    response.set_cookie(
-        "aua_hub_token",
-        token,
-        max_age=30 * 86400,
-        httponly=True,
-        secure=_is_https_request(request),
-        samesite="Lax",
-        path="/",
-    )
+    _set_auth_cookie(response, request, token)
     return response
 
 
@@ -1221,7 +1249,7 @@ async def api_auth_login(request: web.Request) -> web.Response:
         unread_count = await get_spam_chat_unread_count(session, web_user.id)
         user_dict = serialize_web_user(web_user)
 
-    token = create_jwt_token(web_user.id)
+    token = create_jwt_token(web_user.id, token_version=getattr(web_user, "token_version", 1))
     response = web.json_response(
         {
             "ok": True,
@@ -1230,15 +1258,123 @@ async def api_auth_login(request: web.Request) -> web.Response:
             "unread_spam_count": unread_count,
         }
     )
-    response.set_cookie(
-        "aua_hub_token",
-        token,
-        max_age=30 * 86400,
-        httponly=True,
-        secure=_is_https_request(request),
-        samesite="Lax",
-        path="/",
+    _set_auth_cookie(response, request, token)
+    return response
+
+
+@routes.post("/api/auth/forgot-password")
+async def api_auth_forgot_password(request: web.Request) -> web.Response:
+    client_ip = get_client_ip(request)
+    allowed_ip, retry_ip = check_rate_limit("auth_forgot_ip", client_ip, max_calls=5, window_sec=600)
+    if not allowed_ip:
+        return web.json_response(
+            {"error": f"Too many password reset requests from your IP. Please wait {retry_ip}s."},
+            status=429,
+        )
+
+    try:
+        data = await request.json()
+    except Exception:
+        return web.json_response({"error": "Invalid JSON body."}, status=400)
+
+    email = (data.get("email") or "").strip().lower()
+    email_err = _validate_aua_auth_email(email)
+    if email_err:
+        return web.json_response({"error": email_err}, status=400)
+
+    allowed_email, retry_email = check_rate_limit("auth_forgot_email", email, max_calls=4, window_sec=600)
+    if not allowed_email:
+        return web.json_response(
+            {"error": f"Too many password reset requests for this email. Please wait {retry_email}s."},
+            status=429,
+        )
+
+    global_ok, global_msg = check_global_email_rate_limit()
+    if not global_ok:
+        return web.json_response({"error": global_msg or "Email traffic is busy. Please wait a few minutes."}, status=429)
+
+    async with get_db_session() as session:
+        otp_code, target_user = await create_web_password_reset_otp(session=session, email=email)
+
+    if otp_code and target_user:
+        sent, err = await send_password_reset_email(to_email=email, code=otp_code)
+        if not sent:
+            logger.warning("Failed to dispatch password reset OTP for %s: %s", email, err)
+
+    # Always return a uniform 200 message to prevent account enumeration
+    return web.json_response(
+        {
+            "ok": True,
+            "email": email,
+            "message": "If an active AUA Hub account exists for this email, a 6-digit password reset code has been sent.",
+        }
     )
+
+
+@routes.post("/api/auth/reset-password")
+async def api_auth_reset_password(request: web.Request) -> web.Response:
+    client_ip = get_client_ip(request)
+    allowed_ip, retry_ip = check_rate_limit("auth_reset_ip", client_ip, max_calls=12, window_sec=300)
+    if not allowed_ip:
+        return web.json_response(
+            {"error": f"Too many password reset attempts from your IP. Please wait {retry_ip}s."},
+            status=429,
+        )
+
+    try:
+        data = await request.json()
+    except Exception:
+        return web.json_response({"error": "Invalid JSON body."}, status=400)
+
+    email = (data.get("email") or "").strip().lower()
+    code = (data.get("code") or "").strip()
+    new_password = data.get("new_password") or ""
+    confirm_password = data.get("confirm_password") or ""
+
+    if not email or not code:
+        return web.json_response({"error": "Email and 6-digit reset code are required."}, status=400)
+
+    email_err = _validate_aua_auth_email(email)
+    if email_err:
+        return web.json_response({"error": email_err}, status=400)
+
+    if len(new_password) < 6 or len(new_password) > 128:
+        return web.json_response({"error": "New password must be between 6 and 128 characters long."}, status=400)
+
+    if new_password != confirm_password:
+        return web.json_response({"error": "Passwords do not match."}, status=400)
+
+    allowed_email, retry_email = check_rate_limit("auth_reset_email", email, max_calls=8, window_sec=300)
+    if not allowed_email:
+        return web.json_response(
+            {"error": f"Too many password reset attempts for this email. Please wait {retry_email}s."},
+            status=429,
+        )
+
+    async with get_db_session() as session:
+        ok, web_user, msg = await verify_web_password_reset_otp(
+            session=session,
+            email=email,
+            otp_code=code,
+            new_password=new_password,
+        )
+        if not ok or not web_user:
+            return web.json_response({"error": msg}, status=400)
+
+        unread_count = await get_spam_chat_unread_count(session, web_user.id)
+        user_dict = serialize_web_user(web_user)
+
+    token = create_jwt_token(web_user.id, token_version=getattr(web_user, "token_version", 1))
+    response = web.json_response(
+        {
+            "ok": True,
+            "token": token,
+            "user": user_dict,
+            "unread_spam_count": unread_count,
+            "message": "Password reset complete! You are now signed in.",
+        }
+    )
+    _set_auth_cookie(response, request, token)
     return response
 
 
@@ -2728,8 +2864,9 @@ async def ws_spam_chat(request: web.Request) -> web.WebSocketResponse:
         if auth_header.lower().startswith("bearer "):
             token = auth_header[7:].strip()
 
+    ws_user = await resolve_web_user_from_token(token)
     _ACTIVE_WS_CLIENTS.add(ws)
-    _ACTIVE_WS_USERS[ws] = decode_jwt_token(token)
+    _ACTIVE_WS_USERS[ws] = ws_user.id if ws_user else None
 
     try:
         async for msg in ws:
@@ -2740,7 +2877,8 @@ async def ws_spam_chat(request: web.Request) -> web.WebSocketResponse:
                     try:
                         payload = json.loads(msg.data)
                         if isinstance(payload, dict) and payload.get("type") == "auth":
-                            _ACTIVE_WS_USERS[ws] = decode_jwt_token(payload.get("token"))
+                            auth_user = await resolve_web_user_from_token(payload.get("token"))
+                            _ACTIVE_WS_USERS[ws] = auth_user.id if auth_user else None
                     except Exception:
                         pass
             elif msg.type == WSMsgType.ERROR:

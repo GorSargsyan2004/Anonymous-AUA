@@ -26,6 +26,7 @@ from app.database.models import (
     UserNotification,
     WebAnalyticsEvent,
     WebOtpCode,
+    WebPasswordResetCode,
     WebSyncCode,
     WebUser,
     WebUserAIChatSession,
@@ -41,6 +42,7 @@ from app.database.web_crud import (
     create_spam_chat_message,
     create_telegram_group,
     create_user_notification,
+    create_web_password_reset_otp,
     create_web_registration_otp,
     delete_academic_feedback,
     delete_have_need_post,
@@ -74,7 +76,9 @@ from app.database.web_crud import (
     update_telegram_group,
     update_web_user_profile,
     verify_web_otp_and_register,
+    verify_web_password_reset_otp,
 )
+from app.services.email_verification import reset_global_email_rate_limit
 from app.services.booking_scraper import (
     merge_and_filter_free_slots,
     parse_booking_day_html,
@@ -115,6 +119,11 @@ class TestAuaHub(unittest.IsolatedAsyncioTestCase):
         async with get_db_session() as session:
             await session.execute(
                 delete(WebOtpCode).where(WebOtpCode.email.in_([self.test_email_1, self.test_email_2]))
+            )
+            await session.execute(
+                delete(WebPasswordResetCode).where(
+                    WebPasswordResetCode.email.in_([self.test_email_1, self.test_email_2])
+                )
             )
             await session.execute(
                 delete(AnonymousPublicPost).where(
@@ -1794,20 +1803,26 @@ class TestAuaHub(unittest.IsolatedAsyncioTestCase):
 
         app = create_web_app()
         async with TestClient(TestServer(app)) as client:
-            # 1. Versioned static bundle gets immutable cache header
-            r_css = await client.get("/static/styles.css?v=20261114_14")
+            # 1. Versioned static bundle gets immutable cache header & dropdown stacking + auth reset styles
+            r_css = await client.get("/static/styles.css?v=20261114_16")
             self.assertEqual(r_css.status, 200)
             self.assertIn("max-age=604800", r_css.headers.get("Cache-Control", ""))
             css_body = await r_css.text()
             self.assertIn("@media (hover: none), (pointer: coarse), (max-width: 1024px)", css_body)
+            self.assertIn(".fb-filter-bar", css_body)
+            self.assertIn(".glass-panel:has(.course-dropdown.open)", css_body)
+            self.assertIn(".auth-inline-link", css_body)
 
-            # 2. Index HTML remains uncached & serves lightweight PNG partner logos + async fonts
+            # 2. Index HTML remains uncached & serves lightweight PNG partner logos + async fonts + forgot password forms
             r_home = await client.get("/")
             self.assertEqual(r_home.status, 200)
             self.assertIn("no-cache", r_home.headers.get("Cache-Control", ""))
             home_html = await r_home.text()
             self.assertIn("/static/partners/jenzareviews-logo.png", home_html)
             self.assertIn('id="googleFontsCss"', home_html)
+            self.assertIn('class="glass-panel fb-filter-bar"', home_html)
+            self.assertIn('id="forgotForm"', home_html)
+            self.assertIn('id="resetPasswordForm"', home_html)
             self.assertNotIn("ai-suggestions-grid", home_html)
 
             # 3. Optimized partner PNG assets serve cleanly
@@ -2020,6 +2035,200 @@ class TestAuaHub(unittest.IsolatedAsyncioTestCase):
                 await session.execute(delete(AIUsageLog).where(AIUsageLog.session_id.like(f"{test_sid_prefix}%")))
                 await session.commit()
             reset_rate_limits()
+
+    async def test_web_forgot_and_reset_password_flow(self) -> None:
+        """Verify end-to-end forgot/reset password OTP hashing, anti-enumeration, attempt lockouts, and JWT rotation."""
+        from app.services.email_verification import send_password_reset_email
+        from app.web.server import create_web_app
+
+        reset_rate_limits()
+        reset_global_email_rate_limit()
+
+        async with get_db_session() as session:
+            reg_code, _ = await create_web_registration_otp(
+                session, name="Reset Flow User", email=self.test_email_1, password="InitialPassword123!"
+            )
+            ok_reg, user, _ = await verify_web_otp_and_register(
+                session, email=self.test_email_1, otp_code=reg_code
+            )
+            self.assertTrue(ok_reg)
+            self.assertIsNotNone(user)
+            self.assertEqual(getattr(user, "token_version", 1), 1)
+            old_jwt = create_jwt_token(user.id, token_version=user.token_version)
+
+        app = create_web_app()
+        try:
+            async with TestClient(TestServer(app)) as client:
+                # 1. Invalid domain / blocked local prefix rejected with 400
+                r_bad_dom = await client.post("/api/auth/forgot-password", json={"email": "user@gmail.com"})
+                self.assertEqual(r_bad_dom.status, 400)
+                r_dummy = await client.post("/api/auth/forgot-password", json={"email": "test@edu.aua.am"})
+                self.assertEqual(r_dummy.status, 400)
+
+                # 2. Anti-enumeration: non-existent AUA email returns same 200 payload and sends no email
+                captured_codes: list[tuple[str, str]] = []
+
+                async def _fake_send_reset_email(to_email: str, code: str):
+                    captured_codes.append((to_email, code))
+                    return True, None
+
+                with patch("app.web.server.send_password_reset_email", side_effect=_fake_send_reset_email):
+                    r_ghost = await client.post(
+                        "/api/auth/forgot-password",
+                        json={"email": "nonexistent_aua_person@edu.aua.am"},
+                    )
+                    self.assertEqual(r_ghost.status, 200)
+                    ghost_body = await r_ghost.json()
+                    self.assertTrue(ghost_body["ok"])
+                    self.assertEqual(len(captured_codes), 0)
+
+                    # 3. Existing active account issues hashed OTP & dispatches email
+                    r_real = await client.post(
+                        "/api/auth/forgot-password",
+                        json={"email": self.test_email_1},
+                    )
+                    self.assertEqual(r_real.status, 200)
+                    real_body = await r_real.json()
+                    self.assertEqual(real_body["message"], ghost_body["message"])
+                    self.assertEqual(len(captured_codes), 1)
+                    sent_to, otp_code = captured_codes[0]
+                    self.assertEqual(sent_to, self.test_email_1)
+                    self.assertEqual(len(otp_code), 6)
+
+                # 4. DB record stores salted hash instead of raw OTP
+                async with get_db_session() as session:
+                    rec = (
+                        await session.execute(
+                            select(WebPasswordResetCode).where(WebPasswordResetCode.email == self.test_email_1)
+                        )
+                    ).scalar_one()
+                    self.assertNotEqual(rec.otp_hash, otp_code)
+                    self.assertIn("$", rec.otp_hash)
+
+                # 5. Mismatched passwords rejected BEFORE consuming OTP attempts
+                r_mismatch = await client.post(
+                    "/api/auth/reset-password",
+                    json={
+                        "email": self.test_email_1,
+                        "code": "000000",
+                        "new_password": "NewSecurePassword456!",
+                        "confirm_password": "DifferentPassword456!",
+                    },
+                )
+                self.assertEqual(r_mismatch.status, 400)
+
+                # 6. Five wrong OTP guesses delete the reset code on the 5th attempt
+                wrong_code = "000000" if otp_code != "000000" else "999999"
+                for attempt_idx in range(5):
+                    r_bad = await client.post(
+                        "/api/auth/reset-password",
+                        json={
+                            "email": self.test_email_1,
+                            "code": wrong_code,
+                            "new_password": "NewSecurePassword456!",
+                            "confirm_password": "NewSecurePassword456!",
+                        },
+                    )
+                    self.assertEqual(r_bad.status, 400)
+                    err_txt = (await r_bad.json())["error"]
+                    if attempt_idx < 4:
+                        self.assertIn("attempts remaining", err_txt)
+                    else:
+                        self.assertIn("Too many failed attempts", err_txt)
+
+                # Even with the originally correct OTP now, it must fail because record was deleted
+                r_after_lock = await client.post(
+                    "/api/auth/reset-password",
+                    json={
+                        "email": self.test_email_1,
+                        "code": otp_code,
+                        "new_password": "NewSecurePassword456!",
+                        "confirm_password": "NewSecurePassword456!",
+                    },
+                )
+                self.assertEqual(r_after_lock.status, 400)
+
+                # 7. Simulated email helper works cleanly without SMTP_HOST
+                with patch("app.services.email_verification.settings.SMTP_HOST", ""):
+                    sim_ok, sim_info = await send_password_reset_email(self.test_email_1, "654321")
+                    self.assertTrue(sim_ok)
+                    self.assertEqual(sim_info, "simulated")
+
+                # 8. Issue a fresh reset code via HTTP, then reset password and verify JWT + credential rotation
+                reset_rate_limits()
+                captured_codes.clear()
+                with patch("app.web.server.send_password_reset_email", side_effect=_fake_send_reset_email):
+                    r_reissue = await client.post(
+                        "/api/auth/forgot-password",
+                        json={"email": self.test_email_1},
+                    )
+                    self.assertEqual(r_reissue.status, 200)
+                new_otp = captured_codes[0][1]
+
+                # Confirm pre-reset JWT still works before reset
+                r_me_before = await client.get("/api/auth/me", headers={"Authorization": f"Bearer {old_jwt}"})
+                self.assertEqual(r_me_before.status, 200)
+                self.assertTrue((await r_me_before.json())["authenticated"])
+
+                r_reset_ok = await client.post(
+                    "/api/auth/reset-password",
+                    json={
+                        "email": self.test_email_1,
+                        "code": new_otp,
+                        "new_password": "NewSecurePassword456!",
+                        "confirm_password": "NewSecurePassword456!",
+                    },
+                )
+                self.assertEqual(r_reset_ok.status, 200)
+                reset_payload = await r_reset_ok.json()
+                self.assertTrue(reset_payload["ok"])
+                new_jwt = reset_payload["token"]
+
+                # Pre-reset JWT must now be rejected because token_version incremented
+                r_me_old = await client.get("/api/auth/me", headers={"Authorization": f"Bearer {old_jwt}"})
+                self.assertEqual(r_me_old.status, 200)
+                self.assertFalse((await r_me_old.json())["authenticated"])
+
+                # New JWT returned from reset-password must authenticate cleanly
+                r_me_new = await client.get("/api/auth/me", headers={"Authorization": f"Bearer {new_jwt}"})
+                self.assertEqual(r_me_new.status, 200)
+                self.assertTrue((await r_me_new.json())["authenticated"])
+
+                # Old password fails login; new password succeeds
+                r_old_pwd = await client.post(
+                    "/api/auth/login",
+                    json={"email": self.test_email_1, "password": "InitialPassword123!"},
+                )
+                self.assertEqual(r_old_pwd.status, 401)
+                r_new_pwd = await client.post(
+                    "/api/auth/login",
+                    json={"email": self.test_email_1, "password": "NewSecurePassword456!"},
+                )
+                self.assertEqual(r_new_pwd.status, 200)
+
+                # 9. Expired reset OTP check at CRUD layer
+                async with get_db_session() as session:
+                    exp_code, _ = await create_web_password_reset_otp(session, email=self.test_email_1)
+                    self.assertIsNotNone(exp_code)
+                    rec_exp = (
+                        await session.execute(
+                            select(WebPasswordResetCode).where(WebPasswordResetCode.email == self.test_email_1)
+                        )
+                    ).scalar_one()
+                    rec_exp.expires_at = datetime.now(timezone.utc) - timedelta(minutes=2)
+                    await session.commit()
+
+                    ok_exp, _, msg_exp = await verify_web_password_reset_otp(
+                        session,
+                        email=self.test_email_1,
+                        otp_code=exp_code,
+                        new_password="AnotherPassword789!",
+                    )
+                    self.assertFalse(ok_exp)
+                    self.assertIn("expired", msg_exp.lower())
+        finally:
+            reset_rate_limits()
+            reset_global_email_rate_limit()
 
 
 if __name__ == "__main__":

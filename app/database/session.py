@@ -492,6 +492,11 @@ async def init_db() -> None:
                 "CREATE INDEX IF NOT EXISTS ix_anonymous_public_posts_is_hidden ON anonymous_public_posts (is_hidden);"
             )
         )
+        await conn.execute(
+            text(
+                "ALTER TABLE web_users ADD COLUMN IF NOT EXISTS token_version INTEGER NOT NULL DEFAULT 1;"
+            )
+        )
 
 
 

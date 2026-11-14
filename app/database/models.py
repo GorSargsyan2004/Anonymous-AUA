@@ -547,6 +547,9 @@ class WebUser(Base):
     is_deleted: Mapped[bool] = mapped_column(
         Boolean, default=False, nullable=False, server_default=text("false"), index=True
     )
+    token_version: Mapped[int] = mapped_column(
+        Integer, default=1, nullable=False, server_default=text("1")
+    )
     deleted_at: Mapped[Optional[datetime]] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
@@ -574,6 +577,25 @@ class WebOtpCode(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
+
+
+class WebPasswordResetCode(Base):
+    """Stores pending password reset OTP hashes for AUA Hub accounts."""
+    __tablename__ = "web_password_reset_codes"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    web_user_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("web_users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    email: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    otp_hash: Mapped[str] = mapped_column(String(128), nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    attempts: Mapped[int] = mapped_column(Integer, default=0, nullable=False, server_default=text("0"))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    web_user = relationship("WebUser", foreign_keys=[web_user_id])
 
 
 class WebSyncCode(Base):
