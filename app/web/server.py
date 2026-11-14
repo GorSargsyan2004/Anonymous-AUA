@@ -438,6 +438,14 @@ async def security_middleware(request: web.Request, handler: Callable) -> web.St
     )
     if request.path.startswith("/uploads/"):
         response.headers.setdefault("Content-Disposition", "inline")
+    elif request.path.startswith("/static/") and "Cache-Control" not in response.headers:
+        if "v" in request.query:
+            response.headers["Cache-Control"] = "public, max-age=604800, immutable"
+        elif request.path.startswith("/static/partners/") or request.path.endswith(
+            (".png", ".ico", ".svg", ".webp", ".woff2")
+        ):
+            response.headers["Cache-Control"] = "public, max-age=86400"
+
     if request.path in (
         "/",
         "/index.html",
@@ -451,6 +459,25 @@ async def security_middleware(request: web.Request, handler: Callable) -> web.St
         response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
         response.headers["Pragma"] = "no-cache"
         response.headers["Expires"] = "0"
+
+    if (
+        isinstance(response, web.Response)
+        and not isinstance(response, web.FileResponse)
+        and not response.prepared
+        and "Content-Encoding" not in response.headers
+        and (response.content_length or 0) >= 1024
+        and response.content_type
+        in (
+            "application/json",
+            "text/html",
+            "text/css",
+            "application/javascript",
+            "text/javascript",
+            "image/svg+xml",
+        )
+        and "gzip" in (request.headers.get("Accept-Encoding") or "").lower()
+    ):
+        response.enable_compression(web.ContentCoding.gzip)
 
     return response
 

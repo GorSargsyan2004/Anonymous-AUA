@@ -1788,6 +1788,40 @@ class TestAuaHub(unittest.IsolatedAsyncioTestCase):
             await session.commit()
         reset_rate_limits()
 
+    async def test_main_page_performance_compression_and_cache_headers(self) -> None:
+        """Verify main-page asset optimization, immutable versioned caching, and gzip JSON compression."""
+        from app.web.server import create_web_app
+
+        app = create_web_app()
+        async with TestClient(TestServer(app)) as client:
+            # 1. Versioned static bundle gets immutable cache header
+            r_css = await client.get("/static/styles.css?v=20261114_13")
+            self.assertEqual(r_css.status, 200)
+            self.assertIn("max-age=604800", r_css.headers.get("Cache-Control", ""))
+            css_body = await r_css.text()
+            self.assertIn("@media (hover: none), (pointer: coarse), (max-width: 1024px)", css_body)
+
+            # 2. Index HTML remains uncached & serves lightweight PNG partner logos + async fonts
+            r_home = await client.get("/")
+            self.assertEqual(r_home.status, 200)
+            self.assertIn("no-cache", r_home.headers.get("Cache-Control", ""))
+            home_html = await r_home.text()
+            self.assertIn("/static/partners/jenzareviews-logo.png", home_html)
+            self.assertIn('id="googleFontsCss"', home_html)
+
+            # 3. Optimized partner PNG assets serve cleanly
+            for asset in ("/static/partners/jenzareviews-logo.png", "/static/partners/findaua-logo.png"):
+                r_img = await client.get(asset)
+                self.assertEqual(r_img.status, 200)
+                self.assertLess(len(await r_img.read()), 30_000)
+
+            # 4. Large JSON payloads compress with gzip when supported
+            r_courses = await client.get("/api/courses?limit=700", headers={"Accept-Encoding": "gzip"})
+            self.assertEqual(r_courses.status, 200)
+            raw_json = await r_courses.read()
+            if len(raw_json) >= 1024:
+                self.assertEqual(r_courses.headers.get("Content-Encoding"), "gzip")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -1,9 +1,11 @@
 /* AUA Hub Service Worker (PWA Support & Offline Shell Cache) */
-const CACHE_NAME = "aua-hub-shell-v32";
+const CACHE_NAME = "aua-hub-shell-v33";
 const SHELL_ASSETS = [
   "/",
-  "/static/styles.css?v=20261114_12",
-  "/static/app.js?v=20261114_12",
+  "/static/styles.css?v=20261114_13",
+  "/static/app.js?v=20261114_13",
+  "/static/partners/findaua-logo.png",
+  "/static/partners/jenzareviews-logo.png",
   "/static/favicon-32x32.png?v=20261113_1",
   "/static/favicon-192x192.png?v=20261113_1",
   "/static/apple-touch-icon.png?v=20261113_1",
@@ -46,7 +48,28 @@ self.addEventListener("fetch", (event) => {
     return;
   }
 
-  // Network-first with cache fallback for shell & static assets
+  // Cache-first for immutable ?v= versioned static bundles on mobile/repeat loads
+  if (
+    url.origin === self.location.origin &&
+    url.pathname.startsWith("/static/") &&
+    url.searchParams.has("v")
+  ) {
+    event.respondWith(
+      caches.match(req).then((cached) => {
+        if (cached) return cached;
+        return fetch(req).then((networkResp) => {
+          if (networkResp && networkResp.status === 200) {
+            const clone = networkResp.clone();
+            caches.open(CACHE_NAME).then((cache) => cache.put(req, clone)).catch(() => { });
+          }
+          return networkResp;
+        });
+      })
+    );
+    return;
+  }
+
+  // Network-first with cache fallback for HTML shell & unversioned static assets
   event.respondWith(
     fetch(req)
       .then((networkResp) => {

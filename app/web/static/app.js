@@ -98,6 +98,8 @@ const state = {
   chatAutoAnchorActive: false,
   chatReadSyncTimer: null,
   chatInitialAnchorTimer: null,
+  homeHeroAnimatedOnce: false,
+  homeHeroSettleTimer: null,
   activeEmojiCategory: "smileys",
   emojiSearchQuery: "",
   ws: null,
@@ -661,12 +663,28 @@ const VALID_VIEWS = [
   "profile",
 ];
 
+function scheduleHomeHeroSettle() {
+  const wrapper = document.getElementById("homeHeroWrapper");
+  if (!wrapper) return;
+  state.homeHeroAnimatedOnce = true;
+  if (state.homeHeroSettleTimer) {
+    clearTimeout(state.homeHeroSettleTimer);
+  }
+  state.homeHeroSettleTimer = setTimeout(() => {
+    wrapper.classList.remove("hero-animate-active");
+    state.homeHeroSettleTimer = null;
+  }, 1550);
+}
+
 function replayHomeHeroAnimation() {
   const wrapper = document.getElementById("homeHeroWrapper");
   if (!wrapper) return;
-  wrapper.classList.remove("hero-animate-active");
-  void wrapper.offsetWidth;
+  if (state.homeHeroAnimatedOnce) {
+    wrapper.classList.remove("hero-animate-active");
+    return;
+  }
   wrapper.classList.add("hero-animate-active");
+  scheduleHomeHeroSettle();
 }
 
 function switchView(viewName, pushHistory = true) {
@@ -847,6 +865,7 @@ function updateUnreadBadge(count) {
    -------------------------------------------------------------------------- */
 
 async function checkCurrentSession() {
+  const prevUid = state.user?.id || null;
   try {
     const data = await apiFetch("/api/auth/me");
     if (data.authenticated && data.user) {
@@ -865,7 +884,13 @@ async function checkCurrentSession() {
     }
   }
   renderNavbarAuth();
-  syncAiSessionWithServer(true);
+  if (state.activeView === "ai-assistant") {
+    syncAiSessionWithServer(true);
+  }
+  if ((state.user?.id || null) !== prevUid) {
+    if (state.activeView === "profile") renderProfileView();
+    else if (state.activeView === "have-need") loadHaveNeedPosts();
+  }
   const stream = document.getElementById("spamMessagesStream");
   if (stream && (state.activeView === "spam-chat" || state.activeView === "chat")) {
     loadSpamChatMessages();
@@ -1455,19 +1480,40 @@ async function confirmDeleteAccount() {
    2. <Have-Need> Course Section Exchange
    -------------------------------------------------------------------------- */
 
+let coursesCatalogPromise = null;
+
 async function loadCoursesCatalog(refresh = false) {
-  try {
-    const url = refresh ? "/api/courses?refresh=1&limit=700" : "/api/courses?limit=700";
-    const data = await apiFetch(url);
-    state.courses = data.courses || [];
-    state.semesterLabel = data.semester || "Upcoming Semester";
-    const pill = document.getElementById("activeSemesterPill");
-    if (pill) {
-      pill.textContent = `${state.semesterLabel} (${state.courses.length} sections)`;
-    }
-  } catch (err) {
-    showToast("Could not load courses catalog: " + err.message, true);
+  if (!refresh && coursesCatalogPromise) {
+    return coursesCatalogPromise;
   }
+  const run = (async () => {
+    try {
+      const url = refresh ? "/api/courses?refresh=1&limit=700" : "/api/courses?limit=700";
+      const data = await apiFetch(url);
+      state.courses = data.courses || [];
+      state.semesterLabel = data.semester || "Upcoming Semester";
+      const pill = document.getElementById("activeSemesterPill");
+      if (pill) {
+        pill.textContent = `${state.semesterLabel} (${state.courses.length} sections)`;
+      }
+      return state.courses;
+    } catch (err) {
+      if (refresh || state.activeView === "have-need") {
+        showToast("Could not load courses catalog: " + err.message, true);
+      }
+      coursesCatalogPromise = null;
+      return state.courses;
+    }
+  })();
+  coursesCatalogPromise = run;
+  return run;
+}
+
+function ensureCoursesCatalogLoaded() {
+  if (state.courses && state.courses.length > 0) {
+    return Promise.resolve(state.courses);
+  }
+  return loadCoursesCatalog(false);
 }
 
 async function refreshCoursesFromSonis() {
@@ -1570,13 +1616,27 @@ function formatScheduleTimes(raw) {
 }
 
 function openCourseDropdown(kind) {
-  const inputVal = document.getElementById(`${kind}CourseSearch`).value;
+  const inputVal = document.getElementById(`${kind}CourseSearch`)?.value || "";
   filterCourseDropdown(kind, inputVal);
 }
 
 function filterCourseDropdown(kind, query) {
   const dropdown = document.getElementById(`${kind}CourseDropdown`);
   if (!dropdown) return;
+
+  if (!state.courses || state.courses.length === 0) {
+    dropdown.innerHTML = `<div style="padding:12px; color:var(--text-secondary); font-size:13px;">Loading course sections...</div>`;
+    dropdown.classList.add("open");
+    ensureCoursesCatalogLoaded().then((loaded) => {
+      if (!loaded || loaded.length === 0) {
+        dropdown.innerHTML = `<div style="padding:12px; color:var(--text-secondary); font-size:13px;">No course sections available right now.</div>`;
+        return;
+      }
+      const latestQ = document.getElementById(`${kind}CourseSearch`)?.value ?? query ?? "";
+      filterCourseDropdown(kind, latestQ);
+    });
+    return;
+  }
 
   const q = (query || "").trim().toLowerCase();
   const matches = state.courses
@@ -1666,7 +1726,10 @@ async function loadHaveNeedPosts() {
   const q = (document.getElementById("hnFeedSearch")?.value || "").trim();
   const mineParam = state.hnOnlyMine ? "&mine=1" : "";
   try {
-    const data = await apiFetch(`/api/have-need?q=${encodeURIComponent(q)}${mineParam}`);
+    const [data] = await Promise.all([
+      apiFetch(`/api/have-need?q=${encodeURIComponent(q)}${mineParam}`),
+      ensureCoursesCatalogLoaded(),
+    ]);
     state.hnPosts = data.posts || [];
     renderHaveNeedPosts();
   } catch (err) {
@@ -7236,6 +7299,12 @@ function startAiTypewriterLoop() {
     const input = document.getElementById("aiPromptInput");
     if (!textEl) return;
 
+    // Pause background DOM mutations while user is on another tab or page is hidden
+    if (state.activeView !== "ai-assistant" || document.visibilityState === "hidden") {
+      aiTypewriterTimer = setTimeout(tick, 1200);
+      return;
+    }
+
     // Pause cycling if input has user text
     if (input && input.value.length > 0) {
       aiTypewriterTimer = setTimeout(tick, 450);
@@ -7657,25 +7726,71 @@ async function resetAiChatSession() {
    Bootstrap on DOMContentLoaded
    -------------------------------------------------------------------------- */
 
-window.addEventListener("DOMContentLoaded", async () => {
+function enableAsyncGoogleFonts() {
+  const fontLink = document.getElementById("googleFontsCss");
+  if (!fontLink) return;
+  if (fontLink.sheet) {
+    fontLink.media = "all";
+  } else {
+    fontLink.addEventListener(
+      "load",
+      () => {
+        fontLink.media = "all";
+      },
+      { once: true }
+    );
+    // Ensure activation even if load event already fired before listener bound
+    setTimeout(() => {
+      if (fontLink.media !== "all") fontLink.media = "all";
+    }, 1500);
+  }
+}
+
+window.addEventListener("DOMContentLoaded", () => {
+  enableAsyncGoogleFonts();
   initPwaSupport();
-  renderAiHistoryThread();
+  renderNavbarAuth();
   updateAiQuotaUI();
-  await checkCurrentSession();
   initNavigationHistory();
-  await loadCoursesCatalog(false);
-  initSpamChatWebSocket();
+  checkCurrentSession();
+
+  if (state.activeView === "ai-assistant") {
+    renderAiHistoryThread();
+  }
+
+  if (state.activeView === "spam-chat" || state.activeView === "chat") {
+    initSpamChatWebSocket();
+  } else {
+    setTimeout(() => {
+      initSpamChatWebSocket();
+    }, 350);
+  }
+
+  // Defer 250KB Sonis courses catalog until after initial Home paint/interaction
+  const conn = navigator.connection || navigator.mozConnection || navigator.webkitConnection;
+  if (!conn || (!conn.saveData && conn.effectiveType !== "slow-2g" && conn.effectiveType !== "2g")) {
+    const prefetchCatalog = () => {
+      if (!state.courses || state.courses.length === 0) {
+        loadCoursesCatalog(false);
+      }
+    };
+    if (typeof requestIdleCallback === "function") {
+      requestIdleCallback(() => prefetchCatalog(), { timeout: 3500 });
+    } else {
+      setTimeout(prefetchCatalog, 2200);
+    }
+  }
 });
 
 window.addEventListener("focus", () => {
-  if (state.user && !state.aiIsGenerating) {
+  if (state.user && !state.aiIsGenerating && state.activeView === "ai-assistant") {
     syncAiSessionWithServer(true);
   }
 });
 
 document.addEventListener("visibilitychange", () => {
   if (document.visibilityState === "visible") {
-    if (state.user && !state.aiIsGenerating) {
+    if (state.user && !state.aiIsGenerating && state.activeView === "ai-assistant") {
       syncAiSessionWithServer(true);
     }
     if (state.activeView === "spam-chat") {
