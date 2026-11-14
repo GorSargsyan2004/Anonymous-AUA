@@ -147,6 +147,7 @@ async def handle_stats_web(message: Message) -> None:
         "click_ai_assistant": "✦ AI Assistant Views",
         "click_partner_findaua": "🐻 FindAUA Partner Clicks",
         "click_partner_jenzareviews": "🎓 JenzaReviews Partner Clicks",
+        "click_partner_auautils": "🧩 AUA Utils Plugin Clicks",
     }
     events_lines = []
     for ev, count in a["event_breakdown"].items():

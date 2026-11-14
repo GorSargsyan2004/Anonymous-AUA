@@ -38,6 +38,10 @@ const state = {
   activeView: "home",
   pendingRegEmail: "",
   pendingResetEmail: "",
+  turnstileSiteKey: "",
+  turnstileWidgetIds: {},
+  turnstileTokens: {},
+  _turnstileScriptPromise: null,
   // Have-Need state
   courses: [],
   semesterLabel: "Upcoming Semester",
@@ -869,28 +873,42 @@ async function checkCurrentSession() {
   const prevUid = state.user?.id || null;
   try {
     const data = await apiFetch("/api/auth/me");
+    applyPublicAuthConfig(data);
     if (data.authenticated && data.user) {
       state.user = data.user;
       try { localStorage.setItem("aua_hub_user", JSON.stringify(data.user)); } catch { }
       updateUnreadBadge(data.unread_spam_count || 0);
       loadNotifications();
+      if (state._pendingGoogleToast) {
+        state._pendingGoogleToast = false;
+        syncAiSessionWithServer(true);
+        showToast("Signed in with your AUA Google account! ✨");
+      }
     } else {
       state.user = null;
-      try { localStorage.removeItem("aua_hub_user"); } catch { }
+      state.token = null;
+      clearLocalAiSessionState();
+      try {
+        localStorage.removeItem("aua_hub_user");
+        localStorage.removeItem("aua_hub_token");
+      } catch { }
     }
   } catch {
     if (!state.token) {
       state.user = null;
+      clearLocalAiSessionState();
       try { localStorage.removeItem("aua_hub_user"); } catch { }
     }
   }
   renderNavbarAuth();
-  if (state.activeView === "ai-assistant") {
+  renderAiAssistantAuthState();
+  if (state.user && state.activeView === "ai-assistant") {
     syncAiSessionWithServer(true);
   }
   if ((state.user?.id || null) !== prevUid) {
     if (state.activeView === "profile") renderProfileView();
     else if (state.activeView === "have-need") loadHaveNeedPosts();
+    else if (state.activeView === "ai-assistant") initAiAssistantView();
   }
   const stream = document.getElementById("spamMessagesStream");
   if (stream && (state.activeView === "spam-chat" || state.activeView === "chat")) {
@@ -950,12 +968,26 @@ function renderNavbarAuth() {
   `;
 }
 
+function setAuthModalAlert(message = "") {
+  const alertEl = document.getElementById("authModalAlert");
+  if (!alertEl) return;
+  if (message) {
+    alertEl.textContent = message;
+    alertEl.style.display = "block";
+  } else {
+    alertEl.textContent = "";
+    alertEl.style.display = "none";
+  }
+}
+
 function openAuthModal(tab = "login") {
+  setAuthModalAlert("");
   document.getElementById("authModal").classList.add("open");
   switchAuthTab(tab);
 }
 
 function closeAuthModal() {
+  setAuthModalAlert("");
   document.getElementById("authModal").classList.remove("open");
 }
 
@@ -967,7 +999,111 @@ const _AUTH_MODAL_FORMS = {
   reset: "resetPasswordForm",
 };
 
-function switchAuthTab(tab) {
+function applyPublicAuthConfig(cfg) {
+  if (!cfg || typeof cfg !== "object") return;
+  const key = typeof cfg.turnstile_site_key === "string" ? cfg.turnstile_site_key.trim() : "";
+  if (key) {
+    state.turnstileSiteKey = key;
+  } else if (cfg.turnstile_enabled === false) {
+    state.turnstileSiteKey = "";
+  }
+}
+
+async function ensureAuthSecurityConfig() {
+  if (state.turnstileSiteKey) return state.turnstileSiteKey;
+  try {
+    const cfg = await apiFetch("/api/auth/config");
+    applyPublicAuthConfig(cfg);
+  } catch { }
+  return state.turnstileSiteKey;
+}
+
+function loadTurnstileScript() {
+  if (window.turnstile && typeof window.turnstile.render === "function") {
+    return Promise.resolve(window.turnstile);
+  }
+  if (state._turnstileScriptPromise) return state._turnstileScriptPromise;
+  state._turnstileScriptPromise = new Promise((resolve, reject) => {
+    const script = document.createElement("script");
+    script.src = "https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit";
+    script.async = true;
+    script.defer = true;
+    script.onload = () => {
+      if (window.turnstile && typeof window.turnstile.ready === "function") {
+        window.turnstile.ready(() => resolve(window.turnstile));
+      } else {
+        resolve(window.turnstile);
+      }
+    };
+    script.onerror = () => {
+      state._turnstileScriptPromise = null;
+      reject(new Error("Failed to load Cloudflare Turnstile verification script."));
+    };
+    document.head.appendChild(script);
+  });
+  return state._turnstileScriptPromise;
+}
+
+function getTurnstileTokenForTab(tab) {
+  const cached = (state.turnstileTokens?.[tab] || "").trim();
+  if (cached) return cached;
+  const input = document.querySelector(`#turnstileSlot_${tab} input[name="cf-turnstile-response"]`);
+  return (input?.value || "").trim();
+}
+
+function resetTurnstileWidget(tab) {
+  if (state.turnstileTokens) state.turnstileTokens[tab] = "";
+  const widgetId = state.turnstileWidgetIds?.[tab];
+  if (widgetId !== undefined && window.turnstile && typeof window.turnstile.reset === "function") {
+    try { window.turnstile.reset(widgetId); } catch { }
+  }
+}
+
+function _requireClientTurnstileToken(tab) {
+  if (!state.turnstileSiteKey) return "";
+  const token = getTurnstileTokenForTab(tab);
+  if (!token) {
+    showToast("Please complete the human verification challenge first.", true);
+    return null;
+  }
+  return token;
+}
+
+async function renderTurnstileWidgetForTab(tab) {
+  const slot = document.getElementById(`turnstileSlot_${tab}`);
+  if (!slot) return;
+  const siteKey = await ensureAuthSecurityConfig();
+  if (!siteKey) {
+    slot.style.display = "none";
+    return;
+  }
+  slot.style.display = "flex";
+  try {
+    const turnstile = await loadTurnstileScript();
+    if (!turnstile || typeof turnstile.render !== "function") return;
+    if (state.turnstileWidgetIds[tab] !== undefined) {
+      resetTurnstileWidget(tab);
+      return;
+    }
+    slot.innerHTML = "";
+    state.turnstileWidgetIds[tab] = turnstile.render(slot, {
+      sitekey: siteKey,
+      theme: "dark",
+      callback: (token) => {
+        state.turnstileTokens[tab] = token || "";
+      },
+      "expired-callback": () => {
+        state.turnstileTokens[tab] = "";
+      },
+      "error-callback": () => {
+        state.turnstileTokens[tab] = "";
+      },
+    });
+  } catch { }
+}
+
+function switchAuthTab(tab, clearAlert = true) {
+  if (clearAlert) setAuthModalAlert("");
   const isRegisterSide = tab === "register" || tab === "otp";
   document.getElementById("authTabLogin").classList.toggle("active", !isRegisterSide);
   document.getElementById("authTabRegister").classList.toggle("active", isRegisterSide);
@@ -975,6 +1111,48 @@ function switchAuthTab(tab) {
     const el = document.getElementById(formId);
     if (el) el.style.display = tab === key ? "block" : "none";
   }
+  const googleSection = document.getElementById("authGoogleSection");
+  if (googleSection) {
+    googleSection.style.display = tab === "login" || tab === "register" ? "block" : "none";
+  }
+  if (tab === "login" || tab === "register" || tab === "forgot") {
+    renderTurnstileWidgetForTab(tab);
+  }
+}
+
+function startGoogleSignIn() {
+  setAuthModalAlert("");
+  window.location.href = "/api/auth/google";
+}
+
+function handleOAuthCallbackQuery() {
+  try {
+    const params = new URLSearchParams(window.location.search);
+    const authError = (params.get("auth_error") || "").trim();
+    const authSuccess = (params.get("auth_success") || "").trim();
+    if (!authError && !authSuccess) return null;
+
+    params.delete("auth_error");
+    params.delete("auth_success");
+    const cleanQs = params.toString();
+    const nextUrl = window.location.pathname + (cleanQs ? `?${cleanQs}` : "") + (window.location.hash || "");
+    history.replaceState(null, "", nextUrl);
+
+    if (authError) {
+      openAuthModal("login");
+      setAuthModalAlert(authError);
+      showToast(authError, true);
+      return { authError };
+    }
+
+    if (authSuccess === "google") {
+      state.token = null;
+      try { localStorage.removeItem("aua_hub_token"); } catch { }
+      state._pendingGoogleToast = true;
+      return { authSuccess: "google" };
+    }
+  } catch { }
+  return null;
 }
 
 function openForgotPasswordStep() {
@@ -999,6 +1177,7 @@ function _applySignedInAuthSession(res) {
   } catch { }
   updateUnreadBadge(res.unread_spam_count || 0);
   loadNotifications();
+  renderAiAssistantAuthState();
   syncAiSessionWithServer(true);
   renderNavbarAuth();
   closeAuthModal();
@@ -1009,15 +1188,19 @@ async function submitLogin(e) {
   e.preventDefault();
   const email = document.getElementById("loginEmail").value.trim();
   const password = document.getElementById("loginPassword").value;
+  const cf_turnstile_response = _requireClientTurnstileToken("login");
+  if (cf_turnstile_response === null) return;
   try {
     const res = await apiFetch("/api/auth/login", {
       method: "POST",
-      body: JSON.stringify({ email, password }),
+      body: JSON.stringify({ email, password, cf_turnstile_response }),
     });
     _applySignedInAuthSession(res);
     showToast(`Welcome back, ${res.user.name}!`);
   } catch (err) {
     showToast(err.message, true);
+  } finally {
+    if (state.turnstileSiteKey) resetTurnstileWidget("login");
   }
 }
 
@@ -1027,6 +1210,8 @@ async function submitRegister(e) {
   const email = document.getElementById("regEmail").value.trim();
   const password = document.getElementById("regPassword").value;
   const confirm_password = document.getElementById("regConfirmPassword").value;
+  const cf_turnstile_response = _requireClientTurnstileToken("register");
+  if (cf_turnstile_response === null) return;
 
   const btn = document.getElementById("regSubmitBtn");
   btn.disabled = true;
@@ -1035,7 +1220,7 @@ async function submitRegister(e) {
   try {
     const res = await apiFetch("/api/auth/register", {
       method: "POST",
-      body: JSON.stringify({ name, email, password, confirm_password }),
+      body: JSON.stringify({ name, email, password, confirm_password, cf_turnstile_response }),
     });
     state.pendingRegEmail = res.email;
     const subtext = `We sent a 6-digit verification code to ${res.email}.`;
@@ -1047,6 +1232,7 @@ async function submitRegister(e) {
   } finally {
     btn.disabled = false;
     btn.textContent = "Send 6-Digit Verification OTP 📧";
+    if (state.turnstileSiteKey) resetTurnstileWidget("register");
   }
 }
 
@@ -1068,6 +1254,8 @@ async function submitVerifyOtp(e) {
 async function submitForgotPassword(e) {
   e.preventDefault();
   const email = document.getElementById("forgotEmail").value.trim().toLowerCase();
+  const cf_turnstile_response = _requireClientTurnstileToken("forgot");
+  if (cf_turnstile_response === null) return;
   const btn = document.getElementById("forgotSubmitBtn");
   btn.disabled = true;
   btn.textContent = "Sending Reset Code...";
@@ -1075,7 +1263,7 @@ async function submitForgotPassword(e) {
   try {
     const res = await apiFetch("/api/auth/forgot-password", {
       method: "POST",
-      body: JSON.stringify({ email }),
+      body: JSON.stringify({ email, cf_turnstile_response }),
     });
     state.pendingResetEmail = res.email || email;
     const subtext =
@@ -1093,6 +1281,7 @@ async function submitForgotPassword(e) {
   } finally {
     btn.disabled = false;
     btn.textContent = "Send 6-Digit Reset Code 📧";
+    if (state.turnstileSiteKey) resetTurnstileWidget("forgot");
   }
 }
 
@@ -1149,8 +1338,10 @@ async function logoutUser() {
   closeProfileMenu();
   localStorage.removeItem("aua_hub_token");
   try { localStorage.removeItem("aua_hub_user"); } catch { }
+  clearLocalAiSessionState();
   updateUnreadBadge(0);
   renderNavbarAuth();
+  renderAiAssistantAuthState();
   refreshActiveViewData();
   showToast("Signed out of AUA Hub.");
 }
@@ -7271,7 +7462,54 @@ function renderAiSourcesBarHtml(sources) {
     `;
 }
 
+function clearLocalAiSessionState() {
+  state.aiSessionId = "";
+  state.aiHistory = [];
+  state.aiPromptsUsed = 0;
+  state.aiIsGenerating = false;
+  aiSessionSyncedOnce = false;
+  try {
+    localStorage.removeItem("aua_hub_ai_history");
+    localStorage.removeItem("aua_hub_ai_prompts_used");
+    localStorage.removeItem("aua_hub_ai_session_id");
+  } catch { }
+}
+
+function renderAiAssistantAuthState() {
+  const isSignedIn = Boolean(state.user);
+  const authGateEl = document.getElementById("aiAuthGateCard");
+  const topControlsEl = document.getElementById("aiTopbarControls");
+  const composerEl = document.getElementById("aiComposerForm");
+  const welcomeEl = document.getElementById("aiWelcomeState");
+  const threadEl = document.getElementById("aiChatThread");
+  const limitBannerEl = document.getElementById("aiLimitBanner");
+  const input = document.getElementById("aiPromptInput");
+  const sendBtn = document.getElementById("aiSendBtn");
+  const newChatBtn = document.getElementById("aiNewChatTopBtn");
+
+  if (authGateEl) authGateEl.classList.toggle("hidden", isSignedIn);
+  if (topControlsEl) topControlsEl.classList.toggle("hidden", !isSignedIn);
+  if (composerEl) composerEl.classList.toggle("hidden", !isSignedIn);
+  if (newChatBtn) newChatBtn.disabled = !isSignedIn;
+
+  if (!isSignedIn) {
+    if (welcomeEl) welcomeEl.classList.add("hidden");
+    if (threadEl) {
+      threadEl.innerHTML = "";
+      threadEl.classList.add("hidden");
+    }
+    if (limitBannerEl) limitBannerEl.classList.add("hidden");
+    if (input) {
+      input.disabled = true;
+      input.value = "";
+    }
+    if (sendBtn) sendBtn.disabled = true;
+  }
+  return isSignedIn;
+}
+
 function renderAiHistoryThread() {
+  if (!renderAiAssistantAuthState()) return;
   if (state.aiIsGenerating) return;
   const welcomeEl = document.getElementById("aiWelcomeState");
   const threadEl = document.getElementById("aiChatThread");
@@ -7317,17 +7555,9 @@ function renderAiHistoryThread() {
 }
 
 async function syncAiSessionWithServer(force = false) {
+  if (!state.user) return;
   if (aiSyncInFlight) return;
   if (!force && aiSessionSyncedOnce) return;
-
-  if (!state.user && !state.aiSessionId && (!state.aiHistory || state.aiHistory.length === 0)) {
-    if (state.aiPromptsUsed > 0) {
-      state.aiPromptsUsed = 0;
-      saveAiHistoryToStorage();
-      updateAiQuotaUI();
-    }
-    return;
-  }
 
   aiSyncInFlight = true;
   aiSessionSyncedOnce = true;
@@ -7351,6 +7581,7 @@ async function syncAiSessionWithServer(force = false) {
 }
 
 function initAiAssistantView() {
+  if (!renderAiAssistantAuthState()) return;
   renderAiHistoryThread();
   updateAiQuotaUI();
   syncAiSessionWithServer(true);
@@ -7441,6 +7672,7 @@ function handleAiInputKeydown(e) {
 }
 
 function updateAiQuotaUI() {
+  if (!renderAiAssistantAuthState()) return;
   const used = Math.min(state.aiMaxPrompts, Math.max(0, Number(state.aiPromptsUsed) || 0));
   const max = state.aiMaxPrompts || 5;
   const isLocked = used >= max;
@@ -7593,6 +7825,12 @@ function renderAiMarkdownHtml(mdText) {
 
 async function submitAiPrompt(e) {
   if (e && typeof e.preventDefault === "function") e.preventDefault();
+  if (!state.user) {
+    renderAiAssistantAuthState();
+    showToast("Please sign in to use AUA Hub AI.", true);
+    openAuthModal("login");
+    return;
+  }
   if (state.aiIsGenerating) return;
 
   if (state.aiPromptsUsed >= state.aiMaxPrompts) {
@@ -7739,6 +7977,12 @@ async function submitAiPrompt(e) {
 }
 
 async function resetAiChatSession() {
+  if (!state.user) {
+    renderAiAssistantAuthState();
+    showToast("Please sign in to use AUA Hub AI.", true);
+    openAuthModal("login");
+    return;
+  }
   try {
     const res = await apiFetch("/api/ai/reset", {
       method: "POST",
@@ -7814,11 +8058,16 @@ window.addEventListener("DOMContentLoaded", () => {
   initPwaSupport();
   renderNavbarAuth();
   updateAiQuotaUI();
+  const oauthOutcome = handleOAuthCallbackQuery();
   initNavigationHistory();
+  if (oauthOutcome?.authError) {
+    openAuthModal("login");
+    setAuthModalAlert(oauthOutcome.authError);
+  }
   checkCurrentSession();
 
   if (state.activeView === "ai-assistant") {
-    renderAiHistoryThread();
+    renderAiAssistantAuthState();
   }
 
   if (state.activeView === "spam-chat" || state.activeView === "chat") {

@@ -497,6 +497,21 @@ async def init_db() -> None:
                 "ALTER TABLE web_users ADD COLUMN IF NOT EXISTS token_version INTEGER NOT NULL DEFAULT 1;"
             )
         )
+        await conn.execute(
+            text(
+                "ALTER TABLE web_users ALTER COLUMN password_hash DROP NOT NULL;"
+            )
+        )
+        await conn.execute(
+            text(
+                "ALTER TABLE web_users ADD COLUMN IF NOT EXISTS google_sub VARCHAR(128);"
+            )
+        )
+        await conn.execute(
+            text(
+                "CREATE UNIQUE INDEX IF NOT EXISTS ix_web_users_google_sub ON web_users (google_sub);"
+            )
+        )
 
 
 

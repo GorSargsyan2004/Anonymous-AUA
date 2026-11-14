@@ -24,7 +24,7 @@ from html.parser import HTMLParser
 import urllib.parse
 from urllib.parse import urlparse
 
-from aiohttp import WSMsgType, web
+from aiohttp import ClientSession, ClientTimeout, WSMsgType, web
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -50,7 +50,9 @@ from app.database.web_crud import (
     create_spam_chat_message,
     create_telegram_group,
     create_user_notification,
+    check_web_email_cooldown,
     create_web_password_reset_otp,
+    record_web_email_dispatch,
     create_web_registration_otp,
     delete_academic_feedback,
     delete_have_need_post,
@@ -87,6 +89,7 @@ from app.database.web_crud import (
     update_have_need_post,
     update_telegram_group,
     update_web_user_profile,
+    upsert_or_link_google_web_user,
     verify_web_otp_and_register,
     verify_web_password_reset_otp,
     ANON_POST_REPORT_HIDE_THRESHOLD,
@@ -444,12 +447,13 @@ async def security_middleware(request: web.Request, handler: Callable) -> web.St
         "Content-Security-Policy",
         (
             "default-src 'self'; "
-            "script-src 'self' 'unsafe-inline'; "
+            "script-src 'self' 'unsafe-inline' https://challenges.cloudflare.com; "
             "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
             "font-src 'self' https://fonts.gstatic.com data:; "
             "img-src 'self' data: blob:; "
             "media-src 'self' blob:; "
-            "connect-src 'self' ws: wss:; "
+            "connect-src 'self' ws: wss: https://challenges.cloudflare.com; "
+            "frame-src 'self' https://challenges.cloudflare.com; "
             "manifest-src 'self'; "
             "worker-src 'self'; "
             "object-src 'none'; "
@@ -1088,20 +1092,308 @@ def _set_auth_cookie(response: web.Response, request: web.Request, token: str) -
     )
 
 
+_TURNSTILE_VERIFY_URL = "https://challenges.cloudflare.com/turnstile/v0/siteverify"
+_TURNSTILE_PLACEHOLDERS = {
+    "",
+    "your_turnstile_site_key_here",
+    "your_turnstile_secret_key_here",
+    "change_me",
+    "changeme",
+}
+
+
+def _get_turnstile_keys() -> Tuple[str, str]:
+    """Return configured (site_key, secret_key) stripped of surrounding whitespace."""
+    site_key = (getattr(settings, "TURNSTILE_SITE_KEY", "") or "").strip()
+    secret_key = (getattr(settings, "TURNSTILE_SECRET_KEY", "") or "").strip()
+    return site_key, secret_key
+
+
+def _is_turnstile_configured() -> bool:
+    """True when non-placeholder Cloudflare Turnstile keys are configured."""
+    site_key, secret_key = _get_turnstile_keys()
+    return (
+        site_key not in _TURNSTILE_PLACEHOLDERS
+        and secret_key not in _TURNSTILE_PLACEHOLDERS
+    )
+
+
+def _get_public_turnstile_site_key() -> Optional[str]:
+    """Return public Turnstile site key when enabled, else None."""
+    if not _is_turnstile_configured():
+        return None
+    site_key, _ = _get_turnstile_keys()
+    return site_key
+
+
+def _get_email_cooldown_seconds() -> int:
+    """Return configured per-email dispatch cooldown in seconds (default 180s)."""
+    try:
+        val = int(getattr(settings, "AUTH_EMAIL_COOLDOWN_SECONDS", 180) or 180)
+        return max(0, val)
+    except (TypeError, ValueError):
+        return 180
+
+
+def _check_auth_code_ip_limits(client_ip: str) -> Optional[web.Response]:
+    """Enforce shared 15-minute and hourly per-IP limits across code-sending endpoints."""
+    allowed_15m, retry_15m = check_rate_limit(
+        "auth_code_ip", client_ip, max_calls=5, window_sec=900
+    )
+    if not allowed_15m:
+        return web.json_response(
+            {
+                "error": f"Too many code requests from your network. Please wait {retry_15m}s.",
+                "retry_after": retry_15m,
+            },
+            status=429,
+        )
+    allowed_1h, retry_1h = check_rate_limit(
+        "auth_code_ip_hourly", client_ip, max_calls=12, window_sec=3600
+    )
+    if not allowed_1h:
+        return web.json_response(
+            {
+                "error": f"Hourly verification request limit reached for your network. Please wait {retry_1h}s.",
+                "retry_after": retry_1h,
+            },
+            status=429,
+        )
+    return None
+
+
+async def _verify_turnstile_token(token: str, client_ip: str) -> Tuple[bool, str]:
+    """Verify a Cloudflare Turnstile response token against Cloudflare siteverify API."""
+    _, secret_key = _get_turnstile_keys()
+    form_data: Dict[str, str] = {"secret": secret_key, "response": token}
+    if client_ip and client_ip != "unknown":
+        form_data["remoteip"] = client_ip
+    try:
+        async with ClientSession(timeout=ClientTimeout(total=8)) as http_session:
+            async with http_session.post(_TURNSTILE_VERIFY_URL, data=form_data) as resp:
+                if resp.status != 200:
+                    logger.warning("Turnstile siteverify HTTP %s", resp.status)
+                    return False, "Human verification service unavailable. Please try again."
+                payload = await resp.json()
+    except Exception as exc:
+        logger.warning("Turnstile siteverify request error: %s", exc)
+        return False, "Human verification could not be completed. Please try again."
+
+    if isinstance(payload, dict) and payload.get("success") is True:
+        return True, ""
+
+    codes = payload.get("error-codes", []) if isinstance(payload, dict) else []
+    logger.info("Turnstile verification rejected (ip=%s, codes=%s)", client_ip, codes)
+    return False, "Human verification failed. Please complete the security challenge and try again."
+
+
+async def _require_turnstile_if_enabled(data: Any, client_ip: str) -> Optional[web.Response]:
+    """Validate Cloudflare Turnstile token before DB lookups or email dispatch when configured."""
+    if not _is_turnstile_configured():
+        return None
+    token = ""
+    if isinstance(data, dict):
+        token = str(
+            data.get("cf_turnstile_response")
+            or data.get("cf-turnstile-response")
+            or data.get("turnstile_token")
+            or ""
+        ).strip()
+    if not token:
+        return web.json_response(
+            {"error": "Security check required. Please complete the Cloudflare Turnstile challenge."},
+            status=403,
+        )
+    ok, err_msg = await _verify_turnstile_token(token, client_ip)
+    if not ok:
+        return web.json_response({"error": err_msg}, status=403)
+    return None
+
+
+_GOOGLE_OAUTH_PLACEHOLDERS = {
+    "",
+    "your_google_client_id_here",
+    "your_google_client_secret_here",
+    "change_me",
+    "changeme",
+}
+_CONSUMED_GOOGLE_OAUTH_JTIS: Dict[str, float] = {}
+
+
+def _is_google_placeholder(value: Optional[str]) -> bool:
+    clean = (value or "").strip()
+    return clean.lower() in _GOOGLE_OAUTH_PLACEHOLDERS
+
+
+def _is_google_oauth_configured() -> bool:
+    """Return True when real GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET are configured."""
+    cid = getattr(settings, "GOOGLE_CLIENT_ID", None)
+    csec = getattr(settings, "GOOGLE_CLIENT_SECRET", None)
+    return not _is_google_placeholder(cid) and not _is_google_placeholder(csec)
+
+
+def _resolve_google_redirect_uri(request: web.Request) -> str:
+    """Return configured GOOGLE_REDIRECT_URI or derive callback URL from the active request."""
+    configured = (getattr(settings, "GOOGLE_REDIRECT_URI", None) or "").strip()
+    if configured and not _is_google_placeholder(configured):
+        return configured
+    scheme = "https" if _is_https_request(request) else (request.scheme or "http")
+    return f"{scheme}://{request.host}/api/auth/google/callback"
+
+
+def _create_google_oauth_state_cookie(nonce: str, code_verifier: str) -> Tuple[str, str]:
+    """Generate CSRF state string and HMAC-signed OAuth transaction cookie."""
+    state = secrets.token_urlsafe(32)
+    jti = secrets.token_urlsafe(16)
+    payload = {
+        "s": state,
+        "n": nonce,
+        "v": code_verifier,
+        "j": jti,
+        "exp": int(time.time()) + 600,
+    }
+    p_b64 = base64.urlsafe_b64encode(json.dumps(payload).encode("utf-8")).rstrip(b"=").decode("ascii")
+    sig = hmac.new(_get_jwt_secret(), p_b64.encode("ascii"), hashlib.sha256).digest()
+    s_b64 = base64.urlsafe_b64encode(sig).rstrip(b"=").decode("ascii")
+    return state, f"{p_b64}.{s_b64}"
+
+
+def _verify_and_consume_google_oauth_state(
+    cookie_val: Optional[str], query_state: Optional[str]
+) -> Optional[Dict[str, Any]]:
+    """Verify signed OAuth state cookie matches query state and has not expired or replayed."""
+    if not cookie_val or not query_state or "." not in cookie_val:
+        return None
+    try:
+        p_b64, s_b64 = cookie_val.strip().split(".", 1)
+        expected_sig = hmac.new(_get_jwt_secret(), p_b64.encode("ascii"), hashlib.sha256).digest()
+        expected_b64 = base64.urlsafe_b64encode(expected_sig).rstrip(b"=").decode("ascii")
+        if not hmac.compare_digest(s_b64, expected_b64):
+            return None
+
+        pad = "=" * (-len(p_b64) % 4)
+        payload = json.loads(base64.urlsafe_b64decode(p_b64 + pad).decode("utf-8"))
+        now = time.time()
+        if int(payload.get("exp", 0)) < int(now):
+            return None
+        if not hmac.compare_digest(str(payload.get("s", "")), str(query_state)):
+            return None
+
+        jti = str(payload.get("j", ""))
+        if not jti or jti in _CONSUMED_GOOGLE_OAUTH_JTIS:
+            return None
+
+        # Prune stale consumed JTIs and mark this state single-use
+        cutoff = now - 900.0
+        for stale_key in [k for k, ts in _CONSUMED_GOOGLE_OAUTH_JTIS.items() if ts < cutoff]:
+            _CONSUMED_GOOGLE_OAUTH_JTIS.pop(stale_key, None)
+        _CONSUMED_GOOGLE_OAUTH_JTIS[jti] = now
+        return payload
+    except Exception:
+        return None
+
+
+def _decode_jwt_unverified_claims(jwt_str: str) -> Optional[Dict[str, Any]]:
+    """Decode claims segment from a token received directly over TLS from Google."""
+    try:
+        parts = jwt_str.split(".")
+        if len(parts) != 3:
+            return None
+        pad = "=" * (-len(parts[1]) % 4)
+        claims = json.loads(base64.urlsafe_b64decode(parts[1] + pad).decode("utf-8"))
+        return claims if isinstance(claims, dict) else None
+    except Exception:
+        return None
+
+
+async def _exchange_google_code_for_profile(
+    code: str,
+    code_verifier: str,
+    expected_nonce: str,
+    client_id: str,
+    client_secret: str,
+    redirect_uri: str,
+) -> Dict[str, Any]:
+    """Exchange OAuth authorization code with Google over TLS and return verified user profile."""
+    timeout = ClientTimeout(total=12)
+    async with ClientSession(timeout=timeout) as http:
+        async with http.post(
+            "https://oauth2.googleapis.com/token",
+            data={
+                "code": code,
+                "client_id": client_id,
+                "client_secret": client_secret,
+                "redirect_uri": redirect_uri,
+                "grant_type": "authorization_code",
+                "code_verifier": code_verifier,
+            },
+        ) as token_resp:
+            token_data = await token_resp.json(content_type=None)
+            if token_resp.status != 200 or not isinstance(token_data, dict):
+                raise ValueError(f"Google token exchange failed ({token_resp.status}).")
+
+        access_token = token_data.get("access_token")
+        if not access_token:
+            raise ValueError("Google token response did not include an access_token.")
+
+        id_claims: Optional[Dict[str, Any]] = None
+        raw_id_token = token_data.get("id_token")
+        if raw_id_token:
+            id_claims = _decode_jwt_unverified_claims(str(raw_id_token))
+            if not id_claims:
+                raise ValueError("Malformed Google id_token payload.")
+            aud = id_claims.get("aud")
+            aud_ok = (aud == client_id) or (isinstance(aud, list) and client_id in aud)
+            if not aud_ok:
+                raise ValueError("Google id_token audience mismatch.")
+            if id_claims.get("iss") not in ("accounts.google.com", "https://accounts.google.com"):
+                raise ValueError("Google id_token issuer mismatch.")
+            if expected_nonce and id_claims.get("nonce") != expected_nonce:
+                raise ValueError("Google id_token nonce mismatch.")
+
+        async with http.get(
+            "https://openidconnect.googleapis.com/v1/userinfo",
+            headers={"Authorization": f"Bearer {access_token}"},
+        ) as info_resp:
+            userinfo = await info_resp.json(content_type=None)
+            if info_resp.status != 200 or not isinstance(userinfo, dict):
+                raise ValueError(f"Google UserInfo request failed ({info_resp.status}).")
+
+        if id_claims and id_claims.get("sub") and userinfo.get("sub") != id_claims.get("sub"):
+            raise ValueError("Google subject mismatch between id_token and userinfo.")
+        return userinfo
+
+
+def _redirect_oauth_error(error_message: str, clear_oauth_cookie: bool = True) -> web.Response:
+    """Redirect user back to AUA Hub login modal with a clean URL-encoded error message."""
+    qs = urllib.parse.urlencode({"auth_error": error_message})
+    response = web.Response(
+        status=302,
+        headers={
+            "Location": f"/?{qs}",
+            "Cache-Control": "no-store",
+        },
+    )
+    if clear_oauth_cookie:
+        response.del_cookie("aua_google_oauth_state", path="/api/auth")
+    return response
+
+
 @routes.post("/api/auth/register")
 async def api_auth_register(request: web.Request) -> web.Response:
     client_ip = get_client_ip(request)
-    allowed_ip, retry_ip = check_rate_limit("auth_register_ip", client_ip, max_calls=5, window_sec=600)
-    if not allowed_ip:
-        return web.json_response(
-            {"error": f"Too many registration attempts from your IP. Please wait {retry_ip}s."},
-            status=429,
-        )
+    ip_limit_resp = _check_auth_code_ip_limits(client_ip)
+    if ip_limit_resp:
+        return ip_limit_resp
 
     try:
         data = await request.json()
     except Exception:
         return web.json_response({"error": "Invalid JSON body."}, status=400)
+
+    turnstile_resp = await _require_turnstile_if_enabled(data, client_ip)
+    if turnstile_resp:
+        return turnstile_resp
 
     name = (data.get("name") or "").strip()
     email = (data.get("email") or "").strip().lower()
@@ -1115,25 +1407,41 @@ async def api_auth_register(request: web.Request) -> web.Response:
     if email_err:
         return web.json_response({"error": email_err}, status=400)
 
-    allowed_email, retry_email = check_rate_limit("auth_register_email", email, max_calls=4, window_sec=600)
-    if not allowed_email:
-        return web.json_response(
-            {"error": f"Too many OTP requests for this email. Please wait {retry_email}s."},
-            status=429,
-        )
-
     if len(password) < 6 or len(password) > 128:
         return web.json_response({"error": "Password must be between 6 and 128 characters long."}, status=400)
 
     if password != confirm_password:
         return web.json_response({"error": "Passwords do not match."}, status=400)
 
+    cooldown_sec = _get_email_cooldown_seconds()
     async with get_db_session() as session:
         existing = await get_web_user_by_email(session, email)
         if existing:
             return web.json_response(
                 {"error": "An AUA Hub account with this email already exists. Please Sign In instead."},
                 status=409,
+            )
+
+        cd_ok, retry_cd, cd_reason = await check_web_email_cooldown(
+            session,
+            email,
+            "register_otp",
+            cooldown_seconds=cooldown_sec,
+            daily_limit=6,
+        )
+        if not cd_ok:
+            msg = (
+                f"Daily verification code limit reached for {email}. Please try again later."
+                if cd_reason == "daily"
+                else f"A verification code was recently sent to {email}. Please wait {retry_cd}s before requesting another."
+            )
+            return web.json_response({"error": msg, "retry_after": retry_cd}, status=429)
+
+        global_ok, global_msg = check_global_email_rate_limit()
+        if not global_ok:
+            return web.json_response(
+                {"error": global_msg or "Email traffic is busy. Please wait a few minutes."},
+                status=429,
             )
 
         otp_code, _ = await create_web_registration_otp(
@@ -1149,6 +1457,9 @@ async def api_auth_register(request: web.Request) -> web.Response:
             {"error": "Failed to send verification OTP email. Please check your email address and try again."},
             status=500,
         )
+
+    async with get_db_session() as session:
+        await record_web_email_dispatch(session, email, "register_otp")
 
     return web.json_response(
         {
@@ -1166,6 +1477,14 @@ async def api_auth_verify_otp(request: web.Request) -> web.Response:
     if not allowed_ip:
         return web.json_response(
             {"error": f"Too many OTP verification attempts. Please wait {retry_ip}s."},
+            status=429,
+        )
+    allowed_ip_hr, retry_ip_hr = check_rate_limit(
+        "auth_otp_ip_hourly", client_ip, max_calls=20, window_sec=3600
+    )
+    if not allowed_ip_hr:
+        return web.json_response(
+            {"error": f"Hourly OTP verification limit reached. Please wait {retry_ip_hr}s."},
             status=429,
         )
 
@@ -1222,11 +1541,23 @@ async def api_auth_login(request: web.Request) -> web.Response:
             {"error": f"Too many sign-in attempts from your IP. Please wait {retry_ip}s."},
             status=429,
         )
+    allowed_ip_hr, retry_ip_hr = check_rate_limit(
+        "auth_login_ip_hourly", client_ip, max_calls=25, window_sec=3600
+    )
+    if not allowed_ip_hr:
+        return web.json_response(
+            {"error": f"Hourly sign-in attempt limit reached for your network. Please wait {retry_ip_hr}s."},
+            status=429,
+        )
 
     try:
         data = await request.json()
     except Exception:
         return web.json_response({"error": "Invalid JSON body."}, status=400)
+
+    turnstile_resp = await _require_turnstile_if_enabled(data, client_ip)
+    if turnstile_resp:
+        return turnstile_resp
 
     email = (data.get("email") or "").strip().lower()
     password = data.get("password") or ""
@@ -1265,36 +1596,51 @@ async def api_auth_login(request: web.Request) -> web.Response:
 @routes.post("/api/auth/forgot-password")
 async def api_auth_forgot_password(request: web.Request) -> web.Response:
     client_ip = get_client_ip(request)
-    allowed_ip, retry_ip = check_rate_limit("auth_forgot_ip", client_ip, max_calls=5, window_sec=600)
-    if not allowed_ip:
-        return web.json_response(
-            {"error": f"Too many password reset requests from your IP. Please wait {retry_ip}s."},
-            status=429,
-        )
+    ip_limit_resp = _check_auth_code_ip_limits(client_ip)
+    if ip_limit_resp:
+        return ip_limit_resp
 
     try:
         data = await request.json()
     except Exception:
         return web.json_response({"error": "Invalid JSON body."}, status=400)
 
+    turnstile_resp = await _require_turnstile_if_enabled(data, client_ip)
+    if turnstile_resp:
+        return turnstile_resp
+
     email = (data.get("email") or "").strip().lower()
     email_err = _validate_aua_auth_email(email)
     if email_err:
         return web.json_response({"error": email_err}, status=400)
 
-    allowed_email, retry_email = check_rate_limit("auth_forgot_email", email, max_calls=4, window_sec=600)
-    if not allowed_email:
+    global_ok, global_msg = check_global_email_rate_limit()
+    if not global_ok:
         return web.json_response(
-            {"error": f"Too many password reset requests for this email. Please wait {retry_email}s."},
+            {"error": global_msg or "Email traffic is busy. Please wait a few minutes."},
             status=429,
         )
 
-    global_ok, global_msg = check_global_email_rate_limit()
-    if not global_ok:
-        return web.json_response({"error": global_msg or "Email traffic is busy. Please wait a few minutes."}, status=429)
-
+    generic_payload = {
+        "ok": True,
+        "email": email,
+        "message": "If an active AUA Hub account exists for this email, a 6-digit password reset code has been sent.",
+    }
+    cooldown_sec = _get_email_cooldown_seconds()
     async with get_db_session() as session:
+        cd_ok, _, _ = await check_web_email_cooldown(
+            session,
+            email,
+            "password_reset",
+            cooldown_seconds=cooldown_sec,
+            daily_limit=6,
+        )
+        if not cd_ok:
+            # Silent anti-enumeration: return the same 200 payload without dispatching another email
+            return web.json_response(generic_payload)
+
         otp_code, target_user = await create_web_password_reset_otp(session=session, email=email)
+        await record_web_email_dispatch(session, email, "password_reset")
 
     if otp_code and target_user:
         sent, err = await send_password_reset_email(to_email=email, code=otp_code)
@@ -1302,13 +1648,7 @@ async def api_auth_forgot_password(request: web.Request) -> web.Response:
             logger.warning("Failed to dispatch password reset OTP for %s: %s", email, err)
 
     # Always return a uniform 200 message to prevent account enumeration
-    return web.json_response(
-        {
-            "ok": True,
-            "email": email,
-            "message": "If an active AUA Hub account exists for this email, a 6-digit password reset code has been sent.",
-        }
-    )
+    return web.json_response(generic_payload)
 
 
 @routes.post("/api/auth/reset-password")
@@ -1318,6 +1658,14 @@ async def api_auth_reset_password(request: web.Request) -> web.Response:
     if not allowed_ip:
         return web.json_response(
             {"error": f"Too many password reset attempts from your IP. Please wait {retry_ip}s."},
+            status=429,
+        )
+    allowed_ip_hr, retry_ip_hr = check_rate_limit(
+        "auth_reset_ip_hourly", client_ip, max_calls=25, window_sec=3600
+    )
+    if not allowed_ip_hr:
+        return web.json_response(
+            {"error": f"Hourly password reset limit reached. Please wait {retry_ip_hr}s."},
             status=429,
         )
 
@@ -1378,6 +1726,149 @@ async def api_auth_reset_password(request: web.Request) -> web.Response:
     return response
 
 
+@routes.get("/api/auth/google")
+async def api_auth_google_start(request: web.Request) -> web.Response:
+    """Start Google OAuth 2.0 Authorization Code + PKCE flow."""
+    client_ip = get_client_ip(request)
+    allowed_ip, retry_ip = check_rate_limit("auth_google_start_ip", client_ip, max_calls=20, window_sec=300)
+    if not allowed_ip:
+        return _redirect_oauth_error(
+            f"Too many Google sign-in attempts from your IP. Please wait {retry_ip}s.",
+            clear_oauth_cookie=False,
+        )
+
+    if not _is_google_oauth_configured():
+        return _redirect_oauth_error(
+            "Google Sign-In is not configured yet on this server. Please sign in with your AUA email and password.",
+            clear_oauth_cookie=False,
+        )
+
+    client_id = str(settings.GOOGLE_CLIENT_ID).strip()
+    redirect_uri = _resolve_google_redirect_uri(request)
+    code_verifier = secrets.token_urlsafe(48)
+    code_challenge = (
+        base64.urlsafe_b64encode(hashlib.sha256(code_verifier.encode("ascii")).digest())
+        .rstrip(b"=")
+        .decode("ascii")
+    )
+    nonce = secrets.token_urlsafe(24)
+    state, state_cookie = _create_google_oauth_state_cookie(nonce=nonce, code_verifier=code_verifier)
+
+    auth_params = urllib.parse.urlencode(
+        {
+            "client_id": client_id,
+            "redirect_uri": redirect_uri,
+            "response_type": "code",
+            "scope": "openid email profile",
+            "state": state,
+            "nonce": nonce,
+            "code_challenge": code_challenge,
+            "code_challenge_method": "S256",
+            "prompt": "select_account",
+        }
+    )
+    response = web.Response(
+        status=302,
+        headers={
+            "Location": f"https://accounts.google.com/o/oauth2/v2/auth?{auth_params}",
+            "Cache-Control": "no-store",
+        },
+    )
+    response.set_cookie(
+        "aua_google_oauth_state",
+        state_cookie,
+        max_age=600,
+        httponly=True,
+        secure=_is_https_request(request),
+        samesite="Lax",
+        path="/api/auth",
+    )
+    return response
+
+
+@routes.get("/api/auth/callback/google")
+@routes.get("/api/auth/google/callback")
+async def api_auth_google_callback(request: web.Request) -> web.Response:
+    """Validate Google OAuth callback, enforce @edu.aua.am / @alumni.aua.am domain gate, and sign in."""
+    client_ip = get_client_ip(request)
+    allowed_ip, retry_ip = check_rate_limit("auth_google_cb_ip", client_ip, max_calls=20, window_sec=300)
+    if not allowed_ip:
+        return _redirect_oauth_error(
+            f"Too many Google sign-in callbacks from your IP. Please wait {retry_ip}s."
+        )
+
+    if not _is_google_oauth_configured():
+        return _redirect_oauth_error(
+            "Google Sign-In is not configured yet on this server. Please sign in with your AUA email and password."
+        )
+
+    if request.query.get("error"):
+        return _redirect_oauth_error("Google sign-in was cancelled or denied.")
+
+    code = (request.query.get("code") or "").strip()
+    state = (request.query.get("state") or "").strip()
+    state_cookie = request.cookies.get("aua_google_oauth_state")
+    oauth_tx = _verify_and_consume_google_oauth_state(state_cookie, state)
+    if not code or not oauth_tx:
+        return _redirect_oauth_error("Your Google sign-in session expired or was invalid. Please try again.")
+
+    client_id = str(settings.GOOGLE_CLIENT_ID).strip()
+    client_secret = str(settings.GOOGLE_CLIENT_SECRET).strip()
+    redirect_uri = _resolve_google_redirect_uri(request)
+
+    try:
+        profile = await _exchange_google_code_for_profile(
+            code=code,
+            code_verifier=str(oauth_tx.get("v", "")),
+            expected_nonce=str(oauth_tx.get("n", "")),
+            client_id=client_id,
+            client_secret=client_secret,
+            redirect_uri=redirect_uri,
+        )
+    except Exception as exc:
+        logger.warning("Google OAuth verification failed: %s", exc)
+        return _redirect_oauth_error("Could not verify your Google sign-in. Please try again.")
+
+    email = (profile.get("email") or "").strip().lower()
+    email_verified = profile.get("email_verified") is True
+    google_sub = str(profile.get("sub") or "").strip()
+    full_name = str(profile.get("name") or "").strip()
+
+    if not email or not google_sub or not email_verified:
+        return _redirect_oauth_error(
+            "Access Restricted: A verified Google account email is required to sign in to AUA Hub."
+        )
+
+    # Strict Post-Authentication Domain Gate (@edu.aua.am and @alumni.aua.am only)
+    if not is_valid_aua_email(email) or email.split("@", 1)[0] in BLOCKED_LOCAL_TERMS:
+        logger.info("Blocked non-AUA Google OAuth sign-in attempt for domain: %s", email.split("@")[-1])
+        return _redirect_oauth_error(
+            "Access Restricted: Only official @edu.aua.am or @alumni.aua.am university emails are allowed to sign in to AUA Hub."
+        )
+
+    async with get_db_session() as session:
+        ok, web_user, err_msg = await upsert_or_link_google_web_user(
+            session=session,
+            google_sub=google_sub,
+            email=email,
+            full_name=full_name,
+        )
+        if not ok or not web_user:
+            return _redirect_oauth_error(err_msg or "Unable to complete Google sign-in.")
+
+    token = create_jwt_token(web_user.id, token_version=getattr(web_user, "token_version", 1))
+    response = web.Response(
+        status=302,
+        headers={
+            "Location": "/?auth_success=google",
+            "Cache-Control": "no-store",
+        },
+    )
+    _set_auth_cookie(response, request, token)
+    response.del_cookie("aua_google_oauth_state", path="/api/auth")
+    return response
+
+
 @routes.post("/api/auth/logout")
 async def api_auth_logout(request: web.Request) -> web.Response:
     response = web.json_response({"ok": True})
@@ -1385,11 +1876,34 @@ async def api_auth_logout(request: web.Request) -> web.Response:
     return response
 
 
+@routes.get("/api/auth/config")
+async def api_auth_config(request: web.Request) -> web.Response:
+    site_key = _get_public_turnstile_site_key()
+    return web.json_response(
+        {
+            "turnstile_enabled": bool(site_key),
+            "turnstile_site_key": site_key,
+            "google_oauth_enabled": _is_google_oauth_configured(),
+            "email_cooldown_seconds": _get_email_cooldown_seconds(),
+        }
+    )
+
+
 @routes.get("/api/auth/me")
 async def api_auth_me(request: web.Request) -> web.Response:
+    turnstile_site_key = _get_public_turnstile_site_key()
+    turnstile_enabled = bool(turnstile_site_key)
     user = await get_current_web_user(request)
     if not user:
-        return web.json_response({"authenticated": False, "user": None, "unread_spam_count": 0})
+        return web.json_response(
+            {
+                "authenticated": False,
+                "user": None,
+                "unread_spam_count": 0,
+                "turnstile_enabled": turnstile_enabled,
+                "turnstile_site_key": turnstile_site_key,
+            }
+        )
 
     async with get_db_session() as session:
         unread_count = await get_spam_chat_unread_count(session, user.id)
@@ -1399,6 +1913,8 @@ async def api_auth_me(request: web.Request) -> web.Response:
             "authenticated": True,
             "user": serialize_web_user(user),
             "unread_spam_count": unread_count,
+            "turnstile_enabled": turnstile_enabled,
+            "turnstile_site_key": turnstile_site_key,
         }
     )
     auth_header = request.headers.get("Authorization", "")
@@ -3117,27 +3633,8 @@ def _run_rate_limit_checks(
     return None
 
 
-def _check_ai_chat_rate_limits(user: Optional[WebUser], client_ip: str) -> Optional[web.Response]:
-    """Enforce stricter guest IP limits vs generous verified-user AI chat limits."""
-    if user is None:
-        return _run_rate_limit_checks(
-            (
-                (
-                    "ai_chat_guest_min",
-                    f"ip_{client_ip}",
-                    5,
-                    60,
-                    "Too many guest AI requests. Please sign in or wait {retry}s.",
-                ),
-                (
-                    "ai_chat_guest_hourly",
-                    f"ip_{client_ip}",
-                    8,
-                    3600,
-                    "Guest hourly AI quota exceeded (max 8 prompts/hour). Please sign in with your @edu.aua.am account or try again in {mins}m.",
-                ),
-            )
-        )
+def _check_ai_chat_rate_limits(user: WebUser, client_ip: str) -> Optional[web.Response]:
+    """Enforce per-user and per-IP AI chat rate limits for signed-in users."""
     return _run_rate_limit_checks(
         (
             ("ai_chat", f"user_{user.id}", 15, 60, "Too many AI requests. Please wait {retry}s."),
@@ -3166,27 +3663,8 @@ def _check_ai_chat_rate_limits(user: Optional[WebUser], client_ip: str) -> Optio
     )
 
 
-def _check_ai_reset_rate_limits(user: Optional[WebUser], client_ip: str) -> Optional[web.Response]:
+def _check_ai_reset_rate_limits(user: WebUser, client_ip: str) -> Optional[web.Response]:
     """Enforce session reset throttling uniformly across AI reset and chat endpoints."""
-    if user is None:
-        return _run_rate_limit_checks(
-            (
-                (
-                    "ai_reset_guest_min",
-                    f"ip_{client_ip}",
-                    3,
-                    60,
-                    "Too many guest AI session resets. Please wait {retry}s.",
-                ),
-                (
-                    "ai_reset_guest_hourly",
-                    f"ip_{client_ip}",
-                    5,
-                    3600,
-                    "Hourly guest AI reset limit reached. Please sign in or try again in {mins}m.",
-                ),
-            )
-        )
     return _run_rate_limit_checks(
         (
             ("ai_reset", f"user_{user.id}", 15, 60, "Too many AI session resets. Please wait {retry}s."),
@@ -3199,6 +3677,19 @@ def _check_ai_reset_rate_limits(user: Optional[WebUser], client_ip: str) -> Opti
             ),
         )
     )
+
+
+async def _require_signed_in_ai_user(
+    request: web.Request,
+) -> Tuple[Optional[WebUser], Optional[web.Response]]:
+    """Require an authenticated WebUser before accessing any AI Assistant endpoint."""
+    user = await get_current_web_user(request)
+    if not user:
+        return None, web.json_response(
+            {"error": "Sign in with your @edu.aua.am or @alumni.aua.am account to use AUA Hub AI."},
+            status=401,
+        )
+    return user, None
 
 
 async def _read_bounded_ai_json(request: web.Request) -> Optional[Dict[str, Any]]:
@@ -3219,16 +3710,13 @@ async def _read_bounded_ai_json(request: web.Request) -> Optional[Dict[str, Any]
 @routes.get("/api/ai/session")
 @routes.post("/api/ai/session")
 async def api_ai_session(request: web.Request) -> web.Response:
-    user = await get_current_web_user(request)
+    user, auth_err = await _require_signed_in_ai_user(request)
+    if auth_err is not None or user is None:
+        return auth_err
     client_ip = get_client_ip(request)
-    if user:
-        rl_blocked = _run_rate_limit_checks(
-            (("ai_session", f"user_{user.id}", 60, 60, "Too many AI session requests. Please wait {retry}s."),)
-        )
-    else:
-        rl_blocked = _run_rate_limit_checks(
-            (("ai_session_guest", f"ip_{client_ip}", 30, 60, "Too many AI session requests. Please wait {retry}s."),)
-        )
+    rl_blocked = _run_rate_limit_checks(
+        (("ai_session", f"user_{user.id}", 60, 60, "Too many AI session requests. Please wait {retry}s."),)
+    )
     if rl_blocked is not None:
         return rl_blocked
 
@@ -3245,25 +3733,13 @@ async def api_ai_session(request: web.Request) -> web.Response:
         except Exception:
             pass
 
-    if not user and not session_id and not client_history:
-        return web.json_response(
-            {
-                "ok": True,
-                "session_id": "",
-                "prompts_used": 0,
-                "max_prompts": MAX_PROMPTS_PER_SESSION,
-                "limit_reached": False,
-                "history": [],
-            }
-        )
-
-    lock_key = _resolve_ai_lock_key(session_id, user.id if user else None, client_ip)
+    lock_key = _resolve_ai_lock_key(session_id, user.id, client_ip)
     async with ai_session_store.get_execution_lock(lock_key):
         async with get_db_session() as session:
             chat_state, was_updated = await load_or_sync_ai_session(
                 db_session=session,
                 session_id=session_id,
-                web_user_id=user.id if user else None,
+                web_user_id=user.id,
                 client_history=client_history,
             )
             history = chat_state.get_history_payload()
@@ -3277,7 +3753,7 @@ async def api_ai_session(request: web.Request) -> web.Response:
         "history": history,
     }
 
-    if user and was_updated:
+    if was_updated:
         await broadcast_ws_event(
             {
                 "type": "ai_session_updated",
@@ -3291,7 +3767,9 @@ async def api_ai_session(request: web.Request) -> web.Response:
 
 @routes.post("/api/ai/chat")
 async def api_ai_chat(request: web.Request) -> web.Response:
-    user = await get_current_web_user(request)
+    user, auth_err = await _require_signed_in_ai_user(request)
+    if auth_err is not None or user is None:
+        return auth_err
     client_ip = get_client_ip(request)
 
     rl_blocked = _check_ai_chat_rate_limits(user, client_ip)
@@ -3329,20 +3807,20 @@ async def api_ai_chat(request: web.Request) -> web.Response:
         if reset_blocked is not None:
             return reset_blocked
 
-    lock_key = _resolve_ai_lock_key(session_id, user.id if user else None, client_ip)
+    lock_key = _resolve_ai_lock_key(session_id, user.id, client_ip)
     async with ai_session_store.get_execution_lock(lock_key):
         async with get_db_session() as session:
             if reset:
                 chat_state = await reset_ai_session_persistent(
                     db_session=session,
                     old_session_id=session_id,
-                    web_user_id=user.id if user else None,
+                    web_user_id=user.id,
                 )
             else:
                 chat_state, _ = await load_or_sync_ai_session(
                     db_session=session,
                     session_id=session_id,
-                    web_user_id=user.id if user else None,
+                    web_user_id=user.id,
                     client_history=client_history if isinstance(client_history, list) else None,
                 )
 
@@ -3367,31 +3845,32 @@ async def api_ai_chat(request: web.Request) -> web.Response:
                 db_session=session,
                 user_prompt=prompt,
                 chat_state=chat_state,
-                web_user_id=user.id if user else None,
+                web_user_id=user.id,
             )
 
     if not result.get("ok") and result.get("limit_reached"):
         return web.json_response(result, status=429)
 
-    if user:
-        await broadcast_ws_event(
-            {
-                "type": "ai_session_updated",
-                "recipient_id": user.id,
-                "session_id": result["session_id"],
-                "prompts_used": result["prompts_used"],
-                "max_prompts": result["max_prompts"],
-                "limit_reached": result["limit_reached"],
-                "history": result["history"],
-            }
-        )
+    await broadcast_ws_event(
+        {
+            "type": "ai_session_updated",
+            "recipient_id": user.id,
+            "session_id": result["session_id"],
+            "prompts_used": result["prompts_used"],
+            "max_prompts": result["max_prompts"],
+            "limit_reached": result["limit_reached"],
+            "history": result["history"],
+        }
+    )
 
     return web.json_response(result)
 
 
 @routes.post("/api/ai/reset")
 async def api_ai_reset(request: web.Request) -> web.Response:
-    user = await get_current_web_user(request)
+    user, auth_err = await _require_signed_in_ai_user(request)
+    if auth_err is not None or user is None:
+        return auth_err
     client_ip = get_client_ip(request)
     reset_blocked = _check_ai_reset_rate_limits(user, client_ip)
     if reset_blocked is not None:
@@ -3404,13 +3883,13 @@ async def api_ai_reset(request: web.Request) -> web.Response:
         data = {}
 
     old_sid = str(data.get("session_id") or "").strip()[:80] or None
-    lock_key = _resolve_ai_lock_key(old_sid, user.id if user else None, client_ip)
+    lock_key = _resolve_ai_lock_key(old_sid, user.id, client_ip)
     async with ai_session_store.get_execution_lock(lock_key):
         async with get_db_session() as session:
             fresh_state = await reset_ai_session_persistent(
                 db_session=session,
                 old_session_id=old_sid,
-                web_user_id=user.id if user else None,
+                web_user_id=user.id,
             )
 
     payload = {
@@ -3422,14 +3901,13 @@ async def api_ai_reset(request: web.Request) -> web.Response:
         "history": [],
     }
 
-    if user:
-        await broadcast_ws_event(
-            {
-                "type": "ai_session_updated",
-                "recipient_id": user.id,
-                **payload,
-            }
-        )
+    await broadcast_ws_event(
+        {
+            "type": "ai_session_updated",
+            "recipient_id": user.id,
+            **payload,
+        }
+    )
 
     return web.json_response(payload)
 

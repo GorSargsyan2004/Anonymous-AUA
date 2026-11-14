@@ -42,6 +42,7 @@ from app.database.models import (
     User,
     UserNotification,
     WebAnalyticsEvent,
+    WebEmailCooldown,
     WebOtpCode,
     WebPasswordResetCode,
     WebSyncCode,
@@ -63,8 +64,10 @@ def hash_password(password: str) -> str:
     return f"pbkdf2_sha256$200000${salt}${dk.hex()}"
 
 
-def verify_password(password: str, stored_hash: str) -> bool:
+def verify_password(password: str, stored_hash: Optional[str]) -> bool:
     """Verify a plaintext password against a stored PBKDF2-HMAC-SHA256 hash."""
+    if not password or not stored_hash:
+        return False
     try:
         parts = stored_hash.split("$")
         if len(parts) != 4 or parts[0] != "pbkdf2_sha256":
@@ -133,6 +136,21 @@ async def create_web_registration_otp(
     return code, otp_obj
 
 
+async def _lookup_verified_telegram_link(
+    session: AsyncSession,
+    clean_email: str,
+    bot_username: str = "aua_anonymous_bot",
+) -> Tuple[Optional[int], Optional[str]]:
+    """Find a verified Telegram bot User matching the given AUA email and return (tg_id, inbox_link)."""
+    tg_stmt = select(User).where(func.lower(User.email) == clean_email, User.is_verified.is_(True))
+    tg_user = (await session.execute(tg_stmt)).scalar_one_or_none()
+    if not tg_user:
+        return None, None
+    active_inbox = await get_user_active_inbox(session, user_id=tg_user.id)
+    auto_inbox_link = f"https://t.me/{bot_username}?start=msg_{active_inbox.token}" if active_inbox else None
+    return tg_user.id, auto_inbox_link
+
+
 async def verify_web_otp_and_register(
     session: AsyncSession,
     email: str,
@@ -180,17 +198,9 @@ async def verify_web_otp_and_register(
         await session.commit()
         return True, existing, "Account already verified."
 
-    # Check if a Telegram bot user already verified with this exact email
-    tg_stmt = select(User).where(func.lower(User.email) == clean_email, User.is_verified.is_(True))
-    tg_user = (await session.execute(tg_stmt)).scalar_one_or_none()
-    linked_tg_id: Optional[int] = None
-    auto_inbox_link: Optional[str] = None
-
-    if tg_user:
-        linked_tg_id = tg_user.id
-        active_inbox = await get_user_active_inbox(session, user_id=tg_user.id)
-        if active_inbox:
-            auto_inbox_link = f"https://t.me/{bot_username}?start=msg_{active_inbox.token}"
+    linked_tg_id, auto_inbox_link = await _lookup_verified_telegram_link(
+        session, clean_email, bot_username=bot_username
+    )
 
     web_user = WebUser(
         name=otp_obj.name,
@@ -204,6 +214,70 @@ async def verify_web_otp_and_register(
     await session.commit()
     await session.refresh(web_user)
     return True, web_user, "Registration complete!"
+
+
+def _derive_display_name(full_name: Optional[str], clean_email: str) -> str:
+    """Derive a clean non-empty display name from Google profile metadata or AUA email."""
+    candidate = " ".join((full_name or "").strip().split())
+    if len(candidate) >= 2:
+        return candidate[:80]
+    local_part = clean_email.split("@", 1)[0]
+    fallback = " ".join(re.split(r"[._-]+", local_part)).strip().title()
+    return (fallback if len(fallback) >= 2 else "AUA Student")[:80]
+
+
+async def upsert_or_link_google_web_user(
+    session: AsyncSession,
+    google_sub: str,
+    email: str,
+    full_name: Optional[str] = None,
+    bot_username: str = "aua_anonymous_bot",
+) -> Tuple[bool, Optional[WebUser], str]:
+    """Authenticate, link to an existing WebUser by email, or create a new Google-linked WebUser."""
+    clean_sub = (google_sub or "").strip()
+    clean_email = (email or "").strip().lower()
+    if not clean_sub or not clean_email:
+        return False, None, "Google profile did not include a valid identity."
+
+    by_sub = (
+        await session.execute(select(WebUser).where(WebUser.google_sub == clean_sub))
+    ).scalar_one_or_none()
+    if by_sub:
+        if getattr(by_sub, "is_deleted", False):
+            return False, None, "This AUA Hub account has been deleted."
+        if (by_sub.email or "").strip().lower() != clean_email:
+            email_conflict = await get_web_user_by_email(session, clean_email)
+            if email_conflict and email_conflict.id != by_sub.id:
+                return False, None, "Email address conflicts with another AUA Hub account."
+        return True, by_sub, "Signed in with Google!"
+
+    existing = await get_web_user_by_email(session, clean_email)
+    if existing:
+        if getattr(existing, "is_deleted", False):
+            return False, None, "This AUA Hub account has been deleted."
+        if existing.google_sub and existing.google_sub != clean_sub:
+            return False, None, "This AUA email is already linked to a different Google account."
+        existing.google_sub = clean_sub
+        existing.updated_at = datetime.now(timezone.utc)
+        await session.commit()
+        await session.refresh(existing)
+        return True, existing, "Signed in and linked Google to your AUA Hub account!"
+
+    linked_tg_id, auto_inbox_link = await _lookup_verified_telegram_link(
+        session, clean_email, bot_username=bot_username
+    )
+    web_user = WebUser(
+        name=_derive_display_name(full_name, clean_email),
+        email=clean_email,
+        password_hash=None,
+        google_sub=clean_sub,
+        telegram_user_id=linked_tg_id,
+        inbox_link=auto_inbox_link,
+    )
+    session.add(web_user)
+    await session.commit()
+    await session.refresh(web_user)
+    return True, web_user, "Account created and signed in with Google!"
 
 
 async def authenticate_web_user(
@@ -335,6 +409,89 @@ async def verify_web_password_reset_otp(
     await session.commit()
     await session.refresh(user)
     return True, user, "Password reset complete!"
+
+
+async def check_web_email_cooldown(
+    session: AsyncSession,
+    email: str,
+    purpose: str,
+    cooldown_seconds: int = 180,
+    daily_limit: int = 6,
+) -> Tuple[bool, int, str]:
+    """Return (allowed, retry_after_seconds, reason) for persistent per-email send limits."""
+    clean_email = (email or "").strip().lower()
+    clean_purpose = (purpose or "otp").strip().lower()[:32]
+    if not clean_email:
+        return True, 0, ""
+
+    stmt = (
+        select(WebEmailCooldown)
+        .where(
+            func.lower(WebEmailCooldown.email) == clean_email,
+            WebEmailCooldown.purpose == clean_purpose,
+        )
+        .limit(1)
+    )
+    row = (await session.execute(stmt)).scalar_one_or_none()
+    if not row:
+        return True, 0, ""
+
+    now = datetime.now(timezone.utc)
+    if cooldown_seconds > 0 and row.last_sent_at is not None:
+        elapsed = (now - _ensure_utc(row.last_sent_at, now)).total_seconds()
+        if elapsed < cooldown_seconds:
+            remaining = max(1, int(cooldown_seconds - elapsed + 0.999))
+            return False, remaining, "cooldown"
+
+    if daily_limit > 0 and row.window_started_at is not None:
+        window_elapsed = (now - _ensure_utc(row.window_started_at, now)).total_seconds()
+        if window_elapsed < 86400 and int(row.daily_count or 0) >= daily_limit:
+            remaining = max(1, int(86400 - window_elapsed + 0.999))
+            return False, remaining, "daily"
+
+    return True, 0, ""
+
+
+async def record_web_email_dispatch(
+    session: AsyncSession,
+    email: str,
+    purpose: str,
+) -> None:
+    """Persist the latest email dispatch timestamp and 24-hour send counter for an email/purpose."""
+    clean_email = (email or "").strip().lower()
+    clean_purpose = (purpose or "otp").strip().lower()[:32]
+    if not clean_email:
+        return
+
+    now = datetime.now(timezone.utc)
+    stmt = (
+        select(WebEmailCooldown)
+        .where(
+            func.lower(WebEmailCooldown.email) == clean_email,
+            WebEmailCooldown.purpose == clean_purpose,
+        )
+        .limit(1)
+    )
+    row = (await session.execute(stmt)).scalar_one_or_none()
+    if row:
+        window_start = _ensure_utc(row.window_started_at, now)
+        if (now - window_start).total_seconds() >= 86400:
+            row.window_started_at = now
+            row.daily_count = 1
+        else:
+            row.daily_count = int(row.daily_count or 0) + 1
+        row.last_sent_at = now
+    else:
+        session.add(
+            WebEmailCooldown(
+                email=clean_email,
+                purpose=clean_purpose,
+                last_sent_at=now,
+                daily_count=1,
+                window_started_at=now,
+            )
+        )
+    await session.commit()
 
 
 async def update_web_user_profile(

@@ -132,6 +132,34 @@ class Settings(BaseSettings):
         description="HTTP port for AUA Hub web server",
     )
 
+    # Google OAuth 2.0 Authentication
+    GOOGLE_CLIENT_ID: Optional[str] = Field(
+        default=None,
+        description="Google OAuth 2.0 Client ID for AUA Hub web sign-in",
+    )
+    GOOGLE_CLIENT_SECRET: Optional[str] = Field(
+        default=None,
+        description="Google OAuth 2.0 Client Secret for AUA Hub web sign-in",
+    )
+    GOOGLE_REDIRECT_URI: Optional[str] = Field(
+        default=None,
+        description="Google OAuth 2.0 Callback Redirect URI",
+    )
+
+    # Cloudflare Turnstile & Auth Email Cooldown Guardrails
+    TURNSTILE_SITE_KEY: Optional[str] = Field(
+        default=None,
+        description="Cloudflare Turnstile public site key rendered in web auth modals",
+    )
+    TURNSTILE_SECRET_KEY: Optional[str] = Field(
+        default=None,
+        description="Cloudflare Turnstile secret key verified server-side via siteverify",
+    )
+    AUTH_EMAIL_COOLDOWN_SECONDS: int = Field(
+        default=180,
+        description="Minimum cooldown in seconds between OTP/reset emails for the same address",
+    )
+
     # Shared JenzaReviews Remote Database & Supabase Configuration
     DATABASE_URL: Optional[str] = Field(
         default=None,

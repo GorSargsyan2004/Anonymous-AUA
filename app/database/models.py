@@ -537,7 +537,8 @@ class WebUser(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     name: Mapped[str] = mapped_column(String(128), nullable=False)
     email: Mapped[str] = mapped_column(String(128), unique=True, nullable=False, index=True)
-    password_hash: Mapped[str] = mapped_column(String(256), nullable=False)
+    password_hash: Mapped[Optional[str]] = mapped_column(String(256), nullable=True)
+    google_sub: Mapped[Optional[str]] = mapped_column(String(128), unique=True, nullable=True, index=True)
     bio: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     avatar_url: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
     inbox_link: Mapped[Optional[str]] = mapped_column(String(256), nullable=True)
@@ -596,6 +597,22 @@ class WebPasswordResetCode(Base):
     )
 
     web_user = relationship("WebUser", foreign_keys=[web_user_id])
+
+
+class WebEmailCooldown(Base):
+    """Persistent per-email cooldown and 24-hour dispatch counter across OTP and reset emails."""
+    __tablename__ = "web_email_cooldowns"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    email: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    purpose: Mapped[str] = mapped_column(String(32), nullable=False)
+    last_sent_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    daily_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False, server_default=text("0"))
+    window_started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("email", "purpose", name="uq_web_email_cooldowns_email_purpose"),
+    )
 
 
 class WebSyncCode(Base):

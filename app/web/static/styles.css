@@ -704,7 +704,7 @@ a,
 
 .home-partners-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(265px, 1fr));
   gap: 16px;
 }
 
@@ -1143,6 +1143,78 @@ a,
   font-size: 22px;
   font-weight: 800;
   letter-spacing: 6px;
+}
+
+.auth-modal-alert {
+  margin-bottom: 16px;
+  padding: 11px 13px;
+  border-radius: var(--radius-sm);
+  background: rgba(239, 68, 68, 0.14);
+  border: 1px solid rgba(248, 113, 113, 0.45);
+  color: #fecaca;
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 1.45;
+}
+
+.auth-google-divider {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 18px 0 14px;
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.auth-google-divider::before,
+.auth-google-divider::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: rgba(148, 163, 184, 0.22);
+}
+
+.btn-google-oauth {
+  width: 100%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 11px 16px;
+  border-radius: var(--radius-sm);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--text-white);
+  font-size: 14px;
+  font-weight: 600;
+  font-family: inherit;
+  cursor: pointer;
+  transition: background 0.18s ease, border-color 0.18s ease, transform 0.14s ease;
+}
+
+.btn-google-oauth:hover {
+  background: rgba(255, 255, 255, 0.14);
+  border-color: rgba(56, 189, 248, 0.48);
+  transform: translateY(-1px);
+}
+
+.auth-google-hint {
+  margin-top: 9px;
+  text-align: center;
+  font-size: 12px;
+  color: var(--text-secondary);
+  line-height: 1.4;
+}
+
+.auth-turnstile-slot {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  margin: 0 0 14px;
+  min-height: 66px;
 }
 
 /* Section Headers */
@@ -6186,8 +6258,22 @@ a,
   flex-wrap: wrap;
 }
 
-.ai-limit-banner.hidden {
+.ai-limit-banner.hidden,
+.ai-auth-gate.hidden,
+.ai-topbar-controls.hidden,
+.ai-composer-shell.hidden {
   display: none !important;
+}
+
+.ai-auth-gate {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  padding: 36px 20px;
+  margin: auto 0;
 }
 
 .ai-limit-banner-left {

@@ -25,6 +25,7 @@ from app.database.models import (
     User,
     UserNotification,
     WebAnalyticsEvent,
+    WebEmailCooldown,
     WebOtpCode,
     WebPasswordResetCode,
     WebSyncCode,
@@ -59,6 +60,7 @@ from app.database.web_crud import (
     get_web_admin_stats,
     get_web_user_by_email,
     get_web_user_by_id,
+    hash_password,
     list_academic_feedbacks,
     list_anonymous_public_posts,
     list_have_need_posts,
@@ -118,11 +120,24 @@ class TestAuaHub(unittest.IsolatedAsyncioTestCase):
     async def asyncTearDown(self) -> None:
         async with get_db_session() as session:
             await session.execute(
-                delete(WebOtpCode).where(WebOtpCode.email.in_([self.test_email_1, self.test_email_2]))
+                delete(WebOtpCode).where(
+                    WebOtpCode.email.in_([self.test_email_1, self.test_email_2])
+                    | WebOtpCode.email.like("cooldown_%@edu.aua.am")
+                    | WebOtpCode.email.like("ipcap_%@edu.aua.am")
+                )
             )
             await session.execute(
                 delete(WebPasswordResetCode).where(
                     WebPasswordResetCode.email.in_([self.test_email_1, self.test_email_2])
+                )
+            )
+            await session.execute(
+                delete(WebEmailCooldown).where(
+                    WebEmailCooldown.email.in_(
+                        [self.test_email_1, self.test_email_2, "nonexistent_aua_person@edu.aua.am"]
+                    )
+                    | WebEmailCooldown.email.like("cooldown_%@edu.aua.am")
+                    | WebEmailCooldown.email.like("ipcap_%@edu.aua.am")
                 )
             )
             await session.execute(
@@ -1611,14 +1626,18 @@ class TestAuaHub(unittest.IsolatedAsyncioTestCase):
 
         app = create_web_app()
         async with TestClient(TestServer(app)) as client:
-            # 4a. Unauthenticated caller cannot probe `user_<id>` or auth user's `session_id`
+            auth_token = create_jwt_token(sec_user_id)
+
+            # 4a. Unauthenticated callers are strictly rejected (401) across all AI endpoints & cannot probe sessions
             for probe_sid in (f"user_{sec_user_id}", auth_sid):
                 r_probe = await client.get(f"/api/ai/session?session_id={probe_sid}")
-                self.assertEqual(r_probe.status, 200)
-                d_probe = await r_probe.json()
-                self.assertEqual(d_probe["history"], [])
-                self.assertEqual(d_probe["prompts_used"], 0)
-                self.assertNotEqual(d_probe["session_id"], probe_sid)
+                self.assertEqual(r_probe.status, 401)
+            r_unauth_sess_post = await client.post("/api/ai/session", json={"session_id": auth_sid})
+            self.assertEqual(r_unauth_sess_post.status, 401)
+            r_unauth_chat = await client.post("/api/ai/chat", json={"prompt": "Hello AI"})
+            self.assertEqual(r_unauth_chat.status, 401)
+            r_unauth_reset = await client.post("/api/ai/reset", json={"session_id": auth_sid})
+            self.assertEqual(r_unauth_reset.status, 401)
 
             # 4b. CSRF check blocks `Origin: null` on state-changing POST
             r_csrf = await client.post(
@@ -1635,15 +1654,15 @@ class TestAuaHub(unittest.IsolatedAsyncioTestCase):
                 await client.ws_connect("/ws/chat", headers={"Origin": "https://evil.example"})
             self.assertEqual(ws_err.exception.status, 403)
 
-            # 4c. Malicious IP-logger link rejected before AI call
+            # 4c. Malicious IP-logger link rejected before AI call (signed-in)
             r_bad_url = await client.post(
                 "/api/ai/chat",
                 json={"prompt": "Check https://grabify.link/abc right now"},
+                headers={"Authorization": f"Bearer {auth_token}"},
             )
             self.assertEqual(r_bad_url.status, 400)
 
             # 4d. Forged client_history on an existing authenticated DB session cannot inject assistant answers
-            auth_token = create_jwt_token(sec_user_id)
             r_sync = await client.post(
                 "/api/ai/session",
                 json={
@@ -1803,8 +1822,8 @@ class TestAuaHub(unittest.IsolatedAsyncioTestCase):
 
         app = create_web_app()
         async with TestClient(TestServer(app)) as client:
-            # 1. Versioned static bundle gets immutable cache header & dropdown stacking + auth reset styles
-            r_css = await client.get("/static/styles.css?v=20261114_16")
+            # 1. Versioned static bundle gets immutable cache header & dropdown stacking + auth reset & Google OAuth styles
+            r_css = await client.get("/static/styles.css?v=20261114_20")
             self.assertEqual(r_css.status, 200)
             self.assertIn("max-age=604800", r_css.headers.get("Cache-Control", ""))
             css_body = await r_css.text()
@@ -1812,21 +1831,41 @@ class TestAuaHub(unittest.IsolatedAsyncioTestCase):
             self.assertIn(".fb-filter-bar", css_body)
             self.assertIn(".glass-panel:has(.course-dropdown.open)", css_body)
             self.assertIn(".auth-inline-link", css_body)
+            self.assertIn(".btn-google-oauth", css_body)
+            self.assertIn(".auth-turnstile-slot", css_body)
+            self.assertIn(".ai-auth-gate", css_body)
+            self.assertIn("minmax(265px, 1fr)", css_body)
 
-            # 2. Index HTML remains uncached & serves lightweight PNG partner logos + async fonts + forgot password forms
+            # 2. Index HTML remains uncached & serves lightweight PNG partner logos + async fonts + forgot password & Google OAuth UI
             r_home = await client.get("/")
             self.assertEqual(r_home.status, 200)
             self.assertIn("no-cache", r_home.headers.get("Cache-Control", ""))
+            csp = r_home.headers.get("Content-Security-Policy", "")
+            self.assertIn("https://challenges.cloudflare.com", csp)
+            self.assertIn("frame-src", csp)
             home_html = await r_home.text()
             self.assertIn("/static/partners/jenzareviews-logo.png", home_html)
+            self.assertIn("/static/partners/auautils-logo.png", home_html)
+            self.assertIn("https://chromewebstore.google.com/detail/aua-utils/echkbfkpejnpbjfmjoagfijakbnbglgp", home_html)
+            self.assertIn('id="aiAuthGateCard"', home_html)
+            self.assertIn("Sign In to Use", home_html)
             self.assertIn('id="googleFontsCss"', home_html)
             self.assertIn('class="glass-panel fb-filter-bar"', home_html)
             self.assertIn('id="forgotForm"', home_html)
             self.assertIn('id="resetPasswordForm"', home_html)
+            self.assertIn('id="googleSignInBtn"', home_html)
+            self.assertIn('id="turnstileSlot_login"', home_html)
+            self.assertIn('id="turnstileSlot_register"', home_html)
+            self.assertIn('id="turnstileSlot_forgot"', home_html)
+            self.assertIn("Please use your <b>@edu.aua.am</b> or <b>@alumni.aua.am</b> university Google account.", home_html)
             self.assertNotIn("ai-suggestions-grid", home_html)
 
             # 3. Optimized partner PNG assets serve cleanly
-            for asset in ("/static/partners/jenzareviews-logo.png", "/static/partners/findaua-logo.png"):
+            for asset in (
+                "/static/partners/jenzareviews-logo.png",
+                "/static/partners/findaua-logo.png",
+                "/static/partners/auautils-logo.png",
+            ):
                 r_img = await client.get(asset)
                 self.assertEqual(r_img.status, 200)
                 self.assertLess(len(await r_img.read()), 30_000)
@@ -1991,13 +2030,43 @@ class TestAuaHub(unittest.IsolatedAsyncioTestCase):
                     self.assertFalse(ok_disabled)
                     self.assertEqual(reason_disabled, "disabled")
 
-            # 3. Guest IP rate limits (5/min chat, 3/min reset) and oversized JSON payload rejection on /api/ai/chat
+            # 3. Signed-out AI endpoints reject guests (401); signed-in AI chat enforces oversized payload (400) & per-user rate limits (15/min)
+            ai_uid = None
+            async with get_db_session() as session:
+                flood_user = WebUser(
+                    name="AI Flood Shield User",
+                    email=self.test_email_1,
+                    password_hash=hash_password("FloodPass123!"),
+                )
+                session.add(flood_user)
+                await session.commit()
+                await session.refresh(flood_user)
+                ai_uid = flood_user.id
+            ai_token = create_jwt_token(ai_uid)
+            ai_headers = {"Authorization": f"Bearer {ai_token}"}
+
             app = create_web_app()
             async with TestClient(TestServer(app)) as client:
+                with patch.object(ai_orchestrator, "answer_prompt") as mock_guest_ai:
+                    self.assertEqual((await client.get("/api/ai/session")).status, 401)
+                    self.assertEqual(
+                        (await client.post("/api/ai/session", json={})).status,
+                        401,
+                    )
+                    self.assertEqual(
+                        (await client.post("/api/ai/chat", json={"prompt": "Guest ping"})).status,
+                        401,
+                    )
+                    self.assertEqual(
+                        (await client.post("/api/ai/reset", json={})).status,
+                        401,
+                    )
+                    mock_guest_ai.assert_not_called()
+
                 r_big = await client.post(
                     "/api/ai/chat",
                     data=b'{"prompt":"' + (b"x" * 140_000) + b'"}',
-                    headers={"Content-Type": "application/json"},
+                    headers={"Content-Type": "application/json", **ai_headers},
                 )
                 self.assertEqual(r_big.status, 400)
 
@@ -2016,28 +2085,35 @@ class TestAuaHub(unittest.IsolatedAsyncioTestCase):
                     }
 
                 with patch.object(ai_orchestrator, "answer_prompt", side_effect=_quick_ok):
-                    guest_statuses = []
-                    for i in range(6):
+                    chat_statuses = []
+                    for i in range(15):
+                        # Reset prompt counter every 4 turns so the HTTP per-user 15/min limiter fires before session 5-prompt lock
                         resp = await client.post(
                             "/api/ai/chat",
-                            json={"prompt": f"Guest ping {i}"},
+                            json={"prompt": f"User ping {i}", "reset": (i % 4 == 0)},
+                            headers=ai_headers,
                         )
-                        guest_statuses.append(resp.status)
-                # First 4 passed (1 from r_big already counted toward guest 5/min!), 5th+6th return 429
-                self.assertEqual(guest_statuses, [200, 200, 200, 200, 429, 429])
+                        chat_statuses.append(resp.status)
+                # 1 from r_big + 14 from loop = 15 passed; 15th loop iteration (16th total call) hits 429
+                self.assertEqual(chat_statuses, [200] * 14 + [429])
 
+                reset_rate_limits()
                 reset_statuses = [
-                    (await client.post("/api/ai/reset", json={})).status for _ in range(4)
+                    (await client.post("/api/ai/reset", json={}, headers=ai_headers)).status
+                    for _ in range(16)
                 ]
-                self.assertEqual(reset_statuses, [200, 200, 200, 429])
+                self.assertEqual(reset_statuses, [200] * 15 + [429])
         finally:
             async with get_db_session() as session:
                 await session.execute(delete(AIUsageLog).where(AIUsageLog.session_id.like(f"{test_sid_prefix}%")))
+                await session.execute(delete(WebUserAIChatSession).where(WebUserAIChatSession.web_user_id == ai_uid))
+                await session.execute(delete(WebUser).where(WebUser.email == self.test_email_1))
                 await session.commit()
             reset_rate_limits()
 
     async def test_web_forgot_and_reset_password_flow(self) -> None:
         """Verify end-to-end forgot/reset password OTP hashing, anti-enumeration, attempt lockouts, and JWT rotation."""
+        from app.config import settings
         from app.services.email_verification import send_password_reset_email
         from app.web.server import create_web_app
 
@@ -2056,6 +2132,8 @@ class TestAuaHub(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(getattr(user, "token_version", 1), 1)
             old_jwt = create_jwt_token(user.id, token_version=user.token_version)
 
+        self.enterContext(patch.object(settings, "TURNSTILE_SITE_KEY", ""))
+        self.enterContext(patch.object(settings, "TURNSTILE_SECRET_KEY", ""))
         app = create_web_app()
         try:
             async with TestClient(TestServer(app)) as client:
@@ -2154,8 +2232,13 @@ class TestAuaHub(unittest.IsolatedAsyncioTestCase):
                     self.assertTrue(sim_ok)
                     self.assertEqual(sim_info, "simulated")
 
-                # 8. Issue a fresh reset code via HTTP, then reset password and verify JWT + credential rotation
+                # 8. Clear cooldown & rate limits, issue a fresh reset code via HTTP, then reset password and verify JWT + credential rotation
                 reset_rate_limits()
+                async with get_db_session() as session:
+                    await session.execute(
+                        delete(WebEmailCooldown).where(WebEmailCooldown.email == self.test_email_1)
+                    )
+                    await session.commit()
                 captured_codes.clear()
                 with patch("app.web.server.send_password_reset_email", side_effect=_fake_send_reset_email):
                     r_reissue = await client.post(
@@ -2226,6 +2309,454 @@ class TestAuaHub(unittest.IsolatedAsyncioTestCase):
                     )
                     self.assertFalse(ok_exp)
                     self.assertIn("expired", msg_exp.lower())
+        finally:
+            reset_rate_limits()
+            reset_global_email_rate_limit()
+
+    async def test_web_google_oauth_domain_gate_and_account_linking(self) -> None:
+        """Verify Google OAuth PKCE/state CSRF, strict @edu.aua.am/@alumni.aua.am gate, rejection redirect, and existing WebUser linking."""
+        import urllib.parse
+        from app.config import settings
+        from app.web.server import _CONSUMED_GOOGLE_OAUTH_JTIS, create_web_app
+
+        reset_rate_limits()
+        _CONSUMED_GOOGLE_OAUTH_JTIS.clear()
+
+        async with get_db_session() as session:
+            # Pre-register User 1 with password (to verify automatic Google linking)
+            reg_code, _ = await create_web_registration_otp(
+                session, name="Existing Linked User", email=self.test_email_1, password="LinkedPassword123!"
+            )
+            ok_reg, existing_user, _ = await verify_web_otp_and_register(
+                session, email=self.test_email_1, otp_code=reg_code
+            )
+            self.assertTrue(ok_reg)
+            self.assertIsNotNone(existing_user)
+
+        app = create_web_app()
+        try:
+            async with TestClient(TestServer(app)) as client:
+                # 1. Placeholder config redirects gracefully with user-friendly error
+                with (
+                    patch.object(settings, "GOOGLE_CLIENT_ID", "your_google_client_id_here"),
+                    patch.object(settings, "GOOGLE_CLIENT_SECRET", "your_google_client_secret_here"),
+                ):
+                    r_unconf = await client.get("/api/auth/google", allow_redirects=False)
+                    self.assertEqual(r_unconf.status, 302)
+                    self.assertIn("auth_error=", r_unconf.headers.get("Location", ""))
+
+                with (
+                    patch.object(settings, "GOOGLE_CLIENT_ID", "test-google-client-id.apps.googleusercontent.com"),
+                    patch.object(settings, "GOOGLE_CLIENT_SECRET", "test-google-client-secret"),
+                    patch.object(settings, "GOOGLE_REDIRECT_URI", "https://auahub.am/api/auth/callback/google"),
+                    patch.object(settings, "TURNSTILE_SITE_KEY", ""),
+                    patch.object(settings, "TURNSTILE_SECRET_KEY", ""),
+                ):
+                    async def _start_and_get_state() -> str:
+                        r_start = await client.get("/api/auth/google", allow_redirects=False)
+                        self.assertEqual(r_start.status, 302)
+                        loc = r_start.headers["Location"]
+                        self.assertTrue(loc.startswith("https://accounts.google.com/o/oauth2/v2/auth?"))
+                        parsed_qs = urllib.parse.parse_qs(urllib.parse.urlparse(loc).query)
+                        self.assertEqual(parsed_qs["code_challenge_method"][0], "S256")
+                        self.assertEqual(parsed_qs["redirect_uri"][0], "https://auahub.am/api/auth/callback/google")
+                        return parsed_qs["state"][0]
+
+                    # 2. Invalid/missing state fails cleanly without issuing a session cookie
+                    r_bad_state = await client.get(
+                        "/api/auth/callback/google?code=fake&state=wrong-state",
+                        allow_redirects=False,
+                    )
+                    self.assertEqual(r_bad_state.status, 302)
+                    self.assertIn("auth_error=", r_bad_state.headers["Location"])
+                    self.assertNotIn("aua_hub_token", r_bad_state.cookies)
+
+                    # 3. Personal @gmail.com email is blocked post-auth, no DB user created, no session cookie
+                    st_gmail = await _start_and_get_state()
+                    with patch(
+                        "app.web.server._exchange_google_code_for_profile",
+                        new=AsyncMock(
+                            return_value={
+                                "sub": "google-sub-gmail-001",
+                                "email": "random.person@gmail.com",
+                                "email_verified": True,
+                                "name": "Random Gmail",
+                            }
+                        ),
+                    ):
+                        r_gmail = await client.get(
+                            f"/api/auth/callback/google?code=authcode1&state={urllib.parse.quote(st_gmail)}",
+                            allow_redirects=False,
+                        )
+                    self.assertEqual(r_gmail.status, 302)
+                    loc_gmail = r_gmail.headers["Location"]
+                    self.assertIn("auth_error=", loc_gmail)
+                    self.assertIn("Access+Restricted", loc_gmail)
+                    self.assertNotIn("aua_hub_token", r_gmail.cookies)
+                    async with get_db_session() as session:
+                        self.assertIsNone(await get_web_user_by_email(session, "random.person@gmail.com"))
+
+                    # 4. Staff @aua.am or unverified email is also blocked cleanly
+                    st_unverified = await _start_and_get_state()
+                    with patch(
+                        "app.web.server._exchange_google_code_for_profile",
+                        new=AsyncMock(
+                            return_value={
+                                "sub": "google-sub-unverified-001",
+                                "email": self.test_email_2,
+                                "email_verified": False,
+                                "name": "Unverified Alum",
+                            }
+                        ),
+                    ):
+                        r_unv = await client.get(
+                            f"/api/auth/google/callback?code=authcode2&state={urllib.parse.quote(st_unverified)}",
+                            allow_redirects=False,
+                        )
+                    self.assertEqual(r_unv.status, 302)
+                    self.assertIn("auth_error=", r_unv.headers["Location"])
+                    self.assertNotIn("aua_hub_token", r_unv.cookies)
+
+                    # 5. Replaying an already-consumed OAuth state fails cleanly
+                    r_replay = await client.get(
+                        f"/api/auth/google/callback?code=authcode1&state={urllib.parse.quote(st_gmail)}",
+                        allow_redirects=False,
+                    )
+                    self.assertEqual(r_replay.status, 302)
+                    self.assertIn("auth_error=", r_replay.headers["Location"])
+
+                    # 6. Existing password-registered @edu.aua.am user links automatically on Google Sign-In
+                    st_link = await _start_and_get_state()
+                    with patch(
+                        "app.web.server._exchange_google_code_for_profile",
+                        new=AsyncMock(
+                            return_value={
+                                "sub": "google-sub-edu-existing-001",
+                                "email": self.test_email_1,
+                                "email_verified": True,
+                                "name": "Google Override Name",
+                            }
+                        ),
+                    ):
+                        r_link = await client.get(
+                            f"/api/auth/callback/google?code=authcode3&state={urllib.parse.quote(st_link)}",
+                            allow_redirects=False,
+                        )
+                    self.assertEqual(r_link.status, 302)
+                    self.assertEqual(r_link.headers["Location"], "/?auth_success=google")
+                    self.assertIn("aua_hub_token", r_link.cookies)
+
+                    r_me_linked = await client.get("/api/auth/me")
+                    me_linked = await r_me_linked.json()
+                    self.assertTrue(me_linked["authenticated"])
+                    self.assertEqual(me_linked["user"]["id"], existing_user.id)
+                    self.assertEqual(me_linked["user"]["name"], "Existing Linked User")
+
+                    async with get_db_session() as session:
+                        linked_db_user = await get_web_user_by_id(session, existing_user.id)
+                        self.assertEqual(linked_db_user.google_sub, "google-sub-edu-existing-001")
+
+                    # Sign out before testing new @alumni.aua.am signup via Google
+                    await client.post("/api/auth/logout")
+
+                    # 7. Brand-new @alumni.aua.am user creates passwordless Google WebUser cleanly
+                    st_alumni = await _start_and_get_state()
+                    with patch(
+                        "app.web.server._exchange_google_code_for_profile",
+                        new=AsyncMock(
+                            return_value={
+                                "sub": "google-sub-alumni-new-002",
+                                "email": self.test_email_2,
+                                "email_verified": True,
+                                "name": "Anna Alumni Google",
+                            }
+                        ),
+                    ):
+                        r_alumni = await client.get(
+                            f"/api/auth/google/callback?code=authcode4&state={urllib.parse.quote(st_alumni)}",
+                            allow_redirects=False,
+                        )
+                    self.assertEqual(r_alumni.status, 302)
+                    self.assertEqual(r_alumni.headers["Location"], "/?auth_success=google")
+                    self.assertIn("aua_hub_token", r_alumni.cookies)
+
+                    r_me_alumni = await client.get("/api/auth/me")
+                    me_alumni = await r_me_alumni.json()
+                    self.assertTrue(me_alumni["authenticated"])
+                    self.assertEqual(me_alumni["user"]["email"], self.test_email_2)
+                    self.assertTrue(me_alumni["user"]["is_alumni"])
+
+                    # Password login returns 401 cleanly on passwordless Google account
+                    r_pwd_fail = await client.post(
+                        "/api/auth/login",
+                        json={"email": self.test_email_2, "password": "anything"},
+                    )
+                    self.assertEqual(r_pwd_fail.status, 401)
+        finally:
+            _CONSUMED_GOOGLE_OAUTH_JTIS.clear()
+            reset_rate_limits()
+
+    async def test_auth_rate_limits_email_cooldown_and_turnstile(self) -> None:
+        """Verify Turnstile pre-DB 403 gate, persistent 3-min email cooldown (anti-enum + 429), and shared IP code limits."""
+        from app.config import settings
+        from app.web.server import create_web_app
+
+        reset_rate_limits()
+        reset_global_email_rate_limit()
+
+        # Ensure pre-existing user for forgot-password cooldown checks
+        async with get_db_session() as session:
+            user_1 = WebUser(
+                name="Cooldown Test User",
+                email=self.test_email_1,
+                password_hash=hash_password("InitialPassword123!"),
+            )
+            session.add(user_1)
+            await session.commit()
+
+        app = create_web_app()
+        try:
+            async with TestClient(TestServer(app)) as client:
+                # 1. Public config reflects placeholder vs active Turnstile keys without exposing secret
+                with (
+                    patch.object(settings, "TURNSTILE_SITE_KEY", "your_turnstile_site_key_here"),
+                    patch.object(settings, "TURNSTILE_SECRET_KEY", "your_turnstile_secret_key_here"),
+                ):
+                    r_cfg_off = await client.get("/api/auth/config")
+                    self.assertEqual(r_cfg_off.status, 200)
+                    cfg_off = await r_cfg_off.json()
+                    self.assertFalse(cfg_off["turnstile_enabled"])
+                    self.assertIsNone(cfg_off["turnstile_site_key"])
+
+                with (
+                    patch.object(settings, "TURNSTILE_SITE_KEY", "test_site_key_123"),
+                    patch.object(settings, "TURNSTILE_SECRET_KEY", "test_secret_key_xyz"),
+                ):
+                    r_cfg_on = await client.get("/api/auth/config")
+                    self.assertEqual(r_cfg_on.status, 200)
+                    cfg_on = await r_cfg_on.json()
+                    self.assertTrue(cfg_on["turnstile_enabled"])
+                    self.assertEqual(cfg_on["turnstile_site_key"], "test_site_key_123")
+                    self.assertNotIn("test_secret_key_xyz", await r_cfg_on.text())
+
+                    # 2. When Turnstile is configured, missing or invalid tokens return 403 BEFORE DB lookups or email dispatches
+                    with (
+                        patch("app.web.server.authenticate_web_user") as m_auth_db,
+                        patch("app.web.server.get_web_user_by_email") as m_get_user,
+                        patch("app.web.server.create_web_password_reset_otp") as m_create_reset,
+                        patch("app.web.server.send_verification_email") as m_send_verif,
+                        patch("app.web.server.send_password_reset_email") as m_send_reset,
+                    ):
+                        r_login_notok = await client.post(
+                            "/api/auth/login",
+                            json={"email": self.test_email_1, "password": "InitialPassword123!"},
+                        )
+                        self.assertEqual(r_login_notok.status, 403)
+
+                        r_reg_notok = await client.post(
+                            "/api/auth/register",
+                            json={
+                                "name": "Bot User",
+                                "email": "cooldown_bot@edu.aua.am",
+                                "password": "Password123!",
+                                "confirm_password": "Password123!",
+                            },
+                        )
+                        self.assertEqual(r_reg_notok.status, 403)
+
+                        r_forgot_notok = await client.post(
+                            "/api/auth/forgot-password",
+                            json={"email": self.test_email_1},
+                        )
+                        self.assertEqual(r_forgot_notok.status, 403)
+
+                        # Failed Cloudflare verification also stops BEFORE DB lookup / email dispatch
+                        with patch(
+                            "app.web.server._verify_turnstile_token",
+                            return_value=(False, "Human verification failed."),
+                        ):
+                            r_forgot_bad = await client.post(
+                                "/api/auth/forgot-password",
+                                json={
+                                    "email": self.test_email_1,
+                                    "cf_turnstile_response": "bad-token",
+                                },
+                            )
+                            self.assertEqual(r_forgot_bad.status, 403)
+
+                        m_auth_db.assert_not_called()
+                        m_get_user.assert_not_called()
+                        m_create_reset.assert_not_called()
+                        m_send_verif.assert_not_called()
+                        m_send_reset.assert_not_called()
+
+                    # 3. Valid Turnstile token proceeds cleanly and siteverify sends secret + token
+                    verify_calls = []
+
+                    class _FakeSiteVerifyResp:
+                        status = 200
+
+                        async def __aenter__(self):
+                            return self
+
+                        async def __aexit__(self, *args):
+                            return None
+
+                        async def json(self):
+                            return {"success": True}
+
+                    def _fake_cf_post(self_session, url, data=None, **kwargs):
+                        verify_calls.append((url, dict(data or {})))
+                        return _FakeSiteVerifyResp()
+
+                    forgot_sent = []
+
+                    async def _track_reset_send(to_email: str, code: str):
+                        forgot_sent.append(to_email)
+                        return True, "ok"
+
+                    with (
+                        patch("aiohttp.ClientSession.post", new=_fake_cf_post),
+                        patch("app.web.server.send_password_reset_email", side_effect=_track_reset_send),
+                    ):
+                        r_forgot_ok = await client.post(
+                            "/api/auth/forgot-password",
+                            json={
+                                "email": self.test_email_1,
+                                "cf_turnstile_response": "valid-cf-token-1",
+                            },
+                        )
+                        self.assertEqual(r_forgot_ok.status, 200)
+                        self.assertEqual(len(verify_calls), 1)
+                        self.assertEqual(
+                            verify_calls[0][0],
+                            "https://challenges.cloudflare.com/turnstile/v0/siteverify",
+                        )
+                        self.assertEqual(verify_calls[0][1]["secret"], "test_secret_key_xyz")
+                        self.assertEqual(verify_calls[0][1]["response"], "valid-cf-token-1")
+                        self.assertEqual(forgot_sent, [self.test_email_1])
+
+                        # 4. Persistent DB 3-minute cooldown survives in-memory rate-limit reset:
+                        # forgot-password returns uniform 200 anti-enumeration response WITHOUT sending duplicate email
+                        reset_rate_limits()
+                        r_forgot_cd = await client.post(
+                            "/api/auth/forgot-password",
+                            json={
+                                "email": self.test_email_1,
+                                "cf_turnstile_response": "valid-cf-token-2",
+                            },
+                        )
+                        self.assertEqual(r_forgot_cd.status, 200)
+                        cd_payload = await r_forgot_cd.json()
+                        self.assertTrue(cd_payload["ok"])
+                        self.assertIn("If an active AUA Hub account exists", cd_payload["message"])
+                        self.assertEqual(len(forgot_sent), 1)
+
+                        # Unregistered email receives identical 200 & also enforces cooldown without duplicate DB churn
+                        r_unreg_1 = await client.post(
+                            "/api/auth/forgot-password",
+                            json={
+                                "email": "cooldown_unknown@edu.aua.am",
+                                "cf_turnstile_response": "valid-cf-token-3",
+                            },
+                        )
+                        self.assertEqual(r_unreg_1.status, 200)
+                        self.assertEqual((await r_unreg_1.json())["message"], cd_payload["message"])
+                        self.assertEqual(len(forgot_sent), 1)
+
+                # 5. Registration persistent DB cooldown returns 429 & prevents duplicate email even across rate-limit reset
+                reg_sent = []
+
+                async def _track_reg_send(to_email: str, code: str):
+                    reg_sent.append(to_email)
+                    return True, "ok"
+
+                reset_rate_limits()
+                with (
+                    patch.object(settings, "TURNSTILE_SITE_KEY", ""),
+                    patch.object(settings, "TURNSTILE_SECRET_KEY", ""),
+                    patch.object(settings, "AUTH_EMAIL_COOLDOWN_SECONDS", 180),
+                    patch("app.web.server.send_verification_email", side_effect=_track_reg_send),
+                ):
+                    r_reg_1 = await client.post(
+                        "/api/auth/register",
+                        json={
+                            "name": "Cooldown Victim",
+                            "email": "cooldown_victim@edu.aua.am",
+                            "password": "Password123!",
+                            "confirm_password": "Password123!",
+                        },
+                    )
+                    self.assertEqual(r_reg_1.status, 200)
+                    self.assertEqual(reg_sent, ["cooldown_victim@edu.aua.am"])
+
+                    reset_rate_limits()
+                    r_reg_cd = await client.post(
+                        "/api/auth/register",
+                        json={
+                            "name": "Cooldown Victim",
+                            "email": "cooldown_victim@edu.aua.am",
+                            "password": "Password123!",
+                            "confirm_password": "Password123!",
+                        },
+                    )
+                    self.assertEqual(r_reg_cd.status, 429)
+                    cd_err = await r_reg_cd.json()
+                    self.assertIn("wait", cd_err["error"].lower())
+                    self.assertGreater(cd_err.get("retry_after", 0), 0)
+                    self.assertEqual(len(reg_sent), 1)
+
+                    # Once cooldown window elapses, dispatch succeeds again
+                    async with get_db_session() as session:
+                        row = (
+                            await session.execute(
+                                select(WebEmailCooldown).where(
+                                    WebEmailCooldown.email == "cooldown_victim@edu.aua.am",
+                                    WebEmailCooldown.purpose == "register_otp",
+                                )
+                            )
+                        ).scalar_one()
+                        row.last_sent_at = datetime.now(timezone.utc) - timedelta(seconds=185)
+                        await session.commit()
+
+                    r_reg_after = await client.post(
+                        "/api/auth/register",
+                        json={
+                            "name": "Cooldown Victim",
+                            "email": "cooldown_victim@edu.aua.am",
+                            "password": "Password123!",
+                            "confirm_password": "Password123!",
+                        },
+                    )
+                    self.assertEqual(r_reg_after.status, 200)
+                    self.assertEqual(len(reg_sent), 2)
+
+                    # 6. Shared per-IP limit (max 5 code requests / 15m across /register and /forgot-password)
+                    reset_rate_limits()
+                    for idx in range(1, 4):
+                        r_ip = await client.post(
+                            "/api/auth/register",
+                            json={
+                                "name": f"IP Cap {idx}",
+                                "email": f"ipcap_{idx}@edu.aua.am",
+                                "password": "Password123!",
+                                "confirm_password": "Password123!",
+                            },
+                        )
+                        self.assertEqual(r_ip.status, 200)
+                    for idx in range(4, 6):
+                        r_ip = await client.post(
+                            "/api/auth/forgot-password",
+                            json={"email": f"ipcap_{idx}@edu.aua.am"},
+                        )
+                        self.assertEqual(r_ip.status, 200)
+
+                    # 6th code-sending attempt from same IP across either endpoint is rejected with 429
+                    r_ip_blocked = await client.post(
+                        "/api/auth/forgot-password",
+                        json={"email": "ipcap_6@edu.aua.am"},
+                    )
+                    self.assertEqual(r_ip_blocked.status, 429)
         finally:
             reset_rate_limits()
             reset_global_email_rate_limit()

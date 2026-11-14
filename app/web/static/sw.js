@@ -1,11 +1,12 @@
 /* AUA Hub Service Worker (PWA Support & Offline Shell Cache) */
-const CACHE_NAME = "aua-hub-shell-v36";
+const CACHE_NAME = "aua-hub-shell-v40";
 const SHELL_ASSETS = [
   "/",
-  "/static/styles.css?v=20261114_16",
-  "/static/app.js?v=20261114_15",
+  "/static/styles.css?v=20261114_20",
+  "/static/app.js?v=20261114_18",
   "/static/partners/findaua-logo.png",
   "/static/partners/jenzareviews-logo.png",
+  "/static/partners/auautils-logo.png",
   "/static/favicon-32x32.png?v=20261113_1",
   "/static/favicon-192x192.png?v=20261113_1",
   "/static/apple-touch-icon.png?v=20261113_1",

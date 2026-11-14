@@ -24,7 +24,7 @@
   <link rel="icon" type="image/png" sizes="32x32" href="/static/favicon-32x32.png?v=20261113_1" />
   <link rel="icon" type="image/png" sizes="192x192" href="/static/favicon-192x192.png?v=20261113_1" />
   <link rel="shortcut icon" href="/favicon.ico?v=20261113_1" />
-  <link rel="stylesheet" href="/static/styles.css?v=20261114_16" />
+  <link rel="stylesheet" href="/static/styles.css?v=20261114_20" />
 </head>
 
 <body>
@@ -178,8 +178,8 @@
             <span class="home-partners-badge">🤝 Student-Run Ecosystem &bull; Official Collaborations</span>
             <h2 class="home-partners-title">Partnered AUA Student Platforms</h2>
             <p class="home-partners-subtitle">
-              <strong>auahub.am</strong> is collaborating with fellow student-run platforms built by and for AUA
-              students. Explore our partner sites below:
+              <strong>auahub.am</strong> highlights fellow student-run platforms and tools built by and for AUA
+              students. Explore our partner platforms and plugins below:
             </p>
           </div>
 
@@ -228,6 +228,28 @@
                 with AUA Hub Feedbacks &amp; AI Assistant.
               </p>
             </a>
+
+            <a href="https://chromewebstore.google.com/detail/aua-utils/echkbfkpejnpbjfmjoagfijakbnbglgp?hl=en"
+              target="_blank" rel="noopener noreferrer" class="glass-card home-partner-card"
+              onclick="if(window.trackWebEvent) trackWebEvent('click_partner_auautils')">
+              <div class="home-partner-top">
+                <div class="home-partner-logo-wrap">
+                  <img src="/static/partners/auautils-logo.png" width="40" height="40" decoding="async"
+                    alt="AUA Utils Logo" class="home-partner-logo" />
+                </div>
+                <div class="home-partner-meta">
+                  <div class="home-partner-name-row">
+                    <span class="home-partner-name">AUA Utils</span>
+                    <span class="home-partner-domain">Chrome Extension &nearr;</span>
+                  </div>
+                  <span class="home-partner-collab-pill">🧩 Student Browser Plugin &bull; Chrome &amp; Firefox</span>
+                </div>
+              </div>
+              <p class="home-partner-desc">
+                Open-source student browser extension enhancing AUA web portals with fast course search &amp; filtering,
+                GenEd discovery, multi-schedule calendar builder (Google Calendar export), wishlist, and quick links.
+              </p>
+            </a>
           </div>
         </div>
 
@@ -271,7 +293,7 @@
             </div>
           </div>
 
-          <div class="ai-topbar-controls">
+          <div id="aiTopbarControls" class="ai-topbar-controls hidden">
             <div class="ai-quota-pill" id="aiSessionQuotaPill" title="Maximum 5 prompts per chat session">
               <span class="ai-quota-label" id="aiQuotaText">0 / 5 Prompts</span>
               <div class="ai-quota-segments" id="aiQuotaSegments">
@@ -282,8 +304,8 @@
                 <span class="ai-quota-seg"></span>
               </div>
             </div>
-            <button type="button" class="btn-glass ai-new-chat-top-btn" onclick="resetAiChatSession()"
-              title="Start a fresh 5-prompt session">
+            <button type="button" id="aiNewChatTopBtn" class="btn-glass ai-new-chat-top-btn"
+              onclick="resetAiChatSession()" title="Start a fresh 5-prompt session">
               <span>↻</span> New Chat
             </button>
           </div>
@@ -291,6 +313,28 @@
 
         <!-- Main Conversation & Hero Stage -->
         <div class="glass-panel ai-stage-panel">
+          <!-- Sign-In Gate (Shown when user is not signed in) -->
+          <div id="aiAuthGateCard" class="ai-auth-gate hidden" role="region"
+            aria-label="Sign in required to use AUA Hub AI">
+            <div class="ai-hero-emblem" style="margin-bottom: 14px;">
+              <div class="ai-hero-ring ring-outer"></div>
+              <div class="ai-hero-ring ring-inner"></div>
+              <span class="ai-hero-star">🔒</span>
+            </div>
+            <h2 class="ai-hero-heading" style="margin-bottom: 8px;">
+              Sign In to Use <span class="ai-gradient-text">AUA Hub AI</span>
+            </h2>
+            <p class="ai-hero-desc" style="margin-bottom: 20px;">
+              AUA Hub AI is exclusively available to signed-in AUA students and alumni. Sign in with your
+              <code>@edu.aua.am</code> or <code>@alumni.aua.am</code> account to search course feedbacks, AUA
+              Directory, Newsroom events, The Highlander, and Campus Chat.
+            </p>
+            <div style="display:flex; justify-content:center; gap:12px; flex-wrap:wrap;">
+              <button type="button" class="btn-glass" onclick="openAuthModal('login')">Sign In</button>
+              <button type="button" class="btn-illuminated" onclick="openAuthModal('register')">Register</button>
+            </div>
+          </div>
+
           <!-- Welcome Hero (Visible before first prompt in session) -->
           <div id="aiWelcomeState" class="ai-welcome-state">
             <div class="ai-hero-emblem">
@@ -975,6 +1019,8 @@
         </button>
       </div>
 
+      <div id="authModalAlert" class="auth-modal-alert" role="alert" style="display:none;"></div>
+
       <!-- Sign In Form -->
       <form id="loginForm" onsubmit="submitLogin(event)">
         <div style="margin-bottom: 14px;">
@@ -991,6 +1037,7 @@
           <input type="password" id="loginPassword" class="input-glass" placeholder="Enter your AUA Hub password"
             required />
         </div>
+        <div id="turnstileSlot_login" class="auth-turnstile-slot" style="display:none;"></div>
         <button type="submit" class="btn-illuminated" style="width:100%;">
           Sign In to AUA Hub
         </button>
@@ -1019,10 +1066,28 @@
           <input type="password" id="regConfirmPassword" class="input-glass" placeholder="Re-enter your password"
             required />
         </div>
+        <div id="turnstileSlot_register" class="auth-turnstile-slot" style="display:none;"></div>
         <button type="submit" id="regSubmitBtn" class="btn-illuminated" style="width:100%;">
           Send 6-Digit Verification OTP 📧
         </button>
       </form>
+
+      <!-- Shared Google OAuth 2.0 Option (Sign In & Register) -->
+      <div id="authGoogleSection">
+        <div class="auth-google-divider"><span>or continue with</span></div>
+        <button type="button" id="googleSignInBtn" class="btn-google-oauth" onclick="startGoogleSignIn()">
+          <svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true">
+            <path fill="#4285F4" d="M23.49 12.27c0-.79-.07-1.54-.2-2.27H12v4.3h6.44a5.5 5.5 0 0 1-2.39 3.61v3h3.87c2.26-2.08 3.57-5.15 3.57-8.64Z"/>
+            <path fill="#34A853" d="M12 24c3.24 0 5.95-1.07 7.93-2.9l-3.87-3a7.17 7.17 0 0 1-10.67-3.76H1.4v3.09A12 12 0 0 0 12 24Z"/>
+            <path fill="#FBBC05" d="M5.39 14.34A7.18 7.18 0 0 1 5.01 12c0-.81.14-1.6.38-2.34V6.57H1.4A12 12 0 0 0 0 12c0 1.94.46 3.77 1.4 5.43l3.99-3.09Z"/>
+            <path fill="#EA4335" d="M12 4.75c1.76 0 3.34.61 4.58 1.8l3.44-3.44C17.95 1.19 15.24 0 12 0A12 12 0 0 0 1.4 6.57l3.99 3.09A7.16 7.16 0 0 1 12 4.75Z"/>
+          </svg>
+          <span>Sign in with Google</span>
+        </button>
+        <p class="auth-google-hint">
+          Please use your <b>@edu.aua.am</b> or <b>@alumni.aua.am</b> university Google account.
+        </p>
+      </div>
 
       <!-- Register Step 2: Enter 6-Digit OTP -->
       <form id="otpForm" style="display:none;" onsubmit="submitVerifyOtp(event)">
@@ -1057,6 +1122,7 @@
           <input type="email" id="forgotEmail" class="input-glass" placeholder="firstname_lastname@edu.aua.am"
             required />
         </div>
+        <div id="turnstileSlot_forgot" class="auth-turnstile-slot" style="display:none;"></div>
         <button type="submit" id="forgotSubmitBtn" class="btn-illuminated" style="width:100%;">
           Send 6-Digit Reset Code 📧
         </button>
@@ -1448,7 +1514,7 @@
     </div>
   </div>
 
-  <script src="/static/app.js?v=20261114_15"></script>
+  <script src="/static/app.js?v=20261114_18"></script>
 </body>
 
 </html>
