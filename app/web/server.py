@@ -729,14 +729,20 @@ def render_safe_chat_html(raw_text: str) -> str:
 # Serializers
 # ==============================================================================
 
-def is_stata_admin(user: Optional[WebUser]) -> bool:
-    """Restrict /stata analytics exclusively to gor_sargsyan@edu.aua.am."""
+def is_web_admin(user: Optional[WebUser]) -> bool:
+    """Identify the sole platform/chat administrator account (gor_sargsyan@edu.aua.am)."""
     if not user or getattr(user, "is_deleted", False):
         return False
     return (user.email or "").strip().lower() == ADMIN_STATA_EMAIL
 
 
+def is_stata_admin(user: Optional[WebUser]) -> bool:
+    """Restrict /stata analytics exclusively to gor_sargsyan@edu.aua.am."""
+    return is_web_admin(user)
+
+
 def serialize_web_user(u: WebUser) -> Dict[str, Any]:
+    admin_flag = is_web_admin(u)
     return {
         "id": u.id,
         "name": u.name,
@@ -746,8 +752,8 @@ def serialize_web_user(u: WebUser) -> Dict[str, Any]:
         "inbox_link": u.inbox_link or "",
         "telegram_user_id": u.telegram_user_id,
         "is_bot_synced": u.telegram_user_id is not None,
-        "is_admin": bool(u.telegram_user_id and u.telegram_user_id in settings.admin_ids),
-        "is_stata_admin": is_stata_admin(u),
+        "is_admin": admin_flag,
+        "is_stata_admin": admin_flag,
         "is_alumni": u.email.lower().endswith("@alumni.aua.am"),
         "is_deleted": getattr(u, "is_deleted", False),
         "created_at": u.created_at.isoformat() if u.created_at else None,
@@ -3276,9 +3282,7 @@ async def api_delete_spam_chat(request: web.Request) -> web.Response:
     except (KeyError, ValueError):
         return web.json_response({"error": "Invalid message ID."}, status=400)
 
-    is_admin = False
-    if user.telegram_user_id and user.telegram_user_id in settings.admin_ids:
-        is_admin = True
+    is_admin = is_web_admin(user)
 
     async with get_db_session() as session:
         ok = await delete_spam_chat_message(

@@ -93,17 +93,21 @@ from app.handlers.web_bridge import (
     handle_post_command,
     handle_post_text_input,
 )
+from app.config import settings
 from app.web.server import (
+    ADMIN_STATA_EMAIL,
     check_rate_limit,
     create_jwt_token,
     decode_jwt_token,
     is_safe_upload_url,
+    is_web_admin,
     render_safe_chat_html,
     reset_rate_limits,
     scan_web_text_for_malicious_links,
     serialize_academic_feedback,
     serialize_have_need,
     serialize_spam_message,
+    serialize_web_user,
     validate_image_magic_bytes,
     validate_media_magic_bytes,
 )
@@ -124,6 +128,7 @@ class TestAuaHub(unittest.IsolatedAsyncioTestCase):
                     WebOtpCode.email.in_([self.test_email_1, self.test_email_2])
                     | WebOtpCode.email.like("cooldown_%@edu.aua.am")
                     | WebOtpCode.email.like("ipcap_%@edu.aua.am")
+                    | WebOtpCode.email.like("chat_perm_%@edu.aua.am")
                 )
             )
             await session.execute(
@@ -2758,6 +2763,183 @@ class TestAuaHub(unittest.IsolatedAsyncioTestCase):
                     )
                     self.assertEqual(r_ip_blocked.status, 429)
         finally:
+            reset_rate_limits()
+            reset_global_email_rate_limit()
+
+    async def test_campus_chat_admin_delete_exclusively_gor_sargsyan(self) -> None:
+        """Verify only gor_sargsyan@edu.aua.am (and message authors) can delete Campus Chat messages."""
+        from app.web.server import create_web_app
+
+        # 1. Unit checks: admin identity depends exclusively on gor_sargsyan@edu.aua.am (even without Telegram link)
+        unsynced_admin = WebUser(
+            id=990001,
+            name="Gor Admin",
+            email=f"  {ADMIN_STATA_EMAIL.upper()}  ",
+            password_hash="x",
+            telegram_user_id=None,
+            is_deleted=False,
+        )
+        self.assertTrue(is_web_admin(unsynced_admin))
+        self.assertTrue(serialize_web_user(unsynced_admin)["is_admin"])
+        self.assertTrue(serialize_web_user(unsynced_admin)["is_stata_admin"])
+
+        deleted_admin = WebUser(
+            id=990002,
+            name="Deleted Admin",
+            email=ADMIN_STATA_EMAIL,
+            password_hash="x",
+            telegram_user_id=self.tg_uid_2,
+            is_deleted=True,
+        )
+        self.assertFalse(is_web_admin(deleted_admin))
+
+        other_with_tg_id = WebUser(
+            id=990003,
+            name="Other Student",
+            email="other_student@edu.aua.am",
+            password_hash="x",
+            telegram_user_id=self.tg_uid_2,
+            is_deleted=False,
+        )
+        with patch.object(settings, "ADMIN_IDS", [self.tg_uid_2]):
+            self.assertIn(self.tg_uid_2, settings.admin_ids)
+            self.assertFalse(is_web_admin(other_with_tg_id))
+            self.assertFalse(serialize_web_user(other_with_tg_id)["is_admin"])
+
+        reset_rate_limits()
+        reset_global_email_rate_limit()
+        uid_a: int | None = None
+        uid_b: int | None = None
+        msg_ids: list[int] = []
+        created_temp_admin = False
+        temp_admin_id: int | None = None
+
+        try:
+            async with get_db_session() as session:
+                await session.execute(
+                    delete(WebEmailCooldown).where(WebEmailCooldown.email.like("chat_perm_%@edu.aua.am"))
+                )
+                await session.execute(
+                    delete(WebOtpCode).where(WebOtpCode.email.like("chat_perm_%@edu.aua.am"))
+                )
+                await session.execute(
+                    delete(WebUser).where(WebUser.email.like("chat_perm_%@edu.aua.am"))
+                )
+                await session.commit()
+
+                otp_a, _ = await create_web_registration_otp(
+                    session, "Perm Author", "chat_perm_a@edu.aua.am", "Pass1234!"
+                )
+                _, u_a, _ = await verify_web_otp_and_register(session, "chat_perm_a@edu.aua.am", otp_a)
+                otp_b, _ = await create_web_registration_otp(
+                    session, "Perm NonAdmin", "chat_perm_b@edu.aua.am", "Pass1234!"
+                )
+                _, u_b, _ = await verify_web_otp_and_register(session, "chat_perm_b@edu.aua.am", otp_b)
+                await get_or_create_user(session, user_id=self.tg_uid_2, username="perm_nonadmin_tg")
+                u_b.telegram_user_id = self.tg_uid_2
+                await session.commit()
+
+                admin_user = await get_web_user_by_email(session, ADMIN_STATA_EMAIL)
+                if admin_user is None:
+                    otp_adm, _ = await create_web_registration_otp(
+                        session, "Gor Admin", ADMIN_STATA_EMAIL, "AdminPass123!"
+                    )
+                    _, admin_user, _ = await verify_web_otp_and_register(session, ADMIN_STATA_EMAIL, otp_adm)
+                    created_temp_admin = True
+                    temp_admin_id = admin_user.id
+
+                uid_a, uid_b = u_a.id, u_b.id
+                admin_id = admin_user.id
+                admin_ver = int(getattr(admin_user, "token_version", 1) or 1)
+                a_ver = int(getattr(u_a, "token_version", 1) or 1)
+                b_ver = int(getattr(u_b, "token_version", 1) or 1)
+
+                m_own = await create_spam_chat_message(session, web_user_id=uid_a, content_html="Author self delete")
+                m_other = await create_spam_chat_message(session, web_user_id=uid_a, content_html="Admin delete target")
+                m_b = await create_spam_chat_message(session, web_user_id=uid_b, content_html="Protected user B msg")
+                msg_ids = [m_own.id, m_other.id, m_b.id]
+
+            app = create_web_app()
+            tok_a = create_jwt_token(uid_a, token_version=a_ver)
+            tok_b = create_jwt_token(uid_b, token_version=b_ver)
+            tok_admin = create_jwt_token(admin_id, token_version=admin_ver)
+
+            async with TestClient(TestServer(app)) as client:
+                # 2. Unauthenticated caller cannot delete
+                r_unauth = await client.delete(f"/api/spam-chat/messages/{m_other.id}")
+                self.assertEqual(r_unauth.status, 401)
+
+                # 3. Non-admin student (even with telegram_user_id in settings.admin_ids) is NOT admin & gets 403
+                with patch.object(settings, "ADMIN_IDS", [self.tg_uid_2]):
+                    self.assertIn(self.tg_uid_2, settings.admin_ids)
+                    r_me_b = await client.get("/api/auth/me", headers={"Authorization": f"Bearer {tok_b}"})
+                    self.assertEqual(r_me_b.status, 200)
+                    me_b = await r_me_b.json()
+                    self.assertFalse(me_b["user"]["is_admin"])
+                    self.assertFalse(me_b["user"]["is_stata_admin"])
+
+                    r_b_del = await client.delete(
+                        f"/api/spam-chat/messages/{m_other.id}",
+                        headers={"Authorization": f"Bearer {tok_b}"},
+                    )
+                    self.assertEqual(r_b_del.status, 403)
+
+                # 4. Author cannot edit or delete someone else's message, CAN delete their own message
+                r_a_edit_b = await client.put(
+                    f"/api/spam-chat/messages/{m_b.id}",
+                    json={"content": "tampered"},
+                    headers={"Authorization": f"Bearer {tok_a}"},
+                )
+                self.assertEqual(r_a_edit_b.status, 403)
+
+                r_a_del_b = await client.delete(
+                    f"/api/spam-chat/messages/{m_b.id}",
+                    headers={"Authorization": f"Bearer {tok_a}"},
+                )
+                self.assertEqual(r_a_del_b.status, 403)
+
+                r_a_del_own = await client.delete(
+                    f"/api/spam-chat/messages/{m_own.id}",
+                    headers={"Authorization": f"Bearer {tok_a}"},
+                )
+                self.assertEqual(r_a_del_own.status, 200)
+
+                # 5. Sole admin gor_sargsyan@edu.aua.am has is_admin=True, cannot edit others', CAN delete others'
+                r_me_adm = await client.get("/api/auth/me", headers={"Authorization": f"Bearer {tok_admin}"})
+                self.assertEqual(r_me_adm.status, 200)
+                me_adm = await r_me_adm.json()
+                self.assertTrue(me_adm["user"]["is_admin"])
+                self.assertTrue(me_adm["user"]["is_stata_admin"])
+
+                r_adm_edit_other = await client.put(
+                    f"/api/spam-chat/messages/{m_other.id}",
+                    json={"content": "admin should not forge edits"},
+                    headers={"Authorization": f"Bearer {tok_admin}"},
+                )
+                self.assertEqual(r_adm_edit_other.status, 403)
+
+                r_adm_del_other = await client.delete(
+                    f"/api/spam-chat/messages/{m_other.id}",
+                    headers={"Authorization": f"Bearer {tok_admin}"},
+                )
+                self.assertEqual(r_adm_del_other.status, 200)
+        finally:
+            async with get_db_session() as session:
+                if msg_ids:
+                    await session.execute(delete(SpamChatMessage).where(SpamChatMessage.id.in_(msg_ids)))
+                clean_uids = [uid for uid in (uid_a, uid_b) if uid is not None]
+                if created_temp_admin and temp_admin_id is not None:
+                    clean_uids.append(temp_admin_id)
+                if clean_uids:
+                    await session.execute(delete(SpamChatRead).where(SpamChatRead.web_user_id.in_(clean_uids)))
+                    await session.execute(delete(WebUser).where(WebUser.id.in_(clean_uids)))
+                await session.execute(
+                    delete(WebEmailCooldown).where(WebEmailCooldown.email.like("chat_perm_%@edu.aua.am"))
+                )
+                await session.execute(
+                    delete(WebOtpCode).where(WebOtpCode.email.like("chat_perm_%@edu.aua.am"))
+                )
+                await session.commit()
             reset_rate_limits()
             reset_global_email_rate_limit()
 
