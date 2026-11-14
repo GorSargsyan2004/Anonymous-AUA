@@ -26,10 +26,11 @@ import time
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import quote_plus, urljoin, urlparse
 import uuid
+import weakref
 
 import httpx
 from pydantic import BaseModel, Field
-from sqlalchemy import desc, func, or_, select
+from sqlalchemy import case, desc, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -2040,6 +2041,105 @@ SECURITY & UNTRUSTED DATA RULES (MANDATORY):
 """
 
 
+_GEMINI_SEMAPHORES: "weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, asyncio.Semaphore]" = (
+    weakref.WeakKeyDictionary()
+)
+_INFLIGHT_GEMINI_PROMPTS: Dict[int, int] = {}
+
+
+def _get_gemini_semaphore() -> asyncio.Semaphore:
+    """Return an event-loop-local semaphore capping concurrent Gemini API calls."""
+    loop = asyncio.get_running_loop()
+    sem = _GEMINI_SEMAPHORES.get(loop)
+    limit = max(1, int(getattr(settings, "AI_MAX_CONCURRENT_GEMINI_CALLS", 6)))
+    if sem is None:
+        sem = asyncio.Semaphore(limit)
+        _GEMINI_SEMAPHORES[loop] = sem
+    return sem
+
+
+def _release_inflight_slot(loop_id: int) -> None:
+    """Decrement the per-event-loop inflight Gemini prompt reservation safely."""
+    rem = max(0, _INFLIGHT_GEMINI_PROMPTS.get(loop_id, 0) - 1)
+    if rem == 0:
+        _INFLIGHT_GEMINI_PROMPTS.pop(loop_id, None)
+    else:
+        _INFLIGHT_GEMINI_PROMPTS[loop_id] = rem
+
+
+def _build_gemini_config(
+    *,
+    temperature: float,
+    max_output_tokens: int,
+    thinking_budget: Optional[int] = None,
+    system_instruction: Optional[str] = None,
+    response_mime_type: Optional[str] = None,
+    response_schema: Any = None,
+) -> Any:
+    """Construct a bounded Gemini GenerateContentConfig with output and thinking caps."""
+    kwargs: Dict[str, Any] = {
+        "temperature": temperature,
+        "max_output_tokens": max(64, int(max_output_tokens)),
+    }
+    if system_instruction is not None:
+        kwargs["system_instruction"] = system_instruction
+    if response_mime_type is not None:
+        kwargs["response_mime_type"] = response_mime_type
+    if response_schema is not None:
+        kwargs["response_schema"] = response_schema
+    if thinking_budget is not None and types is not None and hasattr(types, "ThinkingConfig"):
+        kwargs["thinking_config"] = types.ThinkingConfig(
+            thinking_budget=max(0, int(thinking_budget))
+        )
+    return types.GenerateContentConfig(**kwargs)
+
+
+async def check_global_ai_gemini_budget(
+    db_session: Optional[AsyncSession],
+    *,
+    hourly_limit: Optional[int] = None,
+    daily_limit: Optional[int] = None,
+) -> Tuple[bool, Optional[str]]:
+    """Verify rolling 1h and 24h global Gemini usage plus inflight slots stay within budget."""
+    h_lim = int(settings.AI_GLOBAL_HOURLY_PROMPT_LIMIT if hourly_limit is None else hourly_limit)
+    d_lim = int(settings.AI_GLOBAL_DAILY_PROMPT_LIMIT if daily_limit is None else daily_limit)
+    if h_lim <= 0 or d_lim <= 0:
+        return False, "disabled"
+    if db_session is None:
+        return False, "db_error"
+
+    try:
+        now_utc = datetime.now(timezone.utc)
+        hour_ago = now_utc - timedelta(hours=1)
+        day_ago = now_utc - timedelta(hours=24)
+        res = await db_session.execute(
+            select(
+                func.coalesce(
+                    func.sum(case((AIUsageLog.created_at >= hour_ago, 1), else_=0)),
+                    0,
+                ),
+                func.count(AIUsageLog.id),
+            ).where(
+                AIUsageLog.used_gemini.is_(True),
+                AIUsageLog.created_at >= day_ago,
+            )
+        )
+        row = res.first()
+        hourly_used = int(row[0] or 0) if row else 0
+        daily_used = int(row[1] or 0) if row else 0
+    except Exception as exc:
+        logger.warning("Global AI budget check failed; using offline fallback: %s", exc)
+        return False, "db_error"
+
+    loop_id = id(asyncio.get_running_loop())
+    inflight = _INFLIGHT_GEMINI_PROMPTS.get(loop_id, 0)
+    if (hourly_used + inflight) >= h_lim:
+        return False, "hourly"
+    if (daily_used + inflight) >= d_lim:
+        return False, "daily"
+    return True, None
+
+
 class AUAAssistantOrchestrator:
     """Orchestrates multi-source RAG tool execution and Gemini synthesis."""
 
@@ -2055,16 +2155,39 @@ class AUAAssistantOrchestrator:
             self._client = genai.Client(api_key=key)
         return self._client
 
-    async def _plan_tools_with_gemini(
+    async def _generate_gemini_content(
+        self,
+        client: Any,
+        contents: Any,
+        config: Any,
+        timeout_sec: float,
+    ) -> Any:
+        """Execute generate_content behind the global concurrency semaphore with bounded wait."""
+        sem = _get_gemini_semaphore()
+
+        async def _call() -> Any:
+            async with sem:
+                return await asyncio.wait_for(
+                    client.aio.models.generate_content(
+                        model="gemini-2.5-flash",
+                        contents=contents,
+                        config=config,
+                    ),
+                    timeout=timeout_sec,
+                )
+
+        return await asyncio.wait_for(_call(), timeout=timeout_sec + 2.5)
+
+    async def _plan_tools_with_gemini_tracked(
         self,
         user_prompt: str,
         chat_state: AIChatSessionState,
         heuristic_plan: ToolSelectionPlan,
-    ) -> ToolSelectionPlan:
+    ) -> Tuple[ToolSelectionPlan, bool]:
         """Use Gemini structured output (fast 4s timeout) to resolve follow-up entities & tool selection."""
         client = self._get_client()
         if client is None or types is None:
-            return heuristic_plan
+            return heuristic_plan, False
         try:
             hist_lines = []
             for t in chat_state.turns[-4:]:
@@ -2079,70 +2202,58 @@ class AUAAssistantOrchestrator:
                 f"<recent_conversation>\n{hist_str}\n</recent_conversation>\n\n"
                 f"<student_prompt>\n{user_prompt[:MAX_PROMPT_CHARS]}\n</student_prompt>"
             )
-            config = types.GenerateContentConfig(
+            config = _build_gemini_config(
                 temperature=0.0,
+                max_output_tokens=settings.AI_PLANNER_MAX_OUTPUT_TOKENS,
+                thinking_budget=settings.AI_PLANNER_THINKING_BUDGET,
                 response_mime_type="application/json",
                 response_schema=ToolSelectionPlan,
             )
-            resp = await asyncio.wait_for(
-                client.aio.models.generate_content(
-                    model="gemini-2.5-flash",
-                    contents=planner_prompt,
-                    config=config,
-                ),
-                timeout=4.0,
+            resp = await self._generate_gemini_content(
+                client=client,
+                contents=planner_prompt,
+                config=config,
+                timeout_sec=4.0,
             )
             if resp and resp.text:
                 parsed = ToolSelectionPlan.model_validate_json(resp.text)
                 # Merge safely with heuristic plan so explicit keywords/entities aren't dropped
                 merged_override = parsed.search_query_override or heuristic_plan.search_query_override
-                return ToolSelectionPlan(
-                    use_feedbacks=parsed.use_feedbacks or heuristic_plan.use_feedbacks,
-                    use_directory=parsed.use_directory or heuristic_plan.use_directory,
-                    use_newsroom_events=parsed.use_newsroom_events or heuristic_plan.use_newsroom_events,
-                    use_highlander=parsed.use_highlander or heuristic_plan.use_highlander,
-                    use_chat_history=parsed.use_chat_history or heuristic_plan.use_chat_history,
-                    use_anonymous_inbox=parsed.use_anonymous_inbox or heuristic_plan.use_anonymous_inbox,
-                    search_query_override=merged_override,
+                return (
+                    ToolSelectionPlan(
+                        use_feedbacks=parsed.use_feedbacks or heuristic_plan.use_feedbacks,
+                        use_directory=parsed.use_directory or heuristic_plan.use_directory,
+                        use_newsroom_events=parsed.use_newsroom_events or heuristic_plan.use_newsroom_events,
+                        use_highlander=parsed.use_highlander or heuristic_plan.use_highlander,
+                        use_chat_history=parsed.use_chat_history or heuristic_plan.use_chat_history,
+                        use_anonymous_inbox=parsed.use_anonymous_inbox or heuristic_plan.use_anonymous_inbox,
+                        search_query_override=merged_override,
+                    ),
+                    True,
                 )
         except Exception as exc:
             logger.debug("Gemini planner fallback to heuristic: %s", exc)
-        return heuristic_plan
+        return heuristic_plan, False
 
-    async def answer_prompt(
+    async def _plan_tools_with_gemini(
         self,
-        db_session: AsyncSession,
         user_prompt: str,
         chat_state: AIChatSessionState,
-        web_user_id: Optional[int] = None,
-    ) -> Dict[str, Any]:
-        """Run tool selection, parallel RAG retrieval, and Gemini synthesis."""
-        if chat_state.prompts_used >= MAX_PROMPTS_PER_SESSION:
-            return {
-                "ok": False,
-                "limit_reached": True,
-                "session_id": chat_state.session_id,
-                "prompts_used": chat_state.prompts_used,
-                "max_prompts": MAX_PROMPTS_PER_SESSION,
-                "history": chat_state.get_history_payload(),
-                "error": (
-                    "You've reached the 5-prompt limit for this session. "
-                    "Please start a new chat to continue."
-                ),
-            }
+        heuristic_plan: ToolSelectionPlan,
+    ) -> ToolSelectionPlan:
+        """Use Gemini structured output (fast 4s timeout) to resolve follow-up entities & tool selection."""
+        plan, _ = await self._plan_tools_with_gemini_tracked(
+            user_prompt, chat_state, heuristic_plan
+        )
+        return plan
 
-        user_prompt = (user_prompt or "").strip()[:MAX_PROMPT_CHARS]
-        started_ts = time.monotonic()
-        heuristic_plan = classify_tools_heuristic(user_prompt, prior_turns=chat_state.turns)
-        plan = await self._plan_tools_with_gemini(user_prompt, chat_state, heuristic_plan)
-
-        # Build effective retrieval query preserving resolved entity context on follow-up turns
-        effective_query = user_prompt
-        if plan.search_query_override:
-            ov = plan.search_query_override.strip()
-            if ov and ov.lower() not in user_prompt.lower():
-                effective_query = f"{ov} {user_prompt}"
-
+    async def _retrieve_rag_context(
+        self,
+        db_session: AsyncSession,
+        plan: ToolSelectionPlan,
+        effective_query: str,
+    ) -> Tuple[Dict[str, Any], List[Dict[str, str]], List[Dict[str, str]]]:
+        """Run sequential DB RAG tools and concurrent external web parsers."""
         executed_steps: List[Dict[str, str]] = []
         aggregated_context: Dict[str, Any] = {}
         all_sources: List[Dict[str, str]] = []
@@ -2238,25 +2349,94 @@ class AUAAssistantOrchestrator:
                 else:
                     aggregated_context[key] = []
 
-        executed_steps.append(
-            {
-                "id": "synthesize",
-                "icon": "✨",
-                "label": "Synthesizing response from retrieved sources...",
+        return aggregated_context, all_sources, executed_steps
+
+    async def answer_prompt(
+        self,
+        db_session: AsyncSession,
+        user_prompt: str,
+        chat_state: AIChatSessionState,
+        web_user_id: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        """Run tool selection, parallel RAG retrieval, and Gemini synthesis within global budget caps."""
+        if chat_state.prompts_used >= MAX_PROMPTS_PER_SESSION:
+            return {
+                "ok": False,
+                "limit_reached": True,
+                "session_id": chat_state.session_id,
+                "prompts_used": chat_state.prompts_used,
+                "max_prompts": MAX_PROMPTS_PER_SESSION,
+                "history": chat_state.get_history_payload(),
+                "error": (
+                    "You've reached the 5-prompt limit for this session. "
+                    "Please start a new chat to continue."
+                ),
             }
-        )
 
-        # Deduplicate & strictly validate sources (safe schemes & non-malicious URLs)
-        unique_sources = _sanitize_source_list(all_sources)
+        user_prompt = (user_prompt or "").strip()[:MAX_PROMPT_CHARS]
+        started_ts = time.monotonic()
+        heuristic_plan = classify_tools_heuristic(user_prompt, prior_turns=chat_state.turns)
 
-        self._last_used_gemini = False
-        raw_answer_markdown = await self._synthesize_with_gemini(
-            user_prompt=user_prompt,
-            chat_state=chat_state,
-            retrieved_context=aggregated_context,
-        )
+        gemini_allowed = False
+        gemini_reserved = False
+        loop_id = id(asyncio.get_running_loop())
+        if self._get_client() is not None and types is not None:
+            gemini_allowed, budget_reason = await check_global_ai_gemini_budget(db_session)
+            if gemini_allowed:
+                _INFLIGHT_GEMINI_PROMPTS[loop_id] = _INFLIGHT_GEMINI_PROMPTS.get(loop_id, 0) + 1
+                gemini_reserved = True
+            else:
+                logger.warning(
+                    "Global Gemini budget circuit breaker triggered (%s); using offline RAG fallback.",
+                    budget_reason,
+                )
+
+        planner_used_gemini = False
+        synth_used_gemini = False
+        try:
+            if gemini_allowed:
+                plan, planner_used_gemini = await self._plan_tools_with_gemini_tracked(
+                    user_prompt, chat_state, heuristic_plan
+                )
+            else:
+                plan = heuristic_plan
+
+            # Build effective retrieval query preserving resolved entity context on follow-up turns
+            effective_query = user_prompt
+            if plan.search_query_override:
+                ov = plan.search_query_override.strip()
+                if ov and ov.lower() not in user_prompt.lower():
+                    effective_query = f"{ov} {user_prompt}"
+
+            aggregated_context, all_sources, executed_steps = await self._retrieve_rag_context(
+                db_session, plan, effective_query
+            )
+
+            executed_steps.append(
+                {
+                    "id": "synthesize",
+                    "icon": "✨",
+                    "label": "Synthesizing response from retrieved sources...",
+                }
+            )
+
+            # Deduplicate & strictly validate sources (safe schemes & non-malicious URLs)
+            unique_sources = _sanitize_source_list(all_sources)
+
+            if gemini_allowed:
+                raw_answer_markdown, synth_used_gemini = await self._synthesize_with_gemini_tracked(
+                    user_prompt=user_prompt,
+                    chat_state=chat_state,
+                    retrieved_context=aggregated_context,
+                )
+            else:
+                raw_answer_markdown = self._synthesize_fallback(user_prompt, aggregated_context)
+        finally:
+            if gemini_reserved:
+                _release_inflight_slot(loop_id)
+
         answer_markdown = _sanitize_ai_markdown(raw_answer_markdown)
-        used_gemini = bool(getattr(self, "_last_used_gemini", False))
+        used_gemini = bool(planner_used_gemini or synth_used_gemini)
 
         # Record turns and increment prompt counter
         now_iso = datetime.now(timezone.utc).isoformat()
@@ -2308,13 +2488,13 @@ class AUAAssistantOrchestrator:
             "history": chat_state.get_history_payload(),
         }
 
-    async def _synthesize_with_gemini(
+    async def _synthesize_with_gemini_tracked(
         self,
         user_prompt: str,
         chat_state: AIChatSessionState,
         retrieved_context: Dict[str, Any],
-    ) -> str:
-        """Synthesize a comprehensive markdown response using Gemini 2.5 Flash, with offline fallback."""
+    ) -> Tuple[str, bool]:
+        """Synthesize a comprehensive markdown response using Gemini 2.5 Flash, returning (markdown, used_gemini)."""
         client = self._get_client()
         if client is not None and types is not None:
             try:
@@ -2333,26 +2513,38 @@ class AUAAssistantOrchestrator:
                     "Provide a helpful, well-structured Markdown answer grounded ONLY in the retrieved AUA data above."
                 )
 
-                config = types.GenerateContentConfig(
+                config = _build_gemini_config(
                     temperature=0.25,
+                    max_output_tokens=settings.AI_SYNTHESIS_MAX_OUTPUT_TOKENS,
+                    thinking_budget=settings.AI_SYNTHESIS_THINKING_BUDGET,
                     system_instruction=AI_SYSTEM_PROMPT,
                 )
-                response = await asyncio.wait_for(
-                    client.aio.models.generate_content(
-                        model="gemini-2.5-flash",
-                        contents=full_prompt,
-                        config=config,
-                    ),
-                    timeout=20.0,
+                response = await self._generate_gemini_content(
+                    client=client,
+                    contents=full_prompt,
+                    config=config,
+                    timeout_sec=20.0,
                 )
                 if response and response.text:
-                    self._last_used_gemini = True
-                    return _sanitize_ai_markdown(response.text.strip())
+                    return _sanitize_ai_markdown(response.text.strip()), True
             except Exception as exc:
                 logger.warning("Gemini synthesis fallback triggered: %s", exc)
 
-        self._last_used_gemini = False
-        return self._synthesize_fallback(user_prompt, retrieved_context)
+        return self._synthesize_fallback(user_prompt, retrieved_context), False
+
+    async def _synthesize_with_gemini(
+        self,
+        user_prompt: str,
+        chat_state: AIChatSessionState,
+        retrieved_context: Dict[str, Any],
+    ) -> str:
+        """Synthesize a comprehensive markdown response using Gemini 2.5 Flash, with offline fallback."""
+        markdown, _ = await self._synthesize_with_gemini_tracked(
+            user_prompt=user_prompt,
+            chat_state=chat_state,
+            retrieved_context=retrieved_context,
+        )
+        return markdown
 
     def _synthesize_fallback(
         self,

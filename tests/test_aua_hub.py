@@ -1,6 +1,6 @@
 """Unit and integration tests for AUA Hub website & bot bridge features."""
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import asyncio
 import unittest
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -1068,7 +1068,7 @@ class TestAuaHub(unittest.IsolatedAsyncioTestCase):
 
     async def test_jenzareviews_anonymized_writethrough_and_mirror(self) -> None:
         """Verify jenzareviews anonymization strips all PII/user IDs and write-through & serialization work."""
-        from datetime import datetime, timezone
+        from datetime import datetime, timedelta, timezone
         from app.services.jenzareviews_sync import (
             _extract_candidate_professor_name,
             _extract_project_ref,
@@ -1822,6 +1822,204 @@ class TestAuaHub(unittest.IsolatedAsyncioTestCase):
             raw_json = await r_courses.read()
             if len(raw_json) >= 1024:
                 self.assertEqual(r_courses.headers.get("Content-Encoding"), "gzip")
+
+    async def test_ai_token_budget_rate_bucket_and_guest_flood_shield(self) -> None:
+        """Verify rate-bucket window pruning, guest flood caps, Gemini token/concurrency caps, and global DB budget circuit breaker."""
+        from sqlalchemy import func
+
+        from app.config import settings
+        from app.services.ai_agent import (
+            AIChatSessionState,
+            AUAAssistantOrchestrator,
+            ToolSelectionPlan,
+            ai_orchestrator,
+            check_global_ai_gemini_budget,
+        )
+        from app.web.server import _RATE_BUCKETS, create_web_app
+
+        # 1. Rate-limit cleanup with >5000 keys must NOT prematurely evict longer-window hourly buckets
+        reset_rate_limits()
+        fake_now = [10000.0]
+        with patch("app.web.server.time.monotonic", side_effect=lambda: fake_now[0]):
+            ok_hr, _ = check_rate_limit("hourly_bucket", "target_ip", max_calls=1, window_sec=3600)
+            self.assertTrue(ok_hr)
+            fake_now[0] += 120.0  # 2 minutes later: hourly bucket is STILL valid (3600s window)
+            for idx in range(5005):
+                check_rate_limit("short_noise", f"noise_{idx}", max_calls=5, window_sec=60)
+            self.assertIn("hourly_bucket:target_ip", _RATE_BUCKETS)
+            blocked_hr, _ = check_rate_limit("hourly_bucket", "target_ip", max_calls=1, window_sec=3600)
+            self.assertFalse(blocked_hr)
+        reset_rate_limits()
+
+        # 2. Gemini GenerateContentConfig includes explicit max_output_tokens, ThinkingConfig, and semaphore cap
+        observed_configs = []
+        active_calls = 0
+        max_active_calls = 0
+
+        async def _mock_generate_content(*, model, contents, config):
+            nonlocal active_calls, max_active_calls
+            observed_configs.append(config)
+            active_calls += 1
+            max_active_calls = max(max_active_calls, active_calls)
+            await asyncio.sleep(0.03)
+            active_calls -= 1
+            resp = MagicMock()
+            if getattr(config, "response_mime_type", None) == "application/json":
+                resp.text = ToolSelectionPlan(use_feedbacks=True, search_query_override="Aram Hajian").model_dump_json()
+            else:
+                resp.text = "Bounded grounded response."
+            return resp
+
+        mock_client = MagicMock()
+        mock_client.aio.models.generate_content = AsyncMock(side_effect=_mock_generate_content)
+
+        # Clean slate for synthetic budget test logs
+        test_sid_prefix = "budget_test_"
+        try:
+            async with get_db_session() as session:
+                await session.execute(delete(AIUsageLog).where(AIUsageLog.session_id.like(f"{test_sid_prefix}%")))
+                await session.commit()
+
+                now_utc = datetime.now(timezone.utc)
+                base_1h = (
+                    await session.execute(
+                        select(func.count(AIUsageLog.id)).where(
+                            AIUsageLog.used_gemini.is_(True),
+                            AIUsageLog.created_at >= now_utc - timedelta(hours=1),
+                        )
+                    )
+                ).scalar_one() or 0
+                base_24h = (
+                    await session.execute(
+                        select(func.count(AIUsageLog.id)).where(
+                            AIUsageLog.used_gemini.is_(True),
+                            AIUsageLog.created_at >= now_utc - timedelta(hours=24),
+                        )
+                    )
+                ).scalar_one() or 0
+
+                # Test semaphore concurrency cap across 5 simultaneous Gemini calls with limit=2
+                orch = AUAAssistantOrchestrator(api_key="test-key-present")
+                orch._client = mock_client
+                with patch.object(settings, "AI_MAX_CONCURRENT_GEMINI_CALLS", 2):
+                    # Clear loop semaphore cache for isolated limit=2 check
+                    from app.services import ai_agent as ai_mod
+
+                    ai_mod._GEMINI_SEMAPHORES.clear()
+                    await asyncio.gather(
+                        *[
+                            orch._generate_gemini_content(mock_client, f"prompt {i}", MagicMock(), 4.0)
+                            for i in range(5)
+                        ]
+                    )
+                    ai_mod._GEMINI_SEMAPHORES.clear()
+                self.assertLessEqual(max_active_calls, 2)
+
+                # Reset mock observations & verify full answer_prompt + global circuit breaker
+                mock_client.aio.models.generate_content.reset_mock()
+                observed_configs.clear()
+
+                with (
+                    patch.object(settings, "AI_GLOBAL_HOURLY_PROMPT_LIMIT", int(base_1h) + 1),
+                    patch.object(settings, "AI_GLOBAL_DAILY_PROMPT_LIMIT", int(base_24h) + 10),
+                ):
+                    ok_before, reason_before = await check_global_ai_gemini_budget(session)
+                    self.assertTrue(ok_before, reason_before)
+
+                    st1 = AIChatSessionState(session_id=f"{test_sid_prefix}1")
+                    res1 = await orch.answer_prompt(
+                        db_session=session,
+                        user_prompt="Tell me about CS courses and grading",
+                        chat_state=st1,
+                    )
+                    self.assertTrue(res1["ok"])
+                    self.assertEqual(mock_client.aio.models.generate_content.call_count, 2)
+                    self.assertEqual(len(observed_configs), 2)
+                    self.assertEqual(observed_configs[0].max_output_tokens, settings.AI_PLANNER_MAX_OUTPUT_TOKENS)
+                    self.assertEqual(observed_configs[1].max_output_tokens, settings.AI_SYNTHESIS_MAX_OUTPUT_TOKENS)
+                    self.assertIsNotNone(observed_configs[0].thinking_config)
+                    self.assertEqual(observed_configs[0].thinking_config.thinking_budget, settings.AI_PLANNER_THINKING_BUDGET)
+                    self.assertEqual(observed_configs[1].thinking_config.thinking_budget, settings.AI_SYNTHESIS_THINKING_BUDGET)
+
+                    # Second call hits hourly circuit breaker -> ZERO Gemini calls, offline RAG answer still served cleanly!
+                    ok_after, reason_after = await check_global_ai_gemini_budget(session)
+                    self.assertFalse(ok_after)
+                    self.assertEqual(reason_after, "hourly")
+
+                    mock_client.aio.models.generate_content.reset_mock()
+                    st2 = AIChatSessionState(session_id=f"{test_sid_prefix}2")
+                    res2 = await orch.answer_prompt(
+                        db_session=session,
+                        user_prompt="Tell me about CS courses and grading",
+                        chat_state=st2,
+                    )
+                    self.assertTrue(res2["ok"])
+                    self.assertTrue(res2["answer"])
+                    self.assertEqual(mock_client.aio.models.generate_content.call_count, 0)
+
+                    log2 = (
+                        await session.execute(
+                            select(AIUsageLog).where(AIUsageLog.session_id == f"{test_sid_prefix}2")
+                        )
+                    ).scalar_one()
+                    self.assertFalse(log2.used_gemini)
+
+                    ok_daily, reason_daily = await check_global_ai_gemini_budget(
+                        session, hourly_limit=9999, daily_limit=int(base_24h) + 1
+                    )
+                    self.assertFalse(ok_daily)
+                    self.assertEqual(reason_daily, "daily")
+
+                    ok_disabled, reason_disabled = await check_global_ai_gemini_budget(
+                        session, hourly_limit=0, daily_limit=100
+                    )
+                    self.assertFalse(ok_disabled)
+                    self.assertEqual(reason_disabled, "disabled")
+
+            # 3. Guest IP rate limits (5/min chat, 3/min reset) and oversized JSON payload rejection on /api/ai/chat
+            app = create_web_app()
+            async with TestClient(TestServer(app)) as client:
+                r_big = await client.post(
+                    "/api/ai/chat",
+                    data=b'{"prompt":"' + (b"x" * 140_000) + b'"}',
+                    headers={"Content-Type": "application/json"},
+                )
+                self.assertEqual(r_big.status, 400)
+
+                async def _quick_ok(db_session, user_prompt, chat_state, web_user_id=None):
+                    chat_state.prompts_used += 1
+                    return {
+                        "ok": True,
+                        "session_id": chat_state.session_id,
+                        "prompts_used": chat_state.prompts_used,
+                        "max_prompts": 5,
+                        "limit_reached": False,
+                        "answer": "ok",
+                        "steps": [],
+                        "sources": [],
+                        "history": [],
+                    }
+
+                with patch.object(ai_orchestrator, "answer_prompt", side_effect=_quick_ok):
+                    guest_statuses = []
+                    for i in range(6):
+                        resp = await client.post(
+                            "/api/ai/chat",
+                            json={"prompt": f"Guest ping {i}"},
+                        )
+                        guest_statuses.append(resp.status)
+                # First 4 passed (1 from r_big already counted toward guest 5/min!), 5th+6th return 429
+                self.assertEqual(guest_statuses, [200, 200, 200, 200, 429, 429])
+
+                reset_statuses = [
+                    (await client.post("/api/ai/reset", json={})).status for _ in range(4)
+                ]
+                self.assertEqual(reset_statuses, [200, 200, 200, 429])
+        finally:
+            async with get_db_session() as session:
+                await session.execute(delete(AIUsageLog).where(AIUsageLog.session_id.like(f"{test_sid_prefix}%")))
+                await session.commit()
+            reset_rate_limits()
 
 
 if __name__ == "__main__":

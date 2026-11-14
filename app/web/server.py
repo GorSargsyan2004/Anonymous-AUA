@@ -177,12 +177,14 @@ async def broadcast_ws_event(event_dict: Dict[str, Any]) -> None:
 # ==============================================================================
 
 _RATE_BUCKETS: Dict[str, List[float]] = {}
+_RATE_BUCKET_WINDOWS: Dict[str, float] = {}
 _LAST_USER_MESSAGES: Dict[int, Tuple[str, float]] = {}
 
 
 def reset_rate_limits() -> None:
     """Clear all in-memory rate limit buckets (used in unit tests)."""
     _RATE_BUCKETS.clear()
+    _RATE_BUCKET_WINDOWS.clear()
     _LAST_USER_MESSAGES.clear()
 
 
@@ -190,6 +192,7 @@ def check_rate_limit(bucket: str, key: str, max_calls: int, window_sec: float) -
     """Sliding-window rate limiter returning (allowed, retry_after_seconds)."""
     now = time.monotonic()
     composite_key = f"{bucket}:{key}"
+    _RATE_BUCKET_WINDOWS[bucket] = max(_RATE_BUCKET_WINDOWS.get(bucket, 0.0), float(window_sec))
     timestamps = _RATE_BUCKETS.get(composite_key, [])
     cutoff = now - window_sec
     timestamps = [ts for ts in timestamps if ts > cutoff]
@@ -200,11 +203,26 @@ def check_rate_limit(bucket: str, key: str, max_calls: int, window_sec: float) -
         return False, retry_after
 
     timestamps.append(now)
-    # Periodic cleanup if map grows large
+    # Periodic cleanup using each bucket's own window so hourly keys aren't evicted by 60s checks
     if len(_RATE_BUCKETS) > 5000:
-        expired_keys = [k for k, v in _RATE_BUCKETS.items() if not v or v[-1] <= cutoff]
+        expired_keys = []
+        for k, v in _RATE_BUCKETS.items():
+            if not v:
+                expired_keys.append(k)
+                continue
+            b_name = k.split(":", 1)[0]
+            b_win = _RATE_BUCKET_WINDOWS.get(b_name, window_sec)
+            if v[-1] <= (now - b_win):
+                expired_keys.append(k)
         for k in expired_keys:
             _RATE_BUCKETS.pop(k, None)
+        if len(_RATE_BUCKETS) > 10000:
+            oldest_keys = sorted(
+                _RATE_BUCKETS.items(),
+                key=lambda kv: kv[1][-1] if kv[1] else 0.0,
+            )[: len(_RATE_BUCKETS) - 5000]
+            for k, _ in oldest_keys:
+                _RATE_BUCKETS.pop(k, None)
     _RATE_BUCKETS[composite_key] = timestamps
     return True, 0
 
@@ -2932,19 +2950,132 @@ async def api_delete_feedback(request: web.Request) -> web.Response:
 # 8.5. AI Assistant (Multi-Source RAG with 5-Prompt Session Limit)
 # ------------------------------------------------------------------------------
 
+_MAX_AI_JSON_BODY_BYTES = 131072
+
+
 def _resolve_ai_lock_key(
     session_id: Optional[str],
     user_id: Optional[int],
     client_ip: str,
 ) -> str:
-    """Resolve an isolated per-user or per-guest-session execution lock key."""
+    """Serialize AI executions per authenticated account or per unauthenticated guest IP."""
     if user_id:
         return f"user:{user_id}"
-    if session_id and not session_id.startswith("user_"):
-        st = ai_session_store._sessions.get(session_id)
-        if st is not None and st.owner_user_id is None:
-            return f"sid:{session_id}"
     return f"ip_guest:{client_ip}"
+
+
+def _run_rate_limit_checks(
+    checks: Tuple[Tuple[str, str, int, int, str], ...],
+) -> Optional[web.Response]:
+    """Run a table of sliding-window rate limits and return a 429 JSON response on first hit."""
+    for bucket, key, max_calls, window_sec, msg_tpl in checks:
+        allowed, retry = check_rate_limit(bucket, key, max_calls=max_calls, window_sec=window_sec)
+        if not allowed:
+            mins = max(1, (retry + 59) // 60)
+            return web.json_response(
+                {"error": msg_tpl.format(retry=retry, mins=mins)},
+                status=429,
+            )
+    return None
+
+
+def _check_ai_chat_rate_limits(user: Optional[WebUser], client_ip: str) -> Optional[web.Response]:
+    """Enforce stricter guest IP limits vs generous verified-user AI chat limits."""
+    if user is None:
+        return _run_rate_limit_checks(
+            (
+                (
+                    "ai_chat_guest_min",
+                    f"ip_{client_ip}",
+                    5,
+                    60,
+                    "Too many guest AI requests. Please sign in or wait {retry}s.",
+                ),
+                (
+                    "ai_chat_guest_hourly",
+                    f"ip_{client_ip}",
+                    8,
+                    3600,
+                    "Guest hourly AI quota exceeded (max 8 prompts/hour). Please sign in with your @edu.aua.am account or try again in {mins}m.",
+                ),
+            )
+        )
+    return _run_rate_limit_checks(
+        (
+            ("ai_chat", f"user_{user.id}", 15, 60, "Too many AI requests. Please wait {retry}s."),
+            (
+                "ai_chat_ip",
+                f"ip_{client_ip}",
+                30,
+                60,
+                "Too many AI requests from your network. Please wait {retry}s.",
+            ),
+            (
+                "ai_chat_hourly_user",
+                f"user_{user.id}",
+                40,
+                3600,
+                "Hourly account AI quota exceeded. Please try again in {mins}m.",
+            ),
+            (
+                "ai_chat_hourly",
+                f"ip_{client_ip}",
+                80,
+                3600,
+                "Hourly network AI quota exceeded. Please try again in {mins}m.",
+            ),
+        )
+    )
+
+
+def _check_ai_reset_rate_limits(user: Optional[WebUser], client_ip: str) -> Optional[web.Response]:
+    """Enforce session reset throttling uniformly across AI reset and chat endpoints."""
+    if user is None:
+        return _run_rate_limit_checks(
+            (
+                (
+                    "ai_reset_guest_min",
+                    f"ip_{client_ip}",
+                    3,
+                    60,
+                    "Too many guest AI session resets. Please wait {retry}s.",
+                ),
+                (
+                    "ai_reset_guest_hourly",
+                    f"ip_{client_ip}",
+                    5,
+                    3600,
+                    "Hourly guest AI reset limit reached. Please sign in or try again in {mins}m.",
+                ),
+            )
+        )
+    return _run_rate_limit_checks(
+        (
+            ("ai_reset", f"user_{user.id}", 15, 60, "Too many AI session resets. Please wait {retry}s."),
+            (
+                "ai_reset_hourly",
+                f"ip_{client_ip}",
+                30,
+                3600,
+                "Hourly AI reset quota exceeded. Please try again in {mins}m.",
+            ),
+        )
+    )
+
+
+async def _read_bounded_ai_json(request: web.Request) -> Optional[Dict[str, Any]]:
+    """Read and parse a size-bounded JSON dictionary for AI endpoints, or return None if oversized/invalid."""
+    if request.content_length and request.content_length > _MAX_AI_JSON_BODY_BYTES:
+        return None
+    raw = await request.content.read(_MAX_AI_JSON_BODY_BYTES + 1)
+    if len(raw) > _MAX_AI_JSON_BODY_BYTES:
+        return None
+    if not raw.strip():
+        return {}
+    parsed = json.loads(raw.decode("utf-8"))
+    if not isinstance(parsed, dict):
+        return None
+    return parsed
 
 
 @routes.get("/api/ai/session")
@@ -2952,20 +3083,23 @@ def _resolve_ai_lock_key(
 async def api_ai_session(request: web.Request) -> web.Response:
     user = await get_current_web_user(request)
     client_ip = get_client_ip(request)
-    rl_key = f"user_{user.id}" if user else f"ip_{client_ip}"
-    allowed, retry = check_rate_limit("ai_session", rl_key, max_calls=60, window_sec=60)
-    if not allowed:
-        return web.json_response(
-            {"error": f"Too many AI session requests. Please wait {retry}s."},
-            status=429,
+    if user:
+        rl_blocked = _run_rate_limit_checks(
+            (("ai_session", f"user_{user.id}", 60, 60, "Too many AI session requests. Please wait {retry}s."),)
         )
+    else:
+        rl_blocked = _run_rate_limit_checks(
+            (("ai_session_guest", f"ip_{client_ip}", 30, 60, "Too many AI session requests. Please wait {retry}s."),)
+        )
+    if rl_blocked is not None:
+        return rl_blocked
 
     session_id = (request.query.get("session_id") or "").strip()[:80] or None
     client_history = None
 
     if request.method == "POST":
         try:
-            body = await request.json()
+            body = await _read_bounded_ai_json(request)
             if isinstance(body, dict):
                 session_id = (str(body.get("session_id") or session_id or "")).strip()[:80] or None
                 if isinstance(body.get("client_history"), list):
@@ -3021,41 +3155,18 @@ async def api_ai_session(request: web.Request) -> web.Response:
 async def api_ai_chat(request: web.Request) -> web.Response:
     user = await get_current_web_user(request)
     client_ip = get_client_ip(request)
-    rate_key = f"user_{user.id}" if user else f"ip_{client_ip}"
 
-    allowed, retry = check_rate_limit("ai_chat", rate_key, max_calls=15, window_sec=60)
-    if not allowed:
-        return web.json_response(
-            {"error": f"Too many AI requests. Please wait {retry}s."},
-            status=429,
-        )
-    allowed_ip, retry_ip = check_rate_limit("ai_chat_ip", f"ip_{client_ip}", max_calls=25, window_sec=60)
-    if not allowed_ip:
-        return web.json_response(
-            {"error": f"Too many AI requests from your network. Please wait {retry_ip}s."},
-            status=429,
-        )
-    allowed_hr_ip, retry_hr_ip = check_rate_limit("ai_chat_hourly", f"ip_{client_ip}", max_calls=40, window_sec=3600)
-    if not allowed_hr_ip:
-        return web.json_response(
-            {"error": f"Hourly AI quota exceeded. Please try again in {max(1, retry_hr_ip // 60)}m."},
-            status=429,
-        )
-    if user:
-        allowed_hr_usr, retry_hr_usr = check_rate_limit("ai_chat_hourly_user", f"user_{user.id}", max_calls=40, window_sec=3600)
-        if not allowed_hr_usr:
-            return web.json_response(
-                {"error": f"Hourly account AI quota exceeded. Please try again in {max(1, retry_hr_usr // 60)}m."},
-                status=429,
-            )
+    rl_blocked = _check_ai_chat_rate_limits(user, client_ip)
+    if rl_blocked is not None:
+        return rl_blocked
 
     try:
-        data = await request.json()
+        data = await _read_bounded_ai_json(request)
     except Exception:
         return web.json_response({"error": "Invalid JSON body."}, status=400)
 
-    if not isinstance(data, dict):
-        return web.json_response({"error": "Invalid JSON object."}, status=400)
+    if data is None:
+        return web.json_response({"error": "Invalid or oversized JSON payload."}, status=400)
 
     prompt = str(data.get("prompt") or "").strip()
     session_id = str(data.get("session_id") or "").strip()[:80] or None
@@ -3076,14 +3187,9 @@ async def api_ai_chat(request: web.Request) -> web.Response:
         return web.json_response({"error": malicious_url_err}, status=400)
 
     if reset:
-        r_ok, r_wait = check_rate_limit("ai_reset", rate_key, max_calls=15, window_sec=60)
-        r_hr_ok, r_hr_wait = check_rate_limit("ai_reset_hourly", f"ip_{client_ip}", max_calls=30, window_sec=3600)
-        if not r_ok or not r_hr_ok:
-            wait_s = r_wait if not r_ok else r_hr_wait
-            return web.json_response(
-                {"error": f"Too many AI session resets. Please wait {wait_s}s."},
-                status=429,
-            )
+        reset_blocked = _check_ai_reset_rate_limits(user, client_ip)
+        if reset_blocked is not None:
+            return reset_blocked
 
     lock_key = _resolve_ai_lock_key(session_id, user.id if user else None, client_ip)
     async with ai_session_store.get_execution_lock(lock_key):
@@ -3149,25 +3255,14 @@ async def api_ai_chat(request: web.Request) -> web.Response:
 async def api_ai_reset(request: web.Request) -> web.Response:
     user = await get_current_web_user(request)
     client_ip = get_client_ip(request)
-    rate_key = f"user_{user.id}" if user else f"ip_{client_ip}"
-    allowed, retry = check_rate_limit("ai_reset", rate_key, max_calls=15, window_sec=60)
-    if not allowed:
-        return web.json_response(
-            {"error": f"Too many AI session resets. Please wait {retry}s."},
-            status=429,
-        )
-    allowed_hr, retry_hr = check_rate_limit("ai_reset_hourly", f"ip_{client_ip}", max_calls=30, window_sec=3600)
-    if not allowed_hr:
-        return web.json_response(
-            {"error": f"Hourly AI reset quota exceeded. Please try again in {max(1, retry_hr // 60)}m."},
-            status=429,
-        )
+    reset_blocked = _check_ai_reset_rate_limits(user, client_ip)
+    if reset_blocked is not None:
+        return reset_blocked
 
     try:
-        data = await request.json()
+        parsed = await _read_bounded_ai_json(request)
+        data = parsed if isinstance(parsed, dict) else {}
     except Exception:
-        data = {}
-    if not isinstance(data, dict):
         data = {}
 
     old_sid = str(data.get("session_id") or "").strip()[:80] or None

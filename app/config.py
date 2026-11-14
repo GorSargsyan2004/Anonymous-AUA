@@ -43,6 +43,36 @@ class Settings(BaseSettings):
         description="Google Gemini API Key for automated multimodal chat moderation",
     )
 
+    # AI Assistant Token, Concurrency & Global Budget Guardrails
+    AI_GLOBAL_HOURLY_PROMPT_LIMIT: int = Field(
+        default=120,
+        description="Max Gemini-powered AI Assistant prompts allowed globally per rolling hour",
+    )
+    AI_GLOBAL_DAILY_PROMPT_LIMIT: int = Field(
+        default=600,
+        description="Max Gemini-powered AI Assistant prompts allowed globally per rolling 24 hours",
+    )
+    AI_MAX_CONCURRENT_GEMINI_CALLS: int = Field(
+        default=6,
+        description="Max concurrent outbound Gemini API requests for the AI Assistant",
+    )
+    AI_PLANNER_MAX_OUTPUT_TOKENS: int = Field(
+        default=256,
+        description="Max output tokens for Gemini tool-planning call",
+    )
+    AI_SYNTHESIS_MAX_OUTPUT_TOKENS: int = Field(
+        default=1800,
+        description="Max output tokens (including thinking tokens) for Gemini answer synthesis",
+    )
+    AI_PLANNER_THINKING_BUDGET: int = Field(
+        default=0,
+        description="Gemini thinking token budget for fast JSON tool planner (0 disables thinking)",
+    )
+    AI_SYNTHESIS_THINKING_BUDGET: int = Field(
+        default=256,
+        description="Gemini thinking token budget cap for AI Assistant synthesis",
+    )
+
     # PostgreSQL Database Configuration
     POSTGRES_USER: str = Field(default="aua_user", description="PostgreSQL username")
     POSTGRES_PASSWORD: str = Field(default="aua_secure_password_here", description="PostgreSQL password")
