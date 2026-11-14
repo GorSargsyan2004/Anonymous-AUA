@@ -1828,11 +1828,13 @@ class TestAuaHub(unittest.IsolatedAsyncioTestCase):
         app = create_web_app()
         async with TestClient(TestServer(app)) as client:
             # 1. Versioned static bundle gets immutable cache header & dropdown stacking + auth reset & Google OAuth styles
-            r_css = await client.get("/static/styles.css?v=20261114_20")
+            r_css = await client.get("/static/styles.css?v=20261115_1")
             self.assertEqual(r_css.status, 200)
             self.assertIn("max-age=604800", r_css.headers.get("Cache-Control", ""))
             css_body = await r_css.text()
             self.assertIn("@media (hover: none), (pointer: coarse), (max-width: 1024px)", css_body)
+            self.assertNotIn("rgba(6, 10, 20, 0.98)", css_body)
+            self.assertIn("linear-gradient(170deg, rgba(11, 20, 42, 0.80) 0%, rgba(7, 13, 28, 0.88) 100%)", css_body)
             self.assertIn(".fb-filter-bar", css_body)
             self.assertIn(".glass-panel:has(.course-dropdown.open)", css_body)
             self.assertIn(".auth-inline-link", css_body)

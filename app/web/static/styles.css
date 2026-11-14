@@ -4420,7 +4420,12 @@ a,
     border-right: none !important;
     border-bottom: none !important;
     box-shadow: none !important;
-    background: rgba(6, 10, 20, 0.98);
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+    background:
+      radial-gradient(circle at 18% 12%, rgba(56, 189, 248, 0.14) 0%, transparent 48%),
+      radial-gradient(circle at 82% 84%, rgba(14, 165, 233, 0.11) 0%, transparent 50%),
+      linear-gradient(170deg, rgba(11, 20, 42, 0.80) 0%, rgba(7, 13, 28, 0.88) 100%);
     overflow-x: hidden;
     max-width: 100vw;
   }
@@ -4483,9 +4488,9 @@ a,
     border-right: none !important;
     border-bottom: none !important;
     padding: 8px 10px max(12px, env(safe-area-inset-bottom)) 10px;
-    background: rgba(7, 11, 22, 0.98);
-    backdrop-filter: blur(20px);
-    -webkit-backdrop-filter: blur(20px);
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+    background: linear-gradient(180deg, rgba(11, 21, 44, 0.94) 0%, rgba(7, 13, 28, 0.97) 100%);
   }
 
   .chat-scroll-bottom-btn {
