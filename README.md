@@ -1,570 +1,303 @@
-# 🎭 Anonymous AUA Telegram Chat Bot 🥷
+<div align="center">
 
-[![Python](https://img.shields.io/badge/Python-3.12-3776AB?style=for-the-badge&logo=python&logoColor=white)](https://www.python.org/)
-[![aiogram](https://img.shields.io/badge/aiogram-v3.x-2CA5E0?style=for-the-badge&logo=telegram&logoColor=white)](https://docs.aiogram.dev/)
-[![SQLAlchemy](https://img.shields.io/badge/SQLAlchemy-2.0_Async-D71F00?style=for-the-badge&logo=sqlalchemy&logoColor=white)](https://www.sqlalchemy.org/)
-[![PostgreSQL](https://img.shields.io/badge/PostgreSQL-16_Alpine-336791?style=for-the-badge&logo=postgresql&logoColor=white)](https://www.postgresql.org/)
-[![Docker](https://img.shields.io/badge/Docker-Compose-2496ED?style=for-the-badge&logo=docker&logoColor=white)](https://www.docker.com/)
+# AUA Hub & Anonymous AUA Bot
 
-An asynchronous, production-ready Telegram bot created exclusively for students of the **American University of Armenia (AUA)**. It enables students to connect anonymously, make genuine friends, build meaningful connections, and find love based on sex, sexual orientation, and an automated reputation scoring system.
+**All-in-One Campus Ecosystem for the American University of Armenia (`auahub.am` & `@aua_anonymous_bot`)**
 
----
+[![Python 3.12](https://img.shields.io/badge/Python-3.12-3776AB?logo=python&logoColor=white)](https://www.python.org/)
+[![aiogram 3](https://img.shields.io/badge/aiogram-3.x-26A5E4?logo=telegram&logoColor=white)](https://docs.aiogram.dev/)
+[![aiohttp](https://img.shields.io/badge/aiohttp-Web%20%2B%20WS-2C5BB4)](https://docs.aiohttp.org/)
+[![PostgreSQL 16](https://img.shields.io/badge/PostgreSQL-16-4169E1?logo=postgresql&logoColor=white)](https://www.postgresql.org/)
+[![Gemini AI](https://img.shields.io/badge/Gemini-2.5%20Flash-8E75B2?logo=googlegemini&logoColor=white)](https://ai.google.dev/)
+[![Docker Compose](https://img.shields.io/badge/Docker-Compose-2496ED?logo=docker&logoColor=white)](https://docs.docker.com/compose/)
+[![License: Proprietary](https://img.shields.io/badge/License-All%20Rights%20Reserved-D92D20)](#license--copyright)
 
-## 🌟 Table of Contents
-- [🎯 Purpose & Vision](#-purpose--vision)
-- [⚡ Key Features](#-key-features)
-- [🧩 How It Works](#-how-it-works)
-  - [1. Onboarding & Preferences](#1-onboarding--preferences)
-  - [2. Matchmaking Algorithm](#2-matchmaking-algorithm)
-  - [3. Anonymous Media & Message Relay](#3-anonymous-media--message-relay)
-  - [4. Reputation & Feedback (Under the Hood)](#4-reputation--feedback-under-the-hood)
-  - [5. Continuous Feedback & Admin Replies](#5-continuous-feedback--admin-replies)
-- [📋 Bot Commands Reference](#-bot-commands-reference)
-- [🏗️ Project Architecture](#️-project-architecture)
-- [💾 Database Models & Schema](#-database-models--schema)
-- [🗄️ Automated Database Backups & Recovery](#️-automated-database-backups--recovery)
-- [🚀 Quickstart & Deployment](#-quickstart--deployment)
-  - [Prerequisites](#prerequisites)
-  - [1. Clone Repository](#1-clone-repository)
-  - [2. Configure Environment](#2-configure-environment)
-  - [3. Run with Docker Compose](#3-run-with-docker-compose)
-  - [4. Run in Local/WSL Environment](#4-run-in-localwsl-environment)
-- [🛡️ Moderation & Administrator Tools](#️-moderation--administrator-tools)
-- [📄 License](#-license)
+An independent, student-engineered full-stack platform pairing **AUA Hub** (`auahub.am`) — a Progressive Web App for AUA academics, AI search, room availability, course swaps, and campus chat — with **Anonymous AUA** (`@aua_anonymous_bot`), a privacy-first Telegram matchmaking, Q&A inbox, and anonymous wall ecosystem.
+
+[AUA Hub Web Platform](#aua-hub-web-platform-auahubam) • [Anonymous AUA Bot](#anonymous-aua-telegram-bot) • [Architecture](#architecture--system-design) • [Security & Privacy](#security-anti-abuse--privacy) • [Deployment](#deployment--setup) • [License](#license--copyright)
+
+</div>
 
 ---
 
-## 🎯 Purpose & Vision
+## Overview
 
-University life is filled with incredible people, yet meeting compatible peers outside one's major or cohort can be intimidating. **Anonymous AUA** breaks down social barriers by offering a safe, respectful, and anonymous environment for AUA students to:
-- 💬 Chat honestly without fear of judgment.
-- 🤝 Make new campus friends across different faculties (BS, CS, BAB, EC, LL.M, etc.).
-- ❤️ Discover romantic connections tailored to sex and sexual orientation.
-- 🛡️ Enjoy a well-moderated platform that actively penalizes spam, abuse, and non-AUA intruders.
+The repository runs both platforms from a unified asynchronous Python runtime backed by **PostgreSQL 16**, **Google Gemini**, **AUA internal/public feeds**, **Local Telegram Bot API**, and **Cloudflare Tunnel**:
 
----
-
-## ⚡ Key Features
-
-- **Compatibility Matrix & Mutual Matching Preferences**: Pairs students based on mutual criteria. By default, preferences target romantic partners, but students can customize who they want to connect with (Male, Female, Straight, Bisexual, Lesbian, Gay) via interactive checkbox menus.
-- **Custom Matching Preferences (`/preferences`)**: Interactive inline checkboxes allow users to talk to any sex and orientation without LGBT flags in the menu. Matches only occur when **both** students' preferences mutually match.
-- **Bisexual Compatibility Engine**: Seamlessly matches bisexual students with compatible opposite-sex partners (straight or bisexual) or same-sex partners (gay/lesbian or bisexual).
-- **Hidden Priority Matchmaking**: Uses row-level database locking (`with_for_update(skip_locked=True)`) to pair users with the closest reputation score (`ABS(candidate.priority - user.priority) ASC`), ensuring high-quality users match with each other. The priority score is kept invisible to students to prevent gamification.
-- **Full Media Relay, Native Replies, Emoji Reactions & Edit Sync**: Intercepts and anonymously forwards text, photos, voice messages, stickers, video notes, and documents using Telegram's native `copy_to` API.
-- **Native Telegram Reply Support**: Students can swipe right or tap **Reply** on any message. The bot dynamically translates message IDs between the two private chats and delivers replies with native Telegram quote bubbles pointing to the partner's exact message (supports partner replies and self-quotes).
-- **Emoji Reactions Mirroring**: When a student reacts with an emoji (e.g. 👍, ❤️, 🔥, 😂) to a message or removes a reaction, the bot listens to `MessageReactionUpdated` and instantly mirrors the exact reaction onto the partner's corresponding message via `set_message_reaction`.
-- **Live Edited Messages Synchronization**: When a student edits a message (text or media caption) in their chat, the bot catches the update and immediately edits the corresponding message in the partner's chat in real-time, preserving rich text formatting and entities.
-- **Natural Typing Indicator Emulation (`typing...`)**:
-  - Emulates realistic human typing on the bot's header bar via Telegram's `sendChatAction` API (`typing`, `upload_photo`, `record_voice`, `upload_video`, `upload_document`), scaled naturally to message length.
-  - Features strict per-user FIFO concurrency locking to guarantee in-order message delivery.
-  - **Privacy Toggle**: Enabled by default, but users who prefer stealth can toggle it off anytime via `/preferences` or the `/typing` command.
-- **One-Time (View-Once) Ephemeral Media (`/onetime`)**:
-  - Simulates true 15-second self-destructing media inside bot chats (where Telegram disables native `(1)` view-once icons).
-  - **Protected Delivery**: Recipient receives an interactive placeholder with a `[👁️ Tap to Reveal (15s)]` button instead of raw media.
-  - **Screenshot & Forwarding Shield**: When revealed, media is copied with `protect_content=True`, strictly preventing forwarding, downloading, saving to gallery, and screenshots (on Android and Desktop).
-  - **Auto-Destruction**: A 15-second countdown runs; once expired, the media is deleted permanently via `delete_message`, the placeholder is marked `💥 One-Time Media Expired`, and the sender is notified.
-  - **3 Easy Triggers**: Toggle `/onetime` mode, add `#once` or `/once` to captions, or use Telegram's native "Hide with Spoiler" option.
-- **Emergency In-Chat Reporting & Evidence Review (`/report`)**:
-  - In-chat `/report` command providing a 1-click panic button (`🚨 Emergency Disconnect & Report`) that severs uncomfortable chats, auto-blocks the abuser, and accepts text or photo/screenshot evidence.
-  - Fail-safe reporting: captures user feedback immediately upon clicking Report, with automatic session recovery and auto-forwarding of screenshot evidence to administrators.
-- **Multi-Tier Link Shield & Anti-IPLogger Engine**:
-  - **IP-Logger Auto-Block**: Instantly detects and blocks known tracking/IP-logger links (`grabify.link`, `iplogger.org`, `2no.co`, `yip.su`, etc.) and dangerous executables (`.apk`, `.exe`, `.scr`, `.bat`), dropping the message and warning the sender.
-  - **Real-Time URL Unshortener**: Disguised links (`bit.ly`, `tinyurl`, `t.ly`, etc.) are resolved asynchronously in real time to expose hidden IP-trackers before messages are delivered.
-  - **Cloudflare Zero-Trust Verification**: Validates unfamiliar domains against Cloudflare's malware and phishing intelligence via DoH (`1.1.1.2`).
-  - **In-Chat External Link Advisories**: Prompts recipients with clear safety warnings and exact destination domains whenever an unknown link is shared.
-- **Ghost & Inactive Chat Shield & Overnight Sleep Mode (`/pause`, `/sleep`)**:
-  - **Ghost Connection Cleansing**: Automatically identifies dead connections where neither partner spoke after matching. Prompts both users after 2 minutes of silence, gracefully ending the ghost connection after a 3-minute grace period if neither responds.
-  - **Relaxed Mid-Chat Monitoring**: Ongoing active conversations are given 30 minutes of silence before any inactivity check.
-  - **Overnight Sleep Mode (`/pause`, `/sleep`)**:
-    - Students holding an anonymous chat open overnight or taking a study break can type `/pause` (or `/sleep`) or tap `[🌙 Sleep Mode / Pause]` on the inactivity prompt.
-    - Freezes inactivity auto-disconnections for up to 24 hours so partners never lose each other.
-    - **Seamless Awakening**: As soon as either user sends any message (text, photo, voice, etc.), the bot immediately awakens the session, restores live status, and delivers the message.
-    - **24-Hour Safeguard**: Chats remaining in Sleep Mode for over 24 hours without any message are safely closed to keep queues clean.
-- **Privacy & Anti-Blackmail Protection (`/safety`)**: Provides verifiable technical facts explaining that Telegram bots cannot expose avatars, phone numbers, or IP addresses, actively countering intimidation and extortion bluffs.
-- **Smart Engagement Engine**:
-  - Automatically notifies users after 30 seconds of searching, explaining that the bot is new and inviting them to share the bot link with classmates.
-  - Prompts students for bot improvement ideas after every 2 completed sessions (throttled to at most once per day).
-- **Direct Admin Feedback & Two-Way Replies**: Users can send suggestions via `/suggestion` or the feedback prompt. Admins receive instant notifications and can reply directly to the student in Telegram.
-- **Admin Supervision & Dashboards**:
-  - `/stata` live real-time statistics dashboard (registrations, active chats, orientation breakdowns, feedbacks, reports, suggestions).
-  - One-click report moderation with customizable penalty deduction (`0` to `100` clamping).
-- **Production-Grade Dockerization**: Lightweight Python 3.12-slim image coordinated with PostgreSQL 16 Alpine via `docker-compose.yml` featuring healthchecks and persistent volumes.
+| Surface | Entry Point | Core Purpose |
+| :--- | :--- | :--- |
+| **AUA Hub Web & PWA** | `auahub.am` (`app/web/`) | Verified student portal: AI Assistant, Have-Need course swaps, course & professor feedbacks, live free classrooms, anonymous wall/inbox sync, Telegram groups directory, and real-time campus chat. |
+| **Anonymous AUA Bot** | `@aua_anonymous_bot` (`app/handlers/`) | Mutual-preference anonymous 1-on-1 Telegram chat with zero-log RAM buffering, AI moderation, Q&A inbox links (`/link`), direct invites (`/invite`), and web publishing (`/post`). |
+| **Admin Analytics (`/stata`)** | `/stata` (`app/web/templates/`) | Admin-restricted statistical dashboard tracking anonymous chat metrics, AI RAG usage, bot verification & safety signals, and AUA Hub web traffic. |
 
 ---
 
-## 🧩 How It Works
+## AUA Hub Web Platform (`auahub.am`)
 
-### 1. Onboarding & Preferences
-1. A new student sends `/start`.
-2. The bot presents inline buttons to select **Sex** (`👨 Male` / `👩 Female`).
-3. Next, the student selects **Sexual Orientation** (`👫 Straight` / `🌈 Bisexual` / `👭 Lesbian` / `👬 Gay`).
-4. **Interactive Preferences Stage**: The bot sets romantic defaults, then displays clean inline checkboxes (no LGBT flags) for:
-   - Sexes: `Male`, `Female`
-   - Orientations: `Straight`, `Bisexual`, `Lesbian`, `Gay`
-   Students can customize whom they want to connect with and press `💾 Save Preferences`.
-5. Students can re-adjust their preferences at any time using the `/preferences` command.
-6. The student is registered with a default priority of `50/100` (kept internal).
+Served as a responsive, dark-glassmorphic **Progressive Web App (PWA)** with WebSocket support, service worker registration (`/sw.js`), and mobile-first navigation:
 
-**Default Romantic Preferences:**
-- `Straight Male`: Female (`Straight`, `Bisexual`)
-- `Straight Female`: Male (`Straight`, `Bisexual`)
-- `Gay Male`: Male (`Gay`, `Bisexual`)
-- `Lesbian Female`: Female (`Lesbian`, `Bisexual`)
-- `Bisexual Male`: Female (`Straight`, `Bisexual`) AND Male (`Gay`, `Bisexual`, `Straight`)
-- `Bisexual Female`: Male (`Straight`, `Bisexual`) AND Female (`Lesbian`, `Bisexual`, `Straight`)
+### Core Modules
+- **✦ AI Assistant** *(Signed-In Students & Alumni Only)*
+  Multi-source **Gemini (`gemini-2.5-flash`) RAG orchestrator** (`app/services/ai_agent.py`) equipped with 6 specialized campus tools:
+  1. Course & Professor Feedbacks (`JenzaReviews` local mirror + `AcademicFeedback`)
+  2. Global Campus Chat History (`SpamChatMessage`)
+  3. Anonymous Campus Posts & Student Groups *(private Inbox DMs excluded)*
+  4. AUA Newsroom Events (`newsroom.aua.am/events/`)
+  5. *The Highlander* Student Magazine (`thehighlander.aua.am`)
+  6. AUA Faculty/Staff Directory (`directory.aua.am`, `people.aua.am`, + web search fallback)
+  - Enforces **5 prompts per session**, anonymizes student identifiers prior to synthesis, and guards API usage with global hourly/daily prompt budgets and concurrency semaphores.
 
-**Mutual Matching Rule:**
-Matchmaking connects User A and User B **if and only if both users' criteria match each other**:
-- User B's sex is in User A's target sexes AND User B's orientation is in User A's target orientations.
-- User A's sex is in User B's target sexes AND User A's orientation is in User B's target orientations.
+- **📚 Have-Need Course Swaps**
+  Browse synced official Sonis course sections (`app/services/sonis_scraper.py`), publish sections you **have** vs. **need** (`HaveNeedPost`), automatically detect reciprocal swaps, and receive in-app/email match notifications.
 
-### 2. Matchmaking Algorithm
-When a student sends `/search` (or `/next`):
-```mermaid
-flowchart TD
-    A["User sends /search"] --> B{"Completed Profile?"}
-    B -- No --> C["Prompt /start Onboarding"]
-    B -- Yes --> D{"Already in Active Chat?"}
-    D -- Yes --> E["Inform User: Use /next or /stop"]
-    D -- No --> F["Lock candidate in DB\n(ABS priority diff ASC, priority DESC)"]
-    F --> G{"Candidate Found?"}
-    G -- Yes --> H["Set is_searching=False\nCreate ChatSession\nNotify Both Students"]
-    G -- No --> I["Set user.is_searching=True\nStart 30s Share Timer"]
-```
+- **⭐ Course & Professor Feedbacks**
+  Search AUA courses and instructors, read and submit anonymous or attributed student reviews (`AcademicFeedback`), and stay synchronized with partner **JenzaReviews** (`app/services/jenzareviews_sync.py`).
 
-### 3. Anonymous Media, Message Relay, Native Replies, Reactions & Edits
-Once connected, any message sent by either student (text, photo, voice note, round video, sticker) is stripped of sender identity and cleanly copied to the partner's chat.
+- **🎭 Anonymous Wall & Inbox Sync**
+  Read indexed anonymous campus posts (`/post` from Telegram or web), report rule-breaking posts, and link your Telegram account via one-time `/sync` codes (`WebSyncCode`) to view and reply to anonymous `/link` Q&A messages in the browser.
 
-- **Native Telegram Replies**:
-  - When a student swipes right or taps **Reply** on any message, the bot matches the corresponding message ID in the partner's chat and delivers the response with a native Telegram quote bubble.
-  - Supports replying to the partner's messages as well as self-quoting previous messages.
-  - Features graceful fallbacks (`allow_sending_without_reply=True`) so messages are always reliably delivered even if a quoted message was deleted.
-- **Emoji Reactions Mirroring**:
-  - Supports live Telegram emoji reactions (👍, ❤️, 🔥, 😂, etc.).
-  - When a user adds, modifies, or removes a reaction on any message in their chat with the bot, the bot automatically finds the partner's corresponding message and updates the reaction in real-time.
-- **Live Edited Messages Synchronization**:
-  - When a student edits any previously sent text or media caption in their chat, the bot intercepts the edit and immediately applies it to the corresponding message in the partner's chat via `edit_message_text` or `edit_message_caption`.
-  - Preserves formatting entities (bold, italic, links, code blocks) and handles non-modified edits smoothly.
-- **Privacy & Memory Safety**:
-  - Mappings are held in a bounded in-memory FIFO cache (`ReplyManager`, up to 400 messages per conversation). No message text or contents are ever stored in the database.
-  - Mappings are automatically purged when the chat session ends (`/stop`, `/next`, or disconnect).
+- **🚪 Free Classrooms Finder**
+  Live room availability across **Main Building** and **PAB** (`app/services/booking_scraper.py`) with transient 10-minute gaps between classes filtered out so students only see genuinely usable study rooms.
 
-If either user blocks the bot or leaves, the session automatically terminates, and both participants receive a prompt to rate the conversation.
+- **👥 Telegram Groups Directory**
+  Discover, submit, update, and filter AUA student clubs, cohort chats, and study communities.
 
-### 4. Anti-Spite & Anti-Cheat Reputation System (Under the Hood)
-To eliminate malicious retaliation, queue manipulation, and griefing (e.g. users temporarily switching their profile to Female to enter chats with male competitors and immediately spamming downvotes to artificially suppress their matchmaking priority), the platform enforces multi-layered anti-cheat safeguards:
+- **💬 Real-Time Campus Chat**
+  WebSocket-powered (`/ws/chat`) campus lounge for lost & found, announcements, club updates, and student discussions — supporting message replies, emoji reactions, image/media uploads, unread cursors, and strict admin-only moderation of third-party messages.
 
-1. **Profile Sex Update Cooldown (2 Days / 48 Hours)**:
-   - Once a student configures their sex during onboarding or updates it, their profile sex cannot be changed again for **48 hours (2 days)**.
-   - If an account attempts to switch sex before the cooldown expires, the action is rejected with an informative countdown alert. Re-selecting the same sex (e.g. to adjust orientation) remains permitted.
-   - Matchmaking criteria (target sexes and target orientations) remain freely customizable anytime via `/preferences`.
-
-2. **Recent Partner Rematch Cooldown (Anti-Win-Trading & Upvote Farming Shield)**:
-   - To eliminate priority score manipulation through colluding partners repeatedly entering, chatting for 15s, and boosting each other's score ("win-trading"), the matchmaking engine enforces a **20-minute rematch cooldown**.
-   - Two users who just finished a conversation cannot be rematched with each other until 20 minutes have elapsed, eliminating rapid score-farming loops and preventing awkward instant re-pairings after skipping.
-
-3. **Minimum Two-Way Message Engagement Filter**:
-   - To prevent rapid "join-and-downvote" griefing, negative feedback (`Dislike`, `Spam`, `Not AUA`) requires **both**:
-     - Chat duration $\ge 15$ seconds
-     - Total messages exchanged in the session $\ge 4$
-   - If a conversation was unengaged ($< 15$s or $< 4$ messages), any dislike or base spam penalty is neutralized (**0 penalty delta applied**), and the rating is cleanly recorded as a neutral skip.
-
-4. **Serial Downvoter Neutralization & Stealth Damping**:
-   - The system tracks each user's recent voting history across independent sessions.
-   - If an account exhibits serial downvoting behavior ($\ge 2$ consecutive negative ratings prior to the current chat, or $\ge 75\%$ negative ratings across their last 4 chats), all negative score penalties from that user are **dampened to 0 delta**.
-   - Furthermore, serial downvoters are prevented from manufacturing false consensus: spam flags from flagged accounts do not increment partner report counts.
-   - Neutralization is applied in **stealth mode**: the voter is not tipped off, preventing bad-faith actors from gaming or evading the detection thresholds.
-
-5. **AUA Student Email & Gender Verification (`/verify`)**:
-   - Students can verify their student status using their official AUA email ending with **`@edu.aua.am`**.
-   - **6-Digit OTP Delivery**: The bot sends a cryptographically generated one-time code valid for 15 minutes.
-   - **Anti-Catfish Gender Verification**: Automatically extracts first names from the university email (`firstname_lastname@edu.aua.am`) and cross-references an extensive Armenian and international names dictionary to verify gender.
-   - **Gender Conflict Shield**: If a student's verified email name (e.g. `davit`) conflicts with their profile gender (e.g. `female`), matchmaking is immediately paused. Users can self-correct their profile with 1 tap (bypassing cooldown) or submit an appeal for manual administrator review.
-   - **In-Chat Verified Badge**: When connected, both partners receive a verified status indicator:
-     - Verified with confirmed gender: `🎓 Partner Status: Verified AUA Student (Male/Female ✅)`
-     - Verified with unconfirmed/ambiguous name: `🎓 Partner Status: Verified AUA Student (@edu.aua.am) ✅`
-   - **False-Report Admin Audit Shield**: If any user reports an officially verified student as "Not from AUA" (`not_aua`), the bot immediately alerts administrators with a high-priority audit warning to investigate potential malicious reports or compromised student accounts.
-
-6. **Exact Priority Delta Recording & Clean Reversion**:
-   - Every `Feedback` record stores the exact score delta applied (`priority_delta_applied`), seamlessly accounting for neutralized ratings, engagement filters, and consensus bonuses.
-   - When a student updates or resets a rating via `[✏️ Change Rating]` or `[🗑️ Reset / Undo]`, the exact delta is reversed without risk of artificial point inflation.
-
-7. **Streamlined 2-Tier UI**:
-   - **Tier 1 (Primary Prompt)**: Clean binary feedback `[👍 Great Chat]` and `[👎 Not for me]`, plus a discreet `[⚠️ Report Issue...]` button. 95% of casual users who simply didn't vibe with a partner click `👎 Not for me`.
-   - **Tier 2 (Issue Categories)**: Tapping `[⚠️ Report Issue...]` opens specific moderation categories: `[🚫 Spam / Promo]`, `[🏫 Not from AUA]`, `[🚨 Harassment / Other]`, and `[🔙 Back]`.
-
-8. **Consensus-Based Penalties (Corroboration Required)**:
-   - **1st Report**: Only applies a base `-1` penalty (or 0 if unengaged). A single hater **cannot** heavily harm an innocent user.
-   - **2nd Report (Consensus Reached)**: When $\ge 2$ independent students report the same user, the system confirms a pattern, applies an additional `-4` penalty (**-5 total penalty**), and broadcasts an automated high-priority alert to all administrators.
-   - **Repeat Offenders (3+ Reports)**: Subsequent independent flags apply immediate `-5` penalties and alert admins.
-
-9. **Interactive Feedback Management, Overrides & Undo (`[✏️ Change]` / `[🗑️ Reset]`)**:
-   - **Accidental Click Protection**: After submitting feedback, students are provided an inline management toolbar with `[✏️ Change Rating]` and `[🗑️ Reset / Undo]`.
-   - **Persistent Scrollback Support**: All buttons in Telegram chat logs encode `session_id` and `partner_id`, remaining active forever even after multiple subsequent conversations.
-
-10. **Recent Partners Selector (`/recent` & Enhanced `/report`)**:
-   - **No Stranded Partners**: When typing `/report` during an active chat or after completing a conversation, students can select whether to report their current active partner or choose among their last 5 recent chat partners.
-   - **Recent Partners Menu (`/recent` or `/history`)**: Allows students to browse their past chat partners with relative timestamps (e.g. `5m ago`, `1h ago`) and message counts, providing instant access to leave/update ratings, submit reports, or apply blocks without needing to scroll through chat logs.
-
-> **Note:** Priority scores and point modifiers remain completely invisible to students. The system operates autonomously in the database, ensuring well-behaved students enjoy faster and better matches.
-
-### 5. Continuous Feedback & Admin Replies
-1. **Periodic Prompts:** Every 2 completed sessions, students receive an optional prompt with `[💡 Give suggestions]` and `[✖️ Dismiss]`.
-2. **One-Per-Day Throttling:** Once a student sends a suggestion, they won't be prompted again for the rest of the calendar day.
-3. **On-Demand with Anti-Spam Protection:** Any user can type `/suggestion` at any time, protected by a **5-minute cooldown** to prevent admin inbox flooding.
-4. **Two-Way Thread:** Admins receive the student's idea with an `[✍️ Reply to Student]` button. When pressed, the admin types a reply, and the bot delivers it directly back to the student.
+### Partnered AUA Student Platforms
+AUA Hub showcases and collaborates with fellow student-built AUA tools:
+- **[FindAUA](https://findaua.com)** — Student meetups, study groups, and campus activities.
+- **[JenzaReviews](https://jenzareviews.com)** — Student-run professor ratings and course reviews (live-synced with AUA Hub Feedbacks & AI Assistant).
+- **[AUA Utils](https://chromewebstore.google.com/detail/aua-utils/echkbfkpejnpbjfmjoagfijakbnbglgp?hl=en)** — Open-source Chrome & Firefox extension enhancing AUA portals with fast course search, GenEd discovery, multi-schedule calendar building, and Google Calendar export.
 
 ---
 
-## 📋 Bot Commands Reference
+## Anonymous AUA Telegram Bot
 
-| Command | Audience | Description |
-| :--- | :---: | :--- |
-| `/start` | Public | Initiates the onboarding profile setup or displays welcome menu. |
-| `/help` | Public | Displays reference guide and summary of all available bot commands. |
-| `/search` | Public | Enters the matchmaking queue to find an anonymous student partner. |
-| `/next` | Public | Ends the current conversation and immediately queues for a new partner. |
-| `/stop` | Public | Ends an active chat session or cancels a pending search. |
-| `/pause` (or `/sleep`) | Public | Puts active chat into Sleep Mode for the night (freezes inactivity auto-close). |
-| `/report` | Public | Emergency shield: severs chat, auto-blocks partner, and accepts text/screenshot evidence. |
-| `/safety` | Public | Displays privacy facts, anti-blackmail advice, and debunking of IP/avatar leak myths. |
-| `/privacy` (or `/policy`) | Public | Displays comprehensive Privacy Policy and Community Code of Conduct. |
-| `/delete_me` | Public | Irreversibly deletes profile, matching preferences, priority score, and all data. |
-| `/link` (or `/inbox`) | Public | Generates a destroyable personal anonymous Q&A / message inbox link with 20m cooldown and media support. |
-| `/invite` (or `/chatlink`) | Public | Generates one-time or persistent direct 1-on-1 private chat invite links that bypass public queue. |
-| `/preferences` | Public | Adjusts target sexes, orientations, and typing indicator via checkbox menu. |
-| `/typing` | Public | Quickly toggles typing status indicator on/off (stealth mode). |
-| `/onetime` (or `/once`) | Public | Toggles 15-second View-Once self-destructing mode for outgoing media (blocks screenshots). |
-| `/blocklist` | Public | Displays blocked partners as date buttons with `[<] [2/3] [>]` pagination to unblock. |
-| `/recent` (or `/history`) | Public | View recent partners to update ratings, reset feedback, or file reports. |
-| `/stats` (or `/stata`) | Public | Shows community metrics: registered count, active chats, male/female, and orientations. |
-| `/profile` | Public | Updates sex and orientation (sex changes have a 48h fair-play cooldown). |
-| `/verify` | Public | Verifies official AUA student status via OTP sent to `@edu.aua.am`. |
-| `/suggestion` | Public | Sends feedback, feature requests, or bug reports to admins (5m cooldown). |
-| `/cancel` | Public | Aborts any active prompt or input without ending active chat. |
-| `/stata` | **Admins Only** | Displays full administrator dashboard (backups, feedbacks, reports, suggestions). |
-| `/backup` | **Admins Only** | Triggers an immediate on-demand database backup and gzipped SQL snapshot. |
-| `/block <user_id>` | **Admins Only** | Permanently bans a malicious user and disconnects any active chat partner. |
-| `/unblock <user_id>` | **Admins Only** | Unbans a previously banned user and restores bot access. |
+Built on **aiogram 3.x** with PostgreSQL persistence for state/profiles and zero-disk volatile memory buffering for chat messages:
 
----
+### Key Capabilities
+- **Mutual-Preference Matchmaking (`app/services/matcher.py`)**: Matches users strictly by mutual sex & orientation preferences (`Straight`, `Gay`, `Lesbian`) combined with a hidden **Priority Score (`0–100`, starting at `50`)**.
+- **Anti-Cheat, Anti-Spite & Rematch Shields**: Weighted post-chat ratings (`Like +1`, `Dislike -1`, `Spam -5`, `Not from AUA -5`), configurable rematch cooldown (`REMATCH_COOLDOWN_MINUTES=20`), anti-spite detection, and `/recent` review override.
+- **Native Telegram Feel**: Bidirectional reply-chain mirroring (`ChatMessageMap`), emoji reaction syncing, message edit propagation, media album grouping (`media_batcher.py`), optional delayed `typing...` indicator (`/typing`), and **15-second View-Once Media protection** (`/onetime` + `one_time_media.py`).
+- **AUA Campus Bridges**:
+  - `/link` — Personal anonymous Q&A inbox link (`AnonymousInbox`, `InboxMessage`, `InboxBlock`)
+  - `/post` — Publish anonymous posts directly to AUA Hub
+  - `/sync` — Bind your Telegram inbox & profile with `auahub.am`
+  - `/invite` — Create direct 1-on-1 anonymous chat invite links (`ChatInvite`) and manage reconnect requests
+- **Student Verification & Safety**: `/verify` links `@edu.aua.am` email via OTP with gender-conflict protection (`gender_detector.py`), while `LinkShield` filters phishing/spam links and `/pause` offers one-tap sleep mode.
+- **High-Throughput Media & Reliability**: Supports **Local Telegram Bot API** (up to 2 GB media payloads), active-session preservation across container restarts, atomic hourly `pg_dump` backups, inactivity monitors, and daily reminders.
 
-## 🏗️ Project Architecture
+### Bot Commands
 
-```
-Anonymous AUA/
-├── .env                         # Active environment variables (git-ignored)
-├── .env.example                 # Template for environment configuration
-├── .gitignore                   # Standard Python, IDE, and container exclusions
-├── docker-compose.yml           # Multi-container orchestration (Bot + PostgreSQL)
-├── Dockerfile                   # Python 3.12-slim production container
-├── requirements.txt             # Python dependencies
-├── alembic.ini                  # Alembic database migrations configuration
-├── alembic/
-│   ├── env.py                   # Async Alembic execution environment
-│   ├── script.py.mako           # Migration template
-│   └── versions/                # Version history scripts
-└── app/
-    ├── __init__.py
-    ├── main.py                  # Entrypoint: sets up bot, dispatcher, DB tables, polling
-    ├── config.py                # Pydantic Settings & environment variable validator
-    ├── database/
-    │   ├── __init__.py          # Model exports
-    │   ├── models.py            # SQLAlchemy 2.0 models (User, ChatSession, Feedback, Report, Suggestion)
-    │   ├── session.py           # AsyncEngine, AsyncSessionLocal, init_db schema migration
-    │   └── crud.py              # Queries, priority clamping [0, 100], and stats aggregator
-    ├── filters/
-    │   ├── __init__.py
-    │   └── admin.py             # IsAdminFilter checking Telegram ID against ADMIN_IDS
-    ├── handlers/
-    │   ├── __init__.py          # Ordered router registration
-    │   ├── start.py             # /start, /preferences, /profile onboarding & /suggestion entry
-    │   ├── matchmaking.py       # /search, /stop, /next & 30-second share prompt
-    │   ├── feedback.py          # Session ratings, report intake, and suggestion submission
-    │   └── admin.py             # /stata dashboard, report penalties, and suggestion replies
-    ├── keyboards/
-    │   ├── __init__.py
-    │   └── inline.py            # Inline buttons for onboarding, preferences, ratings, suggestions, admin actions
-    ├── services/
-    │   ├── __init__.py
-    │   └── matcher.py           # Mutual compatibility & row-level locked queue matcher
-    └── states/
-        ├── __init__.py
-        └── states.py            # FSM States: Onboarding, Preferences, Reporting, AdminPenalize, Suggestion, AdminReply
-```
+<details>
+<summary><strong>Click to view all User & Admin commands</strong></summary>
+
+#### Student & Community Commands
+| Command | Description |
+| :--- | :--- |
+| `/start` | Start bot & complete/view profile setup |
+| `/search` | Search for a compatible anonymous chat partner |
+| `/next` | Skip to the next anonymous partner |
+| `/stop` | End current chat or cancel matchmaking search |
+| `/pause` | Enter sleep / paused mode so matches wait cleanly |
+| `/link` | Generate & manage your personal anonymous Q&A inbox link |
+| `/post` | Publish an anonymous post to the AUA Hub wall |
+| `/sync` | Generate a sync code to connect your Telegram inbox with AUA Hub |
+| `/invite` | Create a direct 1-on-1 anonymous chat invite link |
+| `/recent` | View recent partners, adjust feedback, or report post-chat |
+| `/report` | Emergency report & instant block for active chat |
+| `/blocklist` | View and manage your blocked partners |
+| `/preferences` | Configure matching orientation & typing indicator settings |
+| `/profile` | Update sex or orientation profile |
+| `/typing` | Toggle the `typing...` status indicator |
+| `/onetime` | Toggle 15-second View-Once mode for media |
+| `/verify` | Verify AUA student status (`@edu.aua.am`) |
+| `/safety` | View privacy facts & anti-scam protections |
+| `/privacy` | Read Privacy Policy & Community Rules |
+| `/stats` | View community statistics & live activity |
+| `/suggestion` | Send feedback/feature suggestions directly to administrators |
+| `/delete_me` | Permanently delete your account & stored profile data |
+| `/help` | Display command reference & quick help |
+| `/cancel` | Cancel the active interactive prompt/action |
+
+#### Admin Commands (`ADMIN_IDS`)
+| Command | Description |
+| :--- | :--- |
+| `/stata`, `/stats` | View admin analytics summary |
+| `/stats_web`, `/web_stats` | View AUA Hub web metrics summary |
+| `/reports`, `/pending_reports` | Inspect pending user/moderation reports |
+| `/backup` | Trigger an immediate PostgreSQL backup snapshot |
+| `/block <user_id>` | Ban a user via `BanManager` |
+| `/unblock <user_id>` | Lift a user ban |
+| `/setsex`, `/changesex` | Override verified sex metadata when resolved by admin |
+
+</details>
 
 ---
 
-## 💾 Database Models & Schema
+## Architecture & System Design
 
 ```mermaid
-erDiagram
-    USERS ||--o{ CHAT_SESSIONS : "user1 / user2"
-    USERS ||--o{ FEEDBACKS : "from_user / to_user"
-    USERS ||--o{ REPORTS : "reporter / reported"
-    USERS ||--o{ SUGGESTIONS : "submits"
-    CHAT_SESSIONS ||--o{ FEEDBACKS : "associated with"
-    CHAT_SESSIONS ||--o{ REPORTS : "associated with"
+flowchart LR
+    TG["Telegram Users\n(@aua_anonymous_bot)"] <-->|"Polling / Media"| LBAPI["Local Bot API\n(aua_telegram_bot_api)"]
+    LBAPI <--> CORE["Python Runtime Container (aua_bot)\naiogram 3 Bot + aiohttp Web & WS Server"]
+    WEB["AUA Hub Users\n(auahub.am PWA)"] <-->|"HTTPS / WSS"| CF["Cloudflare Tunnel\n(aua_cloudflare_tunnel)"]
+    CF <-->|"Port 8000"| CORE
 
-    USERS {
-        bigint id PK "Telegram User ID"
-        varchar username "Telegram handle"
-        varchar sex "male / female"
-        varchar orientation "straight / bisexual / gay / lesbian"
-        int priority "Clamped [0, 100], default 50"
-        boolean is_searching "Queue status"
-        bigint current_partner_id "Active partner ID"
-        varchar target_sexes "Comma-separated target sexes (male,female)"
-        varchar target_orientations "Comma-separated target orientations"
-        int completed_sessions_count "Session counter"
-        int spam_flags_count "Spam/not-AUA flags count"
-        timestamp last_suggestion_date "Date of last suggestion"
-        timestamp created_at "Registration timestamp"
-    }
-
-    CHAT_SESSIONS {
-        int id PK "Autoincrement"
-        bigint user1_id FK "Participant 1"
-        bigint user2_id FK "Participant 2"
-        boolean is_active "Session status"
-        timestamp started_at "Session start"
-        timestamp last_activity_at "Latest message/activity"
-        int messages_count "Exchanged message counter"
-        boolean inactivity_warned "Silence alert status"
-        timestamp inactivity_warned_at "Silence alert timestamp"
-        timestamp ended_at "Session end"
-    }
-
-    FEEDBACKS {
-        int id PK "Autoincrement"
-        int session_id FK "Chat session"
-        bigint from_user_id FK "Voter"
-        bigint to_user_id FK "Target"
-        varchar feedback_type "like / dislike / spam / not_aua"
-        timestamp created_at "Timestamp"
-    }
-
-    REPORTS {
-        int id PK "Autoincrement"
-        int session_id FK "Chat session"
-        bigint reporter_id FK "Complainant"
-        bigint reported_id FK "Reported student"
-        text reason_text "Explanation"
-        varchar evidence_file_id "Telegram photo/doc ID"
-        int penalty_applied "Points deducted"
-        boolean is_resolved "Resolution status"
-        timestamp created_at "Timestamp"
-    }
-
-    SUGGESTIONS {
-        int id PK "Autoincrement"
-        bigint user_id FK "Student author"
-        text suggestion_text "Student feedback"
-        text admin_reply "Admin response"
-        boolean is_replied "Reply status"
-        timestamp created_at "Submission timestamp"
-        timestamp replied_at "Reply timestamp"
-    }
+    CORE <-->|"SQLAlchemy Async"| PG[("PostgreSQL 16\n(aua_postgres)")]
+    CORE -->|"Moderation & AI RAG"| GEMINI["Google Gemini API\n(gemini-2.5-flash)"]
+    CORE -->|"Reviews & Profiles"| JENZA["JenzaReviews Sync"]
+    CORE -->|"Courses & Classrooms"| AUAEXT["AUA Sonis / Booking /\nNewsroom / Highlander / Directory"]
 ```
+
+### Repository Layout
+
+<details>
+<summary><strong>Click to expand directory tree</strong></summary>
+
+```text
+Anonymous-AUA/
+├── app/
+│   ├── config.py                    # Pydantic settings (Bot, Web, Auth, Turnstile, AI guardrails)
+│   ├── main.py                      # Entrypoint: DB init, bot polling, background workers, aiohttp web server
+│   ├── database/
+│   │   ├── models.py                # SQLAlchemy ORM models (Bot, Inbox, Invites, Hub Auth, Swaps, Feedback, AI, Analytics)
+│   │   ├── session.py               # Async engine & session factory
+│   │   ├── crud.py                  # Telegram bot, matchmaking, moderation & inbox DB operations
+│   │   └── web_crud.py              # AUA Hub CRUD, swap matching, feedbacks, chat & admin analytics
+│   ├── filters/
+│   │   └── admin.py                 # Admin ID filter
+│   ├── middlewares/
+│   │   └── banned.py                # Global O(1) BanManager middleware
+│   ├── keyboards/
+│   │   └── inline.py                # Inline keyboards for matchmaking, reporting, inbox, preferences
+│   ├── states/
+│   │   └── states.py                # aiogram FSM state definitions
+│   ├── handlers/
+│   │   ├── start.py                 # Onboarding, profile, verification prompts & menu navigation
+│   │   ├── matchmaking.py           # /search, /next, /stop, /pause, media/reply/reaction relay
+│   │   ├── feedback.py              # Post-chat ratings, AI report escalation & /recent adjustments
+│   │   ├── inbox.py                 # /link anonymous Q&A inbox & reply workflows
+│   │   ├── invites.py               # /invite 1-on-1 chat links & reconnect requests
+│   │   ├── verification.py          # /verify @edu.aua.am OTP workflow
+│   │   ├── web_bridge.py            # /post and /sync Telegram <-> AUA Hub bridges
+│   │   └── admin.py                 # Admin moderation, backups, stats & ban tools
+│   ├── services/
+│   │   ├── ai_agent.py              # AUA Hub multi-source Gemini RAG assistant (6 tools)
+│   │   ├── ai_moderator.py          # Multimodal AI report evaluator + rolling ephemeral RAM buffer
+│   │   ├── backup.py                # Atomic pg_dump hourly backups & retention pruning
+│   │   ├── ban_manager.py           # In-memory & DB-backed ban cache
+│   │   ├── booking_scraper.py       # Live Main Building & PAB free classroom scraper
+│   │   ├── daily_reminders.py       # Scheduled community re-engagement worker
+│   │   ├── email_verification.py    # SMTP / dev-mode university OTP & notification dispatcher
+│   │   ├── gender_detector.py       # Name/profile consistency guard for verification
+│   │   ├── inactivity_monitor.py    # Automated idle chat cleanup & warnings
+│   │   ├── jenzareviews_sync.py     # Bidirectional JenzaReviews catalog & review sync
+│   │   ├── link_shield.py           # Multi-tier anti-phishing / anti-spam link filter
+│   │   ├── matcher.py               # Weighted preference & priority matchmaking engine
+│   │   ├── media_batcher.py         # Album / media group debounced forwarding
+│   │   ├── one_time_media.py        # 15-second View-Once self-destructing media handler
+│   │   ├── rate_limiter.py          # Per-user flood protection & cooldown tracker
+│   │   ├── reply_manager.py         # Bidirectional message ID mapping for replies/edits
+│   │   └── sonis_scraper.py         # Official Sonis course & section catalog sync
+│   └── web/
+│       ├── server.py                # aiohttp REST & WebSocket API, auth, Turnstile, /stata routing
+│       ├── static/                  # AUA Hub SPA (index.html, app.js, styles.css, sw.js, manifest.json, partners/)
+│       └── templates/               # Admin analytics UI (stata.html, stata_gate.html, stata_denied.html, css/js)
+├── tests/                           # 23 unit & integration test suites covering bot, web hub, AI & security
+├── docker-compose.yml               # 4-service stack: postgres, telegram-bot-api, bot, cloudflare-tunnel
+├── Dockerfile                       # Python 3.12-slim production image with postgresql-client
+├── Makefile                         # Server management helpers (start, stop, logs, update, backup, restore)
+├── requirements.txt                 # Core Python dependencies
+├── .env.example                     # Configuration template (no secrets committed)
+├── PRIVACY.md                       # Privacy Policy & Mutual AI Code of Conduct
+└── LICENSE                          # Proprietary All Rights Reserved License
+```
+
+</details>
 
 ---
 
-## 🗄️ Automated Database Backups & Recovery
+## Security, Anti-Abuse & Privacy
 
-The bot includes an enterprise-grade automated backup system designed to safeguard student data, matching histories, and preferences against hardware crashes, data corruption, or accidental deletions.
+Detailed behavioral and moderation rules are published in [`PRIVACY.md`](PRIVACY.md).
 
-### 🌟 Key Backup Features
-1. **Automated Hourly Execution**: A non-blocking background async task runs inside the bot container every 60 minutes.
-2. **Atomic Replacement**: Backups stream into a temporary archive (`.dump_<timestamp>.tmp.gz`), verify data integrity and non-zero size, and only then atomically replace `backups/latest.sql.gz`. A corrupted dump will **never** overwrite a healthy backup.
-3. **Gzip Stream Compression**: SQL dumps are compressed on-the-fly, reducing file size by 85–90% (~6 KB per snapshot) with near-zero CPU and disk footprint.
-4. **Rolling 24-Hour Archive**: In addition to `latest.sql.gz`, the system retains the last 24 timestamped snapshots (`backups/backup_YYYYMMDD_HHMMSS.sql.gz`) with automatic FIFO pruning.
-5. **Strict Git & Privacy Isolation**:
-   - `backups/`, `*.sql`, `*.sql.gz`, and `*.dump` are strictly declared in [`.gitignore`](file:///home/gor/Projects/Anonymous-AUA/.gitignore).
-   - Sensitive student chat data, IDs, and reputation scores are **never** committed or exposed on GitHub.
-6. **Admin On-Demand Snapshot (`/backup`)**: Administrators can trigger an instant snapshot anytime via Telegram before container upgrades or server maintenance.
-
-### 🔄 How to Restore Database from Backup
-To restore the PostgreSQL database from the latest snapshot:
-
-```bash
-# 1. Decompress and restore into the running PostgreSQL container:
-gunzip -c backups/latest.sql.gz | docker exec -i aua_postgres psql -U bruce -d aua_chat_db
-
-# 2. Or restore from any specific historical snapshot:
-gunzip -c backups/backup_20261019_144856.sql.gz | docker exec -i aua_postgres psql -U bruce -d aua_chat_db
-```
+- **Authentication & Email Flood Protection**:
+  - Supports **Google OAuth 2.0** (`@edu.aua.am` & `@alumni.aua.am`) and email/password + OTP verification with JWT versioning (password reset/account changes invalidate prior tokens).
+  - Protected by **Cloudflare Turnstile** verification on registration, login, and password-reset flows, **per-IP sliding-window rate limiting**, and a **persistent database-backed 15-minute cooldown** (`WebEmailCooldown` / `AUTH_EMAIL_COOLDOWN_SECONDS=900`).
+  - During an active cooldown, endpoints return a uniform **HTTP 200 anti-enumeration response** without sending duplicate emails while logging offending client IPs.
+- **Zero-Log Anonymous Chat Ephemeral Buffer**:
+  - Active 1-on-1 Telegram chats exist solely in bounded server RAM (**up to 60 text messages + 8 compressed images**) under anonymous aliases (`User_A` / `User_B`) and auto-destruct within **5 minutes** after `/stop` or `/next`.
+  - When a user clicks **Report**, `ai_moderator.py` evaluates **both** participants using Gemini (`gemini-2.5-flash`) across anti-doxxing, NSFW/harassment, reporter baiting/spite reporting, and Tier-3 illegal content escalation, purging the RAM buffer immediately afterward.
+- **Role & Access Guardrails**:
+  - **AI Assistant** requires an authenticated student/alumni session.
+  - **Campus Chat** third-party message deletion and **`/stata` analytics** are restricted strictly to authorized admin credentials (`gor_sargsyan@edu.aua.am`).
 
 ---
 
-## 🚀 Quickstart & Deployment
+## Deployment & Setup
 
 ### Prerequisites
-- Docker Engine & Docker Compose (or WSL2 on Windows 11).
-- A Telegram Bot Token from [@BotFather](https://t.me/BotFather).
-- Your Telegram numeric User ID (obtain from [@userinfobot](https://t.me/userinfobot)).
+- Docker & Docker Compose
+- A Telegram bot token from `@BotFather` (plus `TELEGRAM_API_ID` & `TELEGRAM_API_HASH` from `my.telegram.org` for Local Bot API)
+- PostgreSQL credentials, optional SMTP credentials, Google OAuth credentials, Gemini API key, Cloudflare Tunnel / Turnstile keys (see `.env.example`)
 
-### 1. Clone Repository
+### Quick Start
+
 ```bash
-git clone https://github.com/your-username/anonymous-aua-bot.git
-cd anonymous-aua-bot
-```
+# 1. Initialize .env from template and fill in your credentials
+make init
 
-### 2. Configure Environment
-Create your `.env` file from the provided template:
-```bash
-cp .env.example .env
-```
-Open `.env` and fill in your values:
-```env
-BOT_TOKEN=64894085692:AAGwehjfvbwjehbfc-HGdvwEJHVFw16KfpgvtQAVU
-ADMIN_IDS=458432154653
-
-POSTGRES_USER=aua_user
-POSTGRES_PASSWORD=aua_secure_password_here
-POSTGRES_DB=aua_chat_db
-POSTGRES_HOST=postgres
-POSTGRES_PORT=5432
-```
-
-### 3. One-Command Server Start (with Automatic Restart)
-Using the included `Makefile`:
-```bash
-# Start bot and database in background
+# 2. Build and launch all 4 services (postgres, telegram-bot-api, bot, cloudflare-tunnel)
 make start
+
+# 3. Check container health and view logs
+make status
+make logs-bot
 ```
 
-### 4. Enable Autostart on Server Reboot
-To ensure the bot always starts automatically whenever your server or computer boots up / restarts:
-```bash
-# Configures Linux systemd service & enables Docker autostart on boot
-make autostart
-```
+### Key Configuration Variables (`.env.example`)
 
-### 4.5. Cloudflare Dynamic DNS (`cloudflare-ddns`) & Reboot Handling
-The `docker-compose.yml` stack includes the `cloudflare-ddns` service (`favonia/cloudflare-ddns:latest`), which keeps `auahub.am` and `www.auahub.am` pointed at the server's current public IP address:
-- **Zero-Exposure Credentials**: Reads `CLOUDFLARE_API_TOKEN` directly from `.env` via `${CLOUDFLARE_API_TOKEN}` without hardcoding secrets in version control.
-- **Automatic Reboot & IP Change Recovery**: Configured with `restart: unless-stopped`, `PROXIED=true`, and `TZ=Asia/Yerevan`. Whenever the host machine reboots or the ISP assigns a new dynamic public IP, Docker automatically starts `cloudflare-ddns`, which immediately checks the host's public IP and updates the Cloudflare `A`/`AAAA` records for `auahub.am` and `www.auahub.am`.
-
-### 5. Makefile Server Management Commands
-| Command | Action |
+| Group | Variables |
 | :--- | :--- |
-| `make start` | Builds and runs containers in the background with auto-restart |
-| `make autostart` | Configures system-level service so bot auto-starts on computer reboot |
-| `make logs-bot` | Streams live bot logs |
-| `make logs` | Streams all service logs (bot + database) |
-| `make status` | Displays container status and health |
-| `make restart` | Restarts all containers |
-| `make stop` | Stops and tears down containers |
-| `make update` | Pulls latest git updates and rebuilds containers |
-| `make db-shell` | Opens interactive PostgreSQL terminal |
+| **Telegram & Bot** | `BOT_TOKEN`, `ADMIN_IDS`, `TELEGRAM_API_ID`, `TELEGRAM_API_HASH`, `TELEGRAM_BOT_API_URL` |
+| **PostgreSQL** | `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB`, `POSTGRES_HOST`, `POSTGRES_PORT` |
+| **Gemini AI & Budgets** | `GEMINI_API_KEY`, `AI_GLOBAL_HOURLY_PROMPT_LIMIT`, `AI_GLOBAL_DAILY_PROMPT_LIMIT`, `AI_MAX_CONCURRENT_GEMINI_CALLS` |
+| **AUA Hub Web & Auth** | `WEB_PORT`, `WEB_JWT_SECRET`, `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GOOGLE_REDIRECT_URI` |
+| **Security & Cooldowns** | `TURNSTILE_SITE_KEY`, `TURNSTILE_SECRET_KEY`, `AUTH_EMAIL_COOLDOWN_SECONDS`, `REMATCH_COOLDOWN_MINUTES` |
+| **Email & Scrapers** | `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASSWORD`, `SMTP_FROM_EMAIL`, `BOOKING_AUA_USER`, `BOOKING_AUA_PASS` |
+| **External Integrations** | `CLOUDFLARE_TUNNEL_TOKEN`, `DATABASE_URL` *(JenzaReviews sync)*, `SUPABASE_URL` |
 
----
+### Backups, Maintenance & Tests
 
-### Alternative: Direct Docker Compose Commands
-If you prefer running Docker Compose directly:
 ```bash
-# Start containers
-docker compose up -d --build
+# Trigger an instant atomic database snapshot (automated hourly snapshots also run in-app)
+make backup
 
-# View logs
-docker compose logs -f bot
+# Restore from latest snapshot (adjust user/db to match your .env)
+gunzip -c backups/latest.sql.gz | docker exec -i aua_postgres psql -U aua_user -d aua_chat_db
 
-# Stop containers
-docker compose down
-```
+# Open interactive PostgreSQL shell
+make db-shell
 
-### Alternative: Run in Local/WSL Environment (Without Docker)
-
-If running without Docker:
-```bash
-# 1. Start local PostgreSQL
-sudo service postgresql start
-
-# 2. Set up virtual environment
-python3 -m venv .venv
-source .venv/bin/activate
-
-# 3. Install dependencies
-pip install -r requirements.txt
-
-# 4. Start the application
-python3 -m app.main
+# Run the automated test suite inside the running bot container
+docker exec aua_bot python -m unittest discover -s tests -p "test_*.py" -v
 ```
 
 ---
 
-## 🛡️ Moderation & Administrator Tools
+## License & Copyright
 
-### Real-Time Statistics (`/stata`)
-Admins can send `/stata` to view an aggregated dashboard:
-```text
-📊 Anonymous AUA — Administrator Dashboard 🎭
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-👥 User Base:
-• Total Registered: 142
-• Actively Searching: 3
-• Active Chats: 8
+**PROPRIETARY LICENSE — ALL RIGHTS RESERVED**
 
-🚻 Sex Breakdown:
-• Male: 78
-• Female: 64
-• Unfinished Setup: 0
+**Copyright © 2026 Gor Sargsyan. All Rights Reserved.**
 
-🧭 Orientation Breakdown:
-• Straight: 118
-• Bisexual: 22
-• Lesbian: 14
-• Gay: 10
+See [`LICENSE`](LICENSE) for the full legal terms. Viewing the source code in this repository grants **no license, title, or permission** of any kind. Without the prior, express, written permission signed by **Gor Sargsyan**, you may **NOT**:
 
-⭐ All-Time Feedbacks:
-• 👍 Likes: 312
-• 👎 Dislikes: 18
-• 🚫 Spams: 4
-• 🏫 Not from AUA: 2
+- Copy, clone for reuse/deployment, mirror, or reproduce this project or any file within it;
+- Modify, adapt, rebrand, restyle, translate, refactor, or create **derivative works** — **even with minor, cosmetic, or substantial modifications**;
+- Host, distribute, sublicense, publish, or operate any replica or modified instance for personal, academic, or commercial use.
 
-💡 Bot Suggestions:
-• Total Received: 15
-• ✅ Replied: 12
-• ⏳ Pending: 3
-
-🚨 Reports Summary:
-• Total Filed: 5
-• ✅ Resolved: 4
-• ⏳ Pending: 1
-
-💾 Database Backups:
-✅ Active (2026-10-19 14:48:56 UTC)
-• Primary File: backups/latest.sql.gz (5.9 KB)
-• Rolling Snapshots: 1
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-```
-
-### On-Demand Database Backup (`/backup`)
-Admins can send `/backup` at any time to immediately export and compress a clean SQL dump of the database:
-```text
-💾 PostgreSQL Database Backup Created Successfully! 🛡️
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-📁 Primary: backups/latest.sql.gz
-📦 Archive Snapshot: backup_20261019_144856.sql.gz
-📊 Snapshot Size: 5.86 KB
-🗂 Total Rolling Snapshots: 1
-🕒 Timestamp: 2026-10-19 14:48:56 UTC
-🔒 Security: Strict 0644 / Git-ignored / Isolated
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-```
-
-### Handling User Reports & Security Incidents
-When a student submits a report (via `/report` during chat or `⚠️ Report Issue...` after chat):
-1. **Automated Protection**: The reported user is immediately and permanently blocked from the reporter's matchmaking queue.
-2. **Urgent Keyword Escalation**: Reports containing critical terms (`blackmail`, `threat`, `leak`, `nude`, `dox`, `money`, `scam`) trigger an instant **`🚨 URGENT: CRITICAL REPORT ALERT`** to all administrators.
-3. **Evidence Forwarding**: If the student attaches a screenshot, photo, document, voice note, or video, the bot forwards the file directly to all admins alongside the report card.
-4. **Admin Moderation Actions**:
-   - `[⚖️ Penalize User]`: Prompts admin for the number of reputation points to deduct (e.g., `15`). The user's priority is reduced (clamped at minimum `0`), and the report is marked resolved.
-   - `[🚫 Ban User]`: Permanently bans the offender via `/block <user_id>`.
-   - `[✅ Dismiss]`: Resolves the report with `0` penalty.
-
-
----
-
-## 📄 License
-Distributed under the MIT License. See `LICENSE` for more information. Built with ❤️ for the American University of Armenia student community.
+All unauthorized copying, modified ("copy-paste with changes") redistribution, or deployment is strictly prohibited.

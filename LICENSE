@@ -1,21 +1,49 @@
-MIT License
+PROPRIETARY LICENSE — ALL RIGHTS RESERVED
 
 Copyright (c) 2026 Gor Sargsyan
+All Rights Reserved.
 
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
+1. EXCLUSIVE OWNERSHIP
+   This software, source code, documentation, user interface design, styling,
+   database schema, architecture, scripts, and associated assets (collectively,
+   the "Software" — including the Anonymous AUA Telegram Bot and the AUA Hub
+   web platform) are the exclusive intellectual property of Gor Sargsyan ("Author").
 
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
+2. NO PERMISSION TO COPY, MODIFY, OR CREATE DERIVATIVE WORKS
+   Viewing the source code of this Software in a public repository or elsewhere
+   does NOT grant any license or rights. Without the prior, express, written,
+   and signed permission of the Author, NO person or entity is permitted to:
 
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
+   (a) Copy, reproduce, duplicate, clone for reuse, mirror, or republish the
+       Software, in whole or in part;
+   (b) Modify, edit, adapt, translate, refactor, restyle, rebrand, reverse-engineer
+       for replication, merge into another project, or create ANY derivative work
+       based upon the Software — including works with minor, cosmetic, partial,
+       or substantial modifications;
+   (c) Distribute, redistribute, sublicense, sell, rent, lease, publish, host,
+       deploy, or operate a competing or replica instance of the Software for
+       commercial, academic, personal, or non-commercial purposes.
+
+   Any copying, partial extraction, or modified/rebranded ("copy-paste with
+   changes") reuse of this codebase or its components without written consent
+   constitutes unauthorized copyright infringement.
+
+3. THIRD-PARTY COMPONENTS
+   Third-party libraries and vendored packages referenced or bundled in this
+   repository (such as Python dependencies in requirements.txt or vendored
+   frontend libraries in app/web/static/vendor/) remain subject to their
+   respective upstream licenses. No rights in the Author's original Software
+   are diminished thereby.
+
+4. RESERVATION OF RIGHTS & NO WARRANTY
+   All rights not expressly granted in writing by Gor Sargsyan are strictly
+   reserved. The Author reserves the right to pursue all available legal and
+   equitable remedies, including DMCA takedown notices and injunctive relief,
+   against unauthorized copying, modification, hosting, or redistribution.
+
+   THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+   IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+   FITNESS FOR A PARTICULAR PURPOSE, AND NONINFRINGEMENT.
+
+For licensing or collaboration inquiries, contact the Author directly via
+GitHub (https://github.com/GorSargsyan2004).
