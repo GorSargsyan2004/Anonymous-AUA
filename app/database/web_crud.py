@@ -415,39 +415,47 @@ async def check_web_email_cooldown(
     session: AsyncSession,
     email: str,
     purpose: str,
-    cooldown_seconds: int = 180,
+    cooldown_seconds: int = 900,
     daily_limit: int = 6,
 ) -> Tuple[bool, int, str]:
-    """Return (allowed, retry_after_seconds, reason) for persistent per-email send limits."""
+    """Return (allowed, retry_after_seconds, reason) for persistent per-email send limits across auth purposes."""
     clean_email = (email or "").strip().lower()
-    clean_purpose = (purpose or "otp").strip().lower()[:32]
     if not clean_email:
         return True, 0, ""
 
-    stmt = (
-        select(WebEmailCooldown)
-        .where(
-            func.lower(WebEmailCooldown.email) == clean_email,
-            WebEmailCooldown.purpose == clean_purpose,
-        )
-        .limit(1)
-    )
-    row = (await session.execute(stmt)).scalar_one_or_none()
-    if not row:
+    stmt = select(WebEmailCooldown).where(func.lower(WebEmailCooldown.email) == clean_email)
+    rows = list((await session.execute(stmt)).scalars().all())
+    if not rows:
         return True, 0, ""
 
     now = datetime.now(timezone.utc)
-    if cooldown_seconds > 0 and row.last_sent_at is not None:
-        elapsed = (now - _ensure_utc(row.last_sent_at, now)).total_seconds()
-        if elapsed < cooldown_seconds:
-            remaining = max(1, int(cooldown_seconds - elapsed + 0.999))
-            return False, remaining, "cooldown"
+    if cooldown_seconds > 0:
+        max_remaining = 0
+        for row in rows:
+            if row.last_sent_at is None:
+                continue
+            elapsed = (now - _ensure_utc(row.last_sent_at, now)).total_seconds()
+            if elapsed < cooldown_seconds:
+                remaining = max(1, int(cooldown_seconds - elapsed + 0.999))
+                if remaining > max_remaining:
+                    max_remaining = remaining
+        if max_remaining > 0:
+            return False, max_remaining, "cooldown"
 
-    if daily_limit > 0 and row.window_started_at is not None:
-        window_elapsed = (now - _ensure_utc(row.window_started_at, now)).total_seconds()
-        if window_elapsed < 86400 and int(row.daily_count or 0) >= daily_limit:
-            remaining = max(1, int(86400 - window_elapsed + 0.999))
-            return False, remaining, "daily"
+    if daily_limit > 0:
+        active_daily_total = 0
+        earliest_reset_rem = 0
+        for row in rows:
+            if row.window_started_at is None:
+                continue
+            window_elapsed = (now - _ensure_utc(row.window_started_at, now)).total_seconds()
+            if window_elapsed < 86400:
+                active_daily_total += int(row.daily_count or 0)
+                reset_rem = max(1, int(86400 - window_elapsed + 0.999))
+                if earliest_reset_rem == 0 or reset_rem < earliest_reset_rem:
+                    earliest_reset_rem = reset_rem
+        if active_daily_total >= daily_limit:
+            return False, max(1, earliest_reset_rem), "daily"
 
     return True, 0, ""
 

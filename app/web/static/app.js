@@ -1222,11 +1222,11 @@ async function submitRegister(e) {
       method: "POST",
       body: JSON.stringify({ name, email, password, confirm_password, cf_turnstile_response }),
     });
-    state.pendingRegEmail = res.email;
-    const subtext = `We sent a 6-digit verification code to ${res.email}.`;
+    state.pendingRegEmail = res.email || email;
+    const subtext = res.message || `If ${state.pendingRegEmail} is eligible for registration, a 6-digit verification code has been sent.`;
     document.getElementById("otpSentSubtext").textContent = subtext;
     switchAuthTab("otp");
-    showToast(res.message || "OTP sent to your AUA email!");
+    showToast(res.message || "If eligible, an OTP was sent to your AUA email.");
   } catch (err) {
     showToast(err.message, true);
   } finally {

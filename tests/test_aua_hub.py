@@ -2504,12 +2504,16 @@ class TestAuaHub(unittest.IsolatedAsyncioTestCase):
             reset_rate_limits()
 
     async def test_auth_rate_limits_email_cooldown_and_turnstile(self) -> None:
-        """Verify Turnstile pre-DB 403 gate, persistent 3-min email cooldown (anti-enum + 429), and shared IP code limits."""
+        """Verify Turnstile pre-DB 403 gate, strict 15m per-email cooldown (silent 200 anti-enum), IP logging, and IP limits."""
         from app.config import settings
-        from app.web.server import create_web_app
+        from app.web.server import _get_email_cooldown_seconds, create_web_app
 
         reset_rate_limits()
         reset_global_email_rate_limit()
+
+        # Verify server strictly enforces at least 15 minutes (900s) even if configured lower
+        with patch.object(settings, "AUTH_EMAIL_COOLDOWN_SECONDS", 180):
+            self.assertGreaterEqual(_get_email_cooldown_seconds(), 900)
 
         # Ensure pre-existing user for forgot-password cooldown checks
         async with get_db_session() as session:
@@ -2524,7 +2528,7 @@ class TestAuaHub(unittest.IsolatedAsyncioTestCase):
         app = create_web_app()
         try:
             async with TestClient(TestServer(app)) as client:
-                # 1. Public config reflects placeholder vs active Turnstile keys without exposing secret
+                # 1. Public config reflects placeholder vs active Turnstile keys without exposing secret + >=900s cooldown
                 with (
                     patch.object(settings, "TURNSTILE_SITE_KEY", "your_turnstile_site_key_here"),
                     patch.object(settings, "TURNSTILE_SECRET_KEY", "your_turnstile_secret_key_here"),
@@ -2534,6 +2538,7 @@ class TestAuaHub(unittest.IsolatedAsyncioTestCase):
                     cfg_off = await r_cfg_off.json()
                     self.assertFalse(cfg_off["turnstile_enabled"])
                     self.assertIsNone(cfg_off["turnstile_site_key"])
+                    self.assertGreaterEqual(cfg_off["email_cooldown_seconds"], 900)
 
                 with (
                     patch.object(settings, "TURNSTILE_SITE_KEY", "test_site_key_123"),
@@ -2643,21 +2648,28 @@ class TestAuaHub(unittest.IsolatedAsyncioTestCase):
                         self.assertEqual(verify_calls[0][1]["response"], "valid-cf-token-1")
                         self.assertEqual(forgot_sent, [self.test_email_1])
 
-                        # 4. Persistent DB 3-minute cooldown survives in-memory rate-limit reset:
-                        # forgot-password returns uniform 200 anti-enumeration response WITHOUT sending duplicate email
+                        # 4. Persistent DB 15-minute cooldown survives in-memory rate-limit reset:
+                        # forgot-password returns uniform 200 anti-enumeration response WITHOUT sending duplicate email and logs IP
                         reset_rate_limits()
-                        r_forgot_cd = await client.post(
-                            "/api/auth/forgot-password",
-                            json={
-                                "email": self.test_email_1,
-                                "cf_turnstile_response": "valid-cf-token-2",
-                            },
-                        )
+                        with self.assertLogs("aua_hub_web", level="WARNING") as forgot_logs:
+                            r_forgot_cd = await client.post(
+                                "/api/auth/forgot-password",
+                                json={
+                                    "email": self.test_email_1,
+                                    "cf_turnstile_response": "valid-cf-token-2",
+                                },
+                            )
                         self.assertEqual(r_forgot_cd.status, 200)
                         cd_payload = await r_forgot_cd.json()
                         self.assertTrue(cd_payload["ok"])
                         self.assertIn("If an active AUA Hub account exists", cd_payload["message"])
                         self.assertEqual(len(forgot_sent), 1)
+                        self.assertTrue(
+                            any(
+                                "/api/auth/forgot-password" in msg and self.test_email_1 in msg and "ip=" in msg
+                                for msg in forgot_logs.output
+                            )
+                        )
 
                         # Unregistered email receives identical 200 & also enforces cooldown without duplicate DB churn
                         r_unreg_1 = await client.post(
@@ -2671,7 +2683,7 @@ class TestAuaHub(unittest.IsolatedAsyncioTestCase):
                         self.assertEqual((await r_unreg_1.json())["message"], cd_payload["message"])
                         self.assertEqual(len(forgot_sent), 1)
 
-                # 5. Registration persistent DB cooldown returns 429 & prevents duplicate email even across rate-limit reset
+                # 5. Registration persistent DB 15m cooldown returns silent HTTP 200, avoids regenerating OTP, & logs IP
                 reg_sent = []
 
                 async def _track_reg_send(to_email: str, code: str):
@@ -2682,8 +2694,8 @@ class TestAuaHub(unittest.IsolatedAsyncioTestCase):
                 with (
                     patch.object(settings, "TURNSTILE_SITE_KEY", ""),
                     patch.object(settings, "TURNSTILE_SECRET_KEY", ""),
-                    patch.object(settings, "AUTH_EMAIL_COOLDOWN_SECONDS", 180),
                     patch("app.web.server.send_verification_email", side_effect=_track_reg_send),
+                    patch("app.web.server.send_password_reset_email", side_effect=_track_reg_send),
                 ):
                     r_reg_1 = await client.post(
                         "/api/auth/register",
@@ -2695,25 +2707,64 @@ class TestAuaHub(unittest.IsolatedAsyncioTestCase):
                         },
                     )
                     self.assertEqual(r_reg_1.status, 200)
+                    reg_payload_1 = await r_reg_1.json()
+                    self.assertTrue(reg_payload_1["ok"])
                     self.assertEqual(reg_sent, ["cooldown_victim@edu.aua.am"])
 
-                    reset_rate_limits()
-                    r_reg_cd = await client.post(
-                        "/api/auth/register",
-                        json={
-                            "name": "Cooldown Victim",
-                            "email": "cooldown_victim@edu.aua.am",
-                            "password": "Password123!",
-                            "confirm_password": "Password123!",
-                        },
-                    )
-                    self.assertEqual(r_reg_cd.status, 429)
-                    cd_err = await r_reg_cd.json()
-                    self.assertIn("wait", cd_err["error"].lower())
-                    self.assertGreater(cd_err.get("retry_after", 0), 0)
-                    self.assertEqual(len(reg_sent), 1)
+                    async with get_db_session() as session:
+                        first_otp_row = (
+                            await session.execute(
+                                select(WebOtpCode)
+                                .where(WebOtpCode.email == "cooldown_victim@edu.aua.am")
+                                .order_by(WebOtpCode.created_at.desc())
+                            )
+                        ).scalar_one()
+                        first_otp_id = first_otp_row.id
+                        first_otp_code = first_otp_row.otp_code
 
-                    # Once cooldown window elapses, dispatch succeeds again
+                    # Repeat request within 15m returns silent 200, logs IP, keeps original OTP unchanged, & sends NO email
+                    reset_rate_limits()
+                    with self.assertLogs("aua_hub_web", level="WARNING") as reg_logs:
+                        r_reg_cd = await client.post(
+                            "/api/auth/register",
+                            json={
+                                "name": "Cooldown Victim",
+                                "email": "cooldown_victim@edu.aua.am",
+                                "password": "OtherPassword999!",
+                                "confirm_password": "OtherPassword999!",
+                            },
+                        )
+                    self.assertEqual(r_reg_cd.status, 200)
+                    self.assertEqual(await r_reg_cd.json(), reg_payload_1)
+                    self.assertEqual(len(reg_sent), 1)
+                    self.assertTrue(
+                        any(
+                            "/api/auth/register" in msg and "cooldown_victim@edu.aua.am" in msg and "ip=" in msg
+                            for msg in reg_logs.output
+                        )
+                    )
+
+                    async with get_db_session() as session:
+                        otp_rows_after = (
+                            await session.execute(
+                                select(WebOtpCode).where(WebOtpCode.email == "cooldown_victim@edu.aua.am")
+                            )
+                        ).scalars().all()
+                        self.assertEqual(len(otp_rows_after), 1)
+                        self.assertEqual(otp_rows_after[0].id, first_otp_id)
+                        self.assertEqual(otp_rows_after[0].otp_code, first_otp_code)
+
+                    # Cross-endpoint protection: hitting /forgot-password on same email inside 15m also stays suppressed
+                    with self.assertLogs("aua_hub_web", level="WARNING") as cross_logs:
+                        r_cross = await client.post(
+                            "/api/auth/forgot-password",
+                            json={"email": "cooldown_victim@edu.aua.am"},
+                        )
+                    self.assertEqual(r_cross.status, 200)
+                    self.assertEqual(len(reg_sent), 1)
+                    self.assertTrue(any("ip=" in msg for msg in cross_logs.output))
+
+                    # 185s elapsed is STILL within strict 15-minute (900s) cooldown window
                     async with get_db_session() as session:
                         row = (
                             await session.execute(
@@ -2724,6 +2775,31 @@ class TestAuaHub(unittest.IsolatedAsyncioTestCase):
                             )
                         ).scalar_one()
                         row.last_sent_at = datetime.now(timezone.utc) - timedelta(seconds=185)
+                        await session.commit()
+
+                    r_reg_still_cd = await client.post(
+                        "/api/auth/register",
+                        json={
+                            "name": "Cooldown Victim",
+                            "email": "cooldown_victim@edu.aua.am",
+                            "password": "Password123!",
+                            "confirm_password": "Password123!",
+                        },
+                    )
+                    self.assertEqual(r_reg_still_cd.status, 200)
+                    self.assertEqual(len(reg_sent), 1)
+
+                    # Once full 15-minute cooldown window elapses (905s), dispatch succeeds again
+                    async with get_db_session() as session:
+                        row = (
+                            await session.execute(
+                                select(WebEmailCooldown).where(
+                                    WebEmailCooldown.email == "cooldown_victim@edu.aua.am",
+                                    WebEmailCooldown.purpose == "register_otp",
+                                )
+                            )
+                        ).scalar_one()
+                        row.last_sent_at = datetime.now(timezone.utc) - timedelta(seconds=905)
                         await session.commit()
 
                     r_reg_after = await client.post(
@@ -2738,7 +2814,26 @@ class TestAuaHub(unittest.IsolatedAsyncioTestCase):
                     self.assertEqual(r_reg_after.status, 200)
                     self.assertEqual(len(reg_sent), 2)
 
-                    # 6. Shared per-IP limit (max 5 code requests / 15m across /register and /forgot-password)
+                    # Concurrent burst requests targeting one email send at most 1 email (lock + cooldown check)
+                    reset_rate_limits()
+                    burst_responses = await asyncio.gather(
+                        *[
+                            client.post(
+                                "/api/auth/register",
+                                json={
+                                    "name": "Burst Target",
+                                    "email": "cooldown_burst@edu.aua.am",
+                                    "password": "Password123!",
+                                    "confirm_password": "Password123!",
+                                },
+                            )
+                            for _ in range(4)
+                        ]
+                    )
+                    self.assertTrue(all(resp.status == 200 for resp in burst_responses))
+                    self.assertEqual(reg_sent.count("cooldown_burst@edu.aua.am"), 1)
+
+                    # 6. Shared per-IP limit (max 5 code requests / 15m across /register and /forgot-password) logs blocked IP
                     reset_rate_limits()
                     for idx in range(1, 4):
                         r_ip = await client.post(
@@ -2758,12 +2853,14 @@ class TestAuaHub(unittest.IsolatedAsyncioTestCase):
                         )
                         self.assertEqual(r_ip.status, 200)
 
-                    # 6th code-sending attempt from same IP across either endpoint is rejected with 429
-                    r_ip_blocked = await client.post(
-                        "/api/auth/forgot-password",
-                        json={"email": "ipcap_6@edu.aua.am"},
-                    )
+                    # 6th code-sending attempt from same IP across either endpoint is rejected with 429 & logged with IP
+                    with self.assertLogs("aua_hub_web", level="WARNING") as ip_logs:
+                        r_ip_blocked = await client.post(
+                            "/api/auth/forgot-password",
+                            json={"email": "ipcap_6@edu.aua.am"},
+                        )
                     self.assertEqual(r_ip_blocked.status, 429)
+                    self.assertTrue(any("ip=" in msg and "IP 15m limit" in msg for msg in ip_logs.output))
         finally:
             reset_rate_limits()
             reset_global_email_rate_limit()

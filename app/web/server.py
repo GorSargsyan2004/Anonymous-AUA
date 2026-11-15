@@ -1132,21 +1132,75 @@ def _get_public_turnstile_site_key() -> Optional[str]:
     return site_key
 
 
+STRICT_EMAIL_COOLDOWN_SECONDS = 900  # Enforce strict 15-minute minimum cooldown per email
+_EMAIL_DISPATCH_LOCKS: Dict[str, asyncio.Lock] = {}
+
+
 def _get_email_cooldown_seconds() -> int:
-    """Return configured per-email dispatch cooldown in seconds (default 180s)."""
+    """Return per-email dispatch cooldown in seconds (strictly at least 900s / 15m)."""
     try:
-        val = int(getattr(settings, "AUTH_EMAIL_COOLDOWN_SECONDS", 180) or 180)
-        return max(0, val)
+        val = int(getattr(settings, "AUTH_EMAIL_COOLDOWN_SECONDS", STRICT_EMAIL_COOLDOWN_SECONDS) or STRICT_EMAIL_COOLDOWN_SECONDS)
+        return max(STRICT_EMAIL_COOLDOWN_SECONDS, val)
     except (TypeError, ValueError):
-        return 180
+        return STRICT_EMAIL_COOLDOWN_SECONDS
 
 
-def _check_auth_code_ip_limits(client_ip: str) -> Optional[web.Response]:
+def _get_email_dispatch_lock(email: str) -> asyncio.Lock:
+    """Serialize concurrent OTP/reset dispatch checks per normalized email address."""
+    clean = (email or "").strip().lower()
+    lock = _EMAIL_DISPATCH_LOCKS.get(clean)
+    if lock is None:
+        if len(_EMAIL_DISPATCH_LOCKS) >= 4096:
+            for key in [k for k, lk in list(_EMAIL_DISPATCH_LOCKS.items()) if not lk.locked()][:2048]:
+                _EMAIL_DISPATCH_LOCKS.pop(key, None)
+        lock = asyncio.Lock()
+        _EMAIL_DISPATCH_LOCKS[clean] = lock
+    return lock
+
+
+async def _enforce_email_cooldown_and_log(
+    session: AsyncSession,
+    *,
+    email: str,
+    purpose: str,
+    client_ip: str,
+    endpoint: str,
+) -> Optional[int]:
+    """Check persistent per-email 15m cooldown/daily cap; log blocked IP attempts and return remaining seconds."""
+    cooldown_sec = _get_email_cooldown_seconds()
+    cd_ok, retry_cd, cd_reason = await check_web_email_cooldown(
+        session,
+        email,
+        purpose,
+        cooldown_seconds=cooldown_sec,
+        daily_limit=6,
+    )
+    if cd_ok:
+        return None
+    logger.warning(
+        "Blocked rapid auth code request (endpoint=%s, purpose=%s, reason=%s, email=%s, ip=%s, retry_after=%ss)",
+        endpoint,
+        purpose,
+        cd_reason,
+        email,
+        client_ip,
+        retry_cd,
+    )
+    return retry_cd
+
+
+def _check_auth_code_ip_limits(client_ip: str, endpoint: str = "auth") -> Optional[web.Response]:
     """Enforce shared 15-minute and hourly per-IP limits across code-sending endpoints."""
     allowed_15m, retry_15m = check_rate_limit(
         "auth_code_ip", client_ip, max_calls=5, window_sec=900
     )
     if not allowed_15m:
+        logger.warning(
+            "Blocked rapid auth code request by IP 15m limit (endpoint=%s, ip=%s, retry_after=%ss)",
+            endpoint,
+            client_ip,
+            retry_15m,
+        )
         return web.json_response(
             {
                 "error": f"Too many code requests from your network. Please wait {retry_15m}s.",
@@ -1158,6 +1212,12 @@ def _check_auth_code_ip_limits(client_ip: str) -> Optional[web.Response]:
         "auth_code_ip_hourly", client_ip, max_calls=12, window_sec=3600
     )
     if not allowed_1h:
+        logger.warning(
+            "Blocked rapid auth code request by IP hourly limit (endpoint=%s, ip=%s, retry_after=%ss)",
+            endpoint,
+            client_ip,
+            retry_1h,
+        )
         return web.json_response(
             {
                 "error": f"Hourly verification request limit reached for your network. Please wait {retry_1h}s.",
@@ -1193,7 +1253,11 @@ async def _verify_turnstile_token(token: str, client_ip: str) -> Tuple[bool, str
     return False, "Human verification failed. Please complete the security challenge and try again."
 
 
-async def _require_turnstile_if_enabled(data: Any, client_ip: str) -> Optional[web.Response]:
+async def _require_turnstile_if_enabled(
+    data: Any,
+    client_ip: str,
+    endpoint: str = "auth",
+) -> Optional[web.Response]:
     """Validate Cloudflare Turnstile token before DB lookups or email dispatch when configured."""
     if not _is_turnstile_configured():
         return None
@@ -1206,12 +1270,14 @@ async def _require_turnstile_if_enabled(data: Any, client_ip: str) -> Optional[w
             or ""
         ).strip()
     if not token:
+        logger.warning("Blocked auth request missing Turnstile token (endpoint=%s, ip=%s)", endpoint, client_ip)
         return web.json_response(
             {"error": "Security check required. Please complete the Cloudflare Turnstile challenge."},
             status=403,
         )
     ok, err_msg = await _verify_turnstile_token(token, client_ip)
     if not ok:
+        logger.warning("Blocked auth request failing Turnstile check (endpoint=%s, ip=%s)", endpoint, client_ip)
         return web.json_response({"error": err_msg}, status=403)
     return None
 
@@ -1388,7 +1454,7 @@ def _redirect_oauth_error(error_message: str, clear_oauth_cookie: bool = True) -
 @routes.post("/api/auth/register")
 async def api_auth_register(request: web.Request) -> web.Response:
     client_ip = get_client_ip(request)
-    ip_limit_resp = _check_auth_code_ip_limits(client_ip)
+    ip_limit_resp = _check_auth_code_ip_limits(client_ip, endpoint="/api/auth/register")
     if ip_limit_resp:
         return ip_limit_resp
 
@@ -1397,7 +1463,7 @@ async def api_auth_register(request: web.Request) -> web.Response:
     except Exception:
         return web.json_response({"error": "Invalid JSON body."}, status=400)
 
-    turnstile_resp = await _require_turnstile_if_enabled(data, client_ip)
+    turnstile_resp = await _require_turnstile_if_enabled(data, client_ip, endpoint="/api/auth/register")
     if turnstile_resp:
         return turnstile_resp
 
@@ -1419,61 +1485,61 @@ async def api_auth_register(request: web.Request) -> web.Response:
     if password != confirm_password:
         return web.json_response({"error": "Passwords do not match."}, status=400)
 
-    cooldown_sec = _get_email_cooldown_seconds()
-    async with get_db_session() as session:
-        existing = await get_web_user_by_email(session, email)
-        if existing:
+    register_payload = {
+        "ok": True,
+        "email": email,
+        "message": "If this email is eligible for registration, a 6-digit verification code has been sent.",
+    }
+    async with _get_email_dispatch_lock(email):
+        async with get_db_session() as session:
+            existing = await get_web_user_by_email(session, email)
+            if existing:
+                return web.json_response(
+                    {"error": "An AUA Hub account with this email already exists. Please Sign In instead."},
+                    status=409,
+                )
+
+            blocked_retry = await _enforce_email_cooldown_and_log(
+                session,
+                email=email,
+                purpose="register_otp",
+                client_ip=client_ip,
+                endpoint="/api/auth/register",
+            )
+            if blocked_retry is not None:
+                # Silent anti-enumeration: return standard 200 without creating a new code or sending email
+                return web.json_response(register_payload)
+
+            global_ok, global_msg = check_global_email_rate_limit()
+            if not global_ok:
+                logger.warning(
+                    "Blocked auth email due to global email cap (endpoint=/api/auth/register, email=%s, ip=%s)",
+                    email,
+                    client_ip,
+                )
+                return web.json_response(
+                    {"error": global_msg or "Email traffic is busy. Please wait a few minutes."},
+                    status=429,
+                )
+
+            otp_code, _ = await create_web_registration_otp(
+                session=session,
+                name=name,
+                email=email,
+                password=password,
+            )
+
+        sent, _ = await send_verification_email(to_email=email, code=otp_code)
+        if not sent:
             return web.json_response(
-                {"error": "An AUA Hub account with this email already exists. Please Sign In instead."},
-                status=409,
+                {"error": "Failed to send verification OTP email. Please check your email address and try again."},
+                status=500,
             )
 
-        cd_ok, retry_cd, cd_reason = await check_web_email_cooldown(
-            session,
-            email,
-            "register_otp",
-            cooldown_seconds=cooldown_sec,
-            daily_limit=6,
-        )
-        if not cd_ok:
-            msg = (
-                f"Daily verification code limit reached for {email}. Please try again later."
-                if cd_reason == "daily"
-                else f"A verification code was recently sent to {email}. Please wait {retry_cd}s before requesting another."
-            )
-            return web.json_response({"error": msg, "retry_after": retry_cd}, status=429)
+        async with get_db_session() as session:
+            await record_web_email_dispatch(session, email, "register_otp")
 
-        global_ok, global_msg = check_global_email_rate_limit()
-        if not global_ok:
-            return web.json_response(
-                {"error": global_msg or "Email traffic is busy. Please wait a few minutes."},
-                status=429,
-            )
-
-        otp_code, _ = await create_web_registration_otp(
-            session=session,
-            name=name,
-            email=email,
-            password=password,
-        )
-
-    sent, _ = await send_verification_email(to_email=email, code=otp_code)
-    if not sent:
-        return web.json_response(
-            {"error": "Failed to send verification OTP email. Please check your email address and try again."},
-            status=500,
-        )
-
-    async with get_db_session() as session:
-        await record_web_email_dispatch(session, email, "register_otp")
-
-    return web.json_response(
-        {
-            "ok": True,
-            "email": email,
-            "message": f"A 6-digit verification code has been sent to {email}.",
-        }
-    )
+    return web.json_response(register_payload)
 
 
 @routes.post("/api/auth/verify-otp")
@@ -1481,6 +1547,7 @@ async def api_auth_verify_otp(request: web.Request) -> web.Response:
     client_ip = get_client_ip(request)
     allowed_ip, retry_ip = check_rate_limit("auth_otp_ip", client_ip, max_calls=8, window_sec=300)
     if not allowed_ip:
+        logger.warning("Blocked rapid OTP verification (endpoint=/api/auth/verify-otp, window=5m, ip=%s, retry_after=%ss)", client_ip, retry_ip)
         return web.json_response(
             {"error": f"Too many OTP verification attempts. Please wait {retry_ip}s."},
             status=429,
@@ -1489,6 +1556,7 @@ async def api_auth_verify_otp(request: web.Request) -> web.Response:
         "auth_otp_ip_hourly", client_ip, max_calls=20, window_sec=3600
     )
     if not allowed_ip_hr:
+        logger.warning("Blocked rapid OTP verification (endpoint=/api/auth/verify-otp, window=1h, ip=%s, retry_after=%ss)", client_ip, retry_ip_hr)
         return web.json_response(
             {"error": f"Hourly OTP verification limit reached. Please wait {retry_ip_hr}s."},
             status=429,
@@ -1543,6 +1611,7 @@ async def api_auth_login(request: web.Request) -> web.Response:
     client_ip = get_client_ip(request)
     allowed_ip, retry_ip = check_rate_limit("auth_login_ip", client_ip, max_calls=10, window_sec=300)
     if not allowed_ip:
+        logger.warning("Blocked rapid login attempts by IP 5m limit (ip=%s, retry_after=%ss)", client_ip, retry_ip)
         return web.json_response(
             {"error": f"Too many sign-in attempts from your IP. Please wait {retry_ip}s."},
             status=429,
@@ -1551,6 +1620,7 @@ async def api_auth_login(request: web.Request) -> web.Response:
         "auth_login_ip_hourly", client_ip, max_calls=25, window_sec=3600
     )
     if not allowed_ip_hr:
+        logger.warning("Blocked rapid login attempts by IP hourly limit (ip=%s, retry_after=%ss)", client_ip, retry_ip_hr)
         return web.json_response(
             {"error": f"Hourly sign-in attempt limit reached for your network. Please wait {retry_ip_hr}s."},
             status=429,
@@ -1561,7 +1631,7 @@ async def api_auth_login(request: web.Request) -> web.Response:
     except Exception:
         return web.json_response({"error": "Invalid JSON body."}, status=400)
 
-    turnstile_resp = await _require_turnstile_if_enabled(data, client_ip)
+    turnstile_resp = await _require_turnstile_if_enabled(data, client_ip, endpoint="/api/auth/login")
     if turnstile_resp:
         return turnstile_resp
 
@@ -1573,6 +1643,7 @@ async def api_auth_login(request: web.Request) -> web.Response:
 
     allowed_email, retry_email = check_rate_limit("auth_login_email", email, max_calls=8, window_sec=300)
     if not allowed_email:
+        logger.warning("Blocked rapid login attempts for account (email=%s, ip=%s, retry_after=%ss)", email, client_ip, retry_email)
         return web.json_response(
             {"error": f"Too many sign-in attempts for this account. Please wait {retry_email}s."},
             status=429,
@@ -1602,7 +1673,7 @@ async def api_auth_login(request: web.Request) -> web.Response:
 @routes.post("/api/auth/forgot-password")
 async def api_auth_forgot_password(request: web.Request) -> web.Response:
     client_ip = get_client_ip(request)
-    ip_limit_resp = _check_auth_code_ip_limits(client_ip)
+    ip_limit_resp = _check_auth_code_ip_limits(client_ip, endpoint="/api/auth/forgot-password")
     if ip_limit_resp:
         return ip_limit_resp
 
@@ -1611,7 +1682,7 @@ async def api_auth_forgot_password(request: web.Request) -> web.Response:
     except Exception:
         return web.json_response({"error": "Invalid JSON body."}, status=400)
 
-    turnstile_resp = await _require_turnstile_if_enabled(data, client_ip)
+    turnstile_resp = await _require_turnstile_if_enabled(data, client_ip, endpoint="/api/auth/forgot-password")
     if turnstile_resp:
         return turnstile_resp
 
@@ -1620,38 +1691,43 @@ async def api_auth_forgot_password(request: web.Request) -> web.Response:
     if email_err:
         return web.json_response({"error": email_err}, status=400)
 
-    global_ok, global_msg = check_global_email_rate_limit()
-    if not global_ok:
-        return web.json_response(
-            {"error": global_msg or "Email traffic is busy. Please wait a few minutes."},
-            status=429,
-        )
-
     generic_payload = {
         "ok": True,
         "email": email,
         "message": "If an active AUA Hub account exists for this email, a 6-digit password reset code has been sent.",
     }
-    cooldown_sec = _get_email_cooldown_seconds()
-    async with get_db_session() as session:
-        cd_ok, _, _ = await check_web_email_cooldown(
-            session,
-            email,
-            "password_reset",
-            cooldown_seconds=cooldown_sec,
-            daily_limit=6,
-        )
-        if not cd_ok:
-            # Silent anti-enumeration: return the same 200 payload without dispatching another email
-            return web.json_response(generic_payload)
+    async with _get_email_dispatch_lock(email):
+        async with get_db_session() as session:
+            blocked_retry = await _enforce_email_cooldown_and_log(
+                session,
+                email=email,
+                purpose="password_reset",
+                client_ip=client_ip,
+                endpoint="/api/auth/forgot-password",
+            )
+            if blocked_retry is not None:
+                # Silent anti-enumeration: return the same 200 payload without creating a code or sending email
+                return web.json_response(generic_payload)
 
-        otp_code, target_user = await create_web_password_reset_otp(session=session, email=email)
-        await record_web_email_dispatch(session, email, "password_reset")
+            global_ok, global_msg = check_global_email_rate_limit()
+            if not global_ok:
+                logger.warning(
+                    "Blocked auth email due to global email cap (endpoint=/api/auth/forgot-password, email=%s, ip=%s)",
+                    email,
+                    client_ip,
+                )
+                return web.json_response(
+                    {"error": global_msg or "Email traffic is busy. Please wait a few minutes."},
+                    status=429,
+                )
 
-    if otp_code and target_user:
-        sent, err = await send_password_reset_email(to_email=email, code=otp_code)
-        if not sent:
-            logger.warning("Failed to dispatch password reset OTP for %s: %s", email, err)
+            otp_code, target_user = await create_web_password_reset_otp(session=session, email=email)
+            await record_web_email_dispatch(session, email, "password_reset")
+
+        if otp_code and target_user:
+            sent, err = await send_password_reset_email(to_email=email, code=otp_code)
+            if not sent:
+                logger.warning("Failed to dispatch password reset OTP for %s (ip=%s): %s", email, client_ip, err)
 
     # Always return a uniform 200 message to prevent account enumeration
     return web.json_response(generic_payload)
@@ -1662,6 +1738,7 @@ async def api_auth_reset_password(request: web.Request) -> web.Response:
     client_ip = get_client_ip(request)
     allowed_ip, retry_ip = check_rate_limit("auth_reset_ip", client_ip, max_calls=12, window_sec=300)
     if not allowed_ip:
+        logger.warning("Blocked rapid password reset attempts by IP 5m limit (ip=%s, retry_after=%ss)", client_ip, retry_ip)
         return web.json_response(
             {"error": f"Too many password reset attempts from your IP. Please wait {retry_ip}s."},
             status=429,
@@ -1670,6 +1747,7 @@ async def api_auth_reset_password(request: web.Request) -> web.Response:
         "auth_reset_ip_hourly", client_ip, max_calls=25, window_sec=3600
     )
     if not allowed_ip_hr:
+        logger.warning("Blocked rapid password reset attempts by IP hourly limit (ip=%s, retry_after=%ss)", client_ip, retry_ip_hr)
         return web.json_response(
             {"error": f"Hourly password reset limit reached. Please wait {retry_ip_hr}s."},
             status=429,

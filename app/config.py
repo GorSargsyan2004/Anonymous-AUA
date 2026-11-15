@@ -156,8 +156,8 @@ class Settings(BaseSettings):
         description="Cloudflare Turnstile secret key verified server-side via siteverify",
     )
     AUTH_EMAIL_COOLDOWN_SECONDS: int = Field(
-        default=180,
-        description="Minimum cooldown in seconds between OTP/reset emails for the same address",
+        default=900,
+        description="Strict minimum cooldown in seconds between OTP/reset emails for the same address (default 900s = 15m)",
     )
 
     # Shared JenzaReviews Remote Database & Supabase Configuration
