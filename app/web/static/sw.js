@@ -1,9 +1,9 @@
 /* AUA Hub Service Worker (PWA Support & Offline Shell Cache) */
-const CACHE_NAME = "aua-hub-shell-v42";
+const CACHE_NAME = "aua-hub-shell-v43";
 const SHELL_ASSETS = [
   "/",
-  "/static/styles.css?v=20261115_1",
-  "/static/app.js?v=20261115_1",
+  "/static/styles.css?v=20261116_1",
+  "/static/app.js?v=20261116_1",
   "/static/partners/findaua-logo.png",
   "/static/partners/jenzareviews-logo.png",
   "/static/partners/auautils-logo.png",
@@ -81,6 +81,28 @@ self.addEventListener("fetch", (event) => {
         return networkResp;
       })
       .catch(() => caches.match(req).then((cached) => cached || caches.match("/")))
+  );
+});
+
+self.addEventListener("notificationclick", (event) => {
+  event.notification.close();
+  const payload = event.notification.data || {};
+  event.waitUntil(
+    self.clients
+      .matchAll({ type: "window", includeUncontrolled: true })
+      .then((clientList) => {
+        for (const client of clientList) {
+          if (client.url && client.url.startsWith(self.location.origin) && "focus" in client) {
+            client.postMessage({ type: "AUA_HUB_OPEN_NOTIFICATION", data: payload });
+            return client.focus();
+          }
+        }
+        if (self.clients.openWindow) {
+          return self.clients.openWindow("/");
+        }
+        return undefined;
+      })
+      .catch(() => undefined)
   );
 });
 

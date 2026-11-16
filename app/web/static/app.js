@@ -114,7 +114,14 @@ const state = {
   // Real-time In-App Notifications
   notifications: [],
   unreadNotificationCount: 0,
+  seenNotificationIds: new Set(),
+  notifBaselineLoaded: false,
 };
+
+const BROWSER_NOTIF_PREF_KEY = "aua_hub_browser_notif_enabled";
+const BASE_DOCUMENT_TITLE =
+  (typeof document !== "undefined" && document.title) ||
+  "AUA Hub — American University of Armenia Student Ecosystem";
 
 /* --------------------------------------------------------------------------
    API Helper & Toast Notifications
@@ -887,6 +894,11 @@ async function checkCurrentSession() {
     } else {
       state.user = null;
       state.token = null;
+      state.notifications = [];
+      state.unreadNotificationCount = 0;
+      state.seenNotificationIds = new Set();
+      state.notifBaselineLoaded = false;
+      updateNotificationBadge();
       clearLocalAiSessionState();
       try {
         localStorage.removeItem("aua_hub_user");
@@ -1334,6 +1346,9 @@ async function logoutUser() {
   } catch { }
   state.notifications = [];
   state.unreadNotificationCount = 0;
+  state.seenNotificationIds = new Set();
+  state.notifBaselineLoaded = false;
+  updateNotificationBadge();
   closeNotificationPopover();
   closeProfileMenu();
   localStorage.removeItem("aua_hub_token");
@@ -1359,12 +1374,31 @@ async function loadNotifications() {
   try {
     const res = await apiFetch("/api/notifications");
     if (res && res.ok) {
-      state.notifications = res.notifications || [];
+      const incoming = res.notifications || [];
+      const hadBaseline = state.notifBaselineLoaded;
+      const newlyArrived = [];
+
+      for (const n of incoming) {
+        const nid = Number(n.id);
+        if (!state.seenNotificationIds.has(nid)) {
+          state.seenNotificationIds.add(nid);
+          if (hadBaseline && !n.is_read) {
+            newlyArrived.push(n);
+          }
+        }
+      }
+      state.notifBaselineLoaded = true;
+      state.notifications = incoming;
       state.unreadNotificationCount = res.unread_count || 0;
       updateNotificationBadge();
       const popover = document.getElementById("notificationsPopover");
       if (popover && !popover.classList.contains("hidden") && popover.style.display !== "none") {
         renderNotificationsList();
+      }
+      if (newlyArrived.length > 0) {
+        for (const n of newlyArrived.slice(0, 3)) {
+          dispatchBrowserNotification(n);
+        }
       }
     }
   } catch (err) {
@@ -1376,6 +1410,12 @@ function updateNotificationBadge() {
   const badge = document.getElementById("navbarNotifBadge");
   const unreadPill = document.getElementById("notifUnreadBadgePill");
   const count = state.unreadNotificationCount || 0;
+
+  if (typeof document !== "undefined") {
+    document.title = count > 0
+      ? `(${count > 99 ? "99+" : count}) ${BASE_DOCUMENT_TITLE}`
+      : BASE_DOCUMENT_TITLE;
+  }
 
   if (badge) {
     if (count > 0) {
@@ -1474,6 +1514,7 @@ function toggleNotificationPopover(e) {
       popover.style.left = "auto";
     }
 
+    syncBrowserNotifToggleUI();
     renderNotificationsList();
     loadNotifications();
   }
@@ -1507,6 +1548,55 @@ async function markAllNotificationsAsRead() {
   }
 }
 
+function _navigateToNotificationTarget(targetType, targetId, extraData = {}) {
+  if (targetType === "chat_message") {
+    switchView("spam-chat");
+    setTimeout(() => {
+      if (targetId) {
+        scrollToMessage(targetId);
+      }
+    }, 280);
+  } else if (targetType === "have_need") {
+    state.hnOnlyMine = false;
+    const tabAll = document.getElementById("hnTabAll");
+    const tabMine = document.getElementById("hnTabMine");
+    if (tabAll) tabAll.classList.add("active");
+    if (tabMine) tabMine.classList.remove("active");
+
+    const searchInput = document.getElementById("hnFeedSearch");
+    if (searchInput) {
+      searchInput.value = "";
+    }
+    switchView("have-need");
+    const targetPostId = Number(
+      extraData?.matched_post_id || targetId || extraData?.post_id || 0
+    );
+    setTimeout(() => {
+      if (targetPostId) {
+        const cardEl = document.getElementById(`hn-post-${targetPostId}`);
+        if (cardEl) {
+          cardEl.scrollIntoView({ behavior: "smooth", block: "center" });
+          cardEl.classList.add("hn-card-highlighted");
+          setTimeout(() => cardEl.classList.remove("hn-card-highlighted"), 3600);
+          return;
+        }
+      }
+      const code =
+        extraData?.have_course_code ||
+        extraData?.have_code ||
+        extraData?.need_course_code ||
+        extraData?.need_code;
+      if (code && searchInput) {
+        searchInput.value = code;
+        loadHaveNeedPosts();
+      }
+    }, 320);
+  } else if (targetType === "inbox") {
+    switchView("anonymous");
+    switchAnonymousSubtab("inbox");
+  }
+}
+
 async function handleNotificationClick(notifId) {
   const notif = (state.notifications || []).find((n) => Number(n.id) === Number(notifId));
   if (!notif) return;
@@ -1521,54 +1611,218 @@ async function handleNotificationClick(notifId) {
   }
 
   closeNotificationPopover();
+  _navigateToNotificationTarget(notif.target_type, notif.target_id, notif.extra_data || {});
+}
 
-  // Deep-Link Navigation
-  if (notif.target_type === "chat_message") {
-    switchView("spam-chat");
-    setTimeout(() => {
-      if (notif.target_id) {
-        scrollToMessage(notif.target_id);
-      }
-    }, 280);
-  } else if (notif.target_type === "have_need") {
-    state.hnOnlyMine = false;
-    const tabAll = document.getElementById("hnTabAll");
-    const tabMine = document.getElementById("hnTabMine");
-    if (tabAll) tabAll.classList.add("active");
-    if (tabMine) tabMine.classList.remove("active");
+/* --------------------------------------------------------------------------
+   1b-ii. Browser Notifications Toggle & Native Alert Dispatch
+   -------------------------------------------------------------------------- */
 
-    const searchInput = document.getElementById("hnFeedSearch");
-    if (searchInput) {
-      searchInput.value = "";
-    }
-    switchView("have-need");
-    const targetPostId = Number(
-      notif.extra_data?.matched_post_id || notif.target_id || notif.extra_data?.post_id || 0
-    );
-    setTimeout(() => {
-      if (targetPostId) {
-        const cardEl = document.getElementById(`hn-post-${targetPostId}`);
-        if (cardEl) {
-          cardEl.scrollIntoView({ behavior: "smooth", block: "center" });
-          cardEl.classList.add("hn-card-highlighted");
-          setTimeout(() => cardEl.classList.remove("hn-card-highlighted"), 3600);
-          return;
-        }
-      }
-      const code =
-        notif.extra_data?.have_course_code ||
-        notif.extra_data?.have_code ||
-        notif.extra_data?.need_course_code ||
-        notif.extra_data?.need_code;
-      if (code && searchInput) {
-        searchInput.value = code;
-        loadHaveNeedPosts();
-      }
-    }, 320);
-  } else if (notif.target_type === "inbox") {
-    switchView("anonymous");
-    switchAnonymousSubtab("inbox");
+function isBrowserNotificationSupported() {
+  return typeof window !== "undefined" && "Notification" in window;
+}
+
+function getBrowserNotificationPref() {
+  try {
+    return localStorage.getItem(BROWSER_NOTIF_PREF_KEY) !== "0";
+  } catch {
+    return true;
   }
+}
+
+function isBrowserNotificationEnabled() {
+  return (
+    isBrowserNotificationSupported() &&
+    Notification.permission === "granted" &&
+    getBrowserNotificationPref()
+  );
+}
+
+function syncBrowserNotifToggleUI() {
+  const row = document.getElementById("browserNotifToggleRow");
+  const toggle = document.getElementById("browserNotifToggle");
+  const sub = document.getElementById("browserNotifSub");
+  if (!row || !toggle || !sub) return;
+
+  row.classList.remove("is-active", "is-blocked", "is-unsupported");
+
+  if (!isBrowserNotificationSupported()) {
+    toggle.checked = false;
+    toggle.disabled = true;
+    row.classList.add("is-unsupported");
+    const isAppleMobile = /iphone|ipad|ipod/i.test(navigator.userAgent || "");
+    sub.textContent = isAppleMobile
+      ? "Add AUA Hub to Home Screen on iOS to enable browser notifications"
+      : "Browser notifications are not supported in this browser";
+    return;
+  }
+
+  const perm = Notification.permission;
+  if (perm === "denied") {
+    toggle.checked = false;
+    toggle.disabled = false;
+    row.classList.add("is-blocked");
+    sub.textContent = "Blocked in browser settings — allow notifications for this site to enable";
+    return;
+  }
+
+  const isOn = perm === "granted" && getBrowserNotificationPref();
+  toggle.disabled = false;
+  toggle.checked = isOn;
+  if (isOn) {
+    row.classList.add("is-active");
+    sub.textContent = "On — browser alerts active whenever you get a notification";
+  } else {
+    sub.textContent = "Pop up alerts in this browser for new notifications (not email)";
+  }
+}
+
+async function _showRawBrowserNotification(title, options = {}, onFallbackClick = null) {
+  if (!isBrowserNotificationSupported() || Notification.permission !== "granted") return;
+
+  try {
+    if ("serviceWorker" in navigator) {
+      const reg = await navigator.serviceWorker.getRegistration("/");
+      if (reg && reg.active && typeof reg.showNotification === "function") {
+        await reg.showNotification(title, options);
+        return;
+      }
+    }
+  } catch { }
+
+  try {
+    const n = new Notification(title, options);
+    n.onclick = () => {
+      try { window.focus(); } catch { }
+      try { n.close(); } catch { }
+      if (typeof onFallbackClick === "function") {
+        onFallbackClick();
+      }
+    };
+  } catch { }
+}
+
+async function handleBrowserNotifToggleChange(checkboxEl) {
+  if (!checkboxEl) return;
+
+  if (!isBrowserNotificationSupported()) {
+    checkboxEl.checked = false;
+    syncBrowserNotifToggleUI();
+    showToast("Browser notifications are not supported in this browser.", true);
+    return;
+  }
+
+  if (Notification.permission === "denied") {
+    checkboxEl.checked = false;
+    syncBrowserNotifToggleUI();
+    showToast(
+      "Notifications are blocked by your browser. Click the site settings icon in the address bar and set Notifications to Allow.",
+      true
+    );
+    return;
+  }
+
+  if (!checkboxEl.checked) {
+    try { localStorage.setItem(BROWSER_NOTIF_PREF_KEY, "0"); } catch { }
+    syncBrowserNotifToggleUI();
+    showToast("Browser notifications paused (in-app 🔔 alerts remain active).");
+    return;
+  }
+
+  if (Notification.permission === "granted") {
+    try { localStorage.setItem(BROWSER_NOTIF_PREF_KEY, "1"); } catch { }
+    syncBrowserNotifToggleUI();
+    showToast("🔔 Browser notifications enabled!");
+    return;
+  }
+
+  try {
+    const result = await Notification.requestPermission();
+    if (result === "granted") {
+      try { localStorage.setItem(BROWSER_NOTIF_PREF_KEY, "1"); } catch { }
+      syncBrowserNotifToggleUI();
+      showToast("🔔 Browser notifications enabled!");
+      _showRawBrowserNotification("🔔 AUA Hub Notifications Enabled", {
+        body: "You will now see browser alerts whenever you receive a new notification.",
+        icon: "/static/favicon-192x192.png?v=20261113_1",
+        badge: "/static/favicon-192x192.png?v=20261113_1",
+        tag: "aua-hub-notif-welcome",
+      });
+    } else {
+      checkboxEl.checked = false;
+      try { localStorage.setItem(BROWSER_NOTIF_PREF_KEY, "0"); } catch { }
+      syncBrowserNotifToggleUI();
+      showToast(
+        result === "denied"
+          ? "Notifications blocked in browser settings."
+          : "Browser notification permission was not granted.",
+        true
+      );
+    }
+  } catch {
+    checkboxEl.checked = false;
+    syncBrowserNotifToggleUI();
+    showToast("Could not request browser notification permission.", true);
+  }
+}
+
+function dispatchBrowserNotification(notif) {
+  if (!notif || !isBrowserNotificationEnabled()) return;
+  const nid = Number(notif.id || 0);
+  const title = (notif.title || "AUA Hub Notification").trim();
+  const body = (notif.content || "You have a new notification.").trim();
+
+  _showRawBrowserNotification(
+    title,
+    {
+      body,
+      icon: "/static/favicon-192x192.png?v=20261113_1",
+      badge: "/static/favicon-192x192.png?v=20261113_1",
+      tag: nid ? `aua-hub-notif-${nid}` : undefined,
+      renotify: false,
+      data: {
+        notifId: nid,
+        targetType: notif.target_type,
+        targetId: notif.target_id,
+        extraData: notif.extra_data || {},
+      },
+    },
+    () => {
+      if (nid) {
+        handleNotificationClick(nid);
+      } else {
+        _navigateToNotificationTarget(notif.target_type, notif.target_id, notif.extra_data || {});
+      }
+    }
+  );
+}
+
+async function handleSwNotificationOpen(payload) {
+  if (!payload) return;
+  const nid = Number(payload.notifId || 0);
+  if (nid) {
+    let exists = (state.notifications || []).some((n) => Number(n.id) === nid);
+    if (!exists && state.user) {
+      await loadNotifications();
+      exists = (state.notifications || []).some((n) => Number(n.id) === nid);
+    }
+    if (exists) {
+      await handleNotificationClick(nid);
+      return;
+    }
+  }
+  _navigateToNotificationTarget(payload.targetType, payload.targetId, payload.extraData || {});
+}
+
+function initBrowserNotificationBridge() {
+  if ("serviceWorker" in navigator) {
+    navigator.serviceWorker.addEventListener("message", (event) => {
+      if (event.data && event.data.type === "AUA_HUB_OPEN_NOTIFICATION") {
+        handleSwNotificationOpen(event.data.data || {});
+      }
+    });
+  }
+  syncBrowserNotifToggleUI();
 }
 
 /* --------------------------------------------------------------------------
@@ -6493,6 +6747,9 @@ function initSpamChatWebSocket() {
           ws.send(JSON.stringify({ type: "auth", token: state.token }));
         }
       } catch { }
+      if (state.user && state.notifBaselineLoaded) {
+        loadNotifications();
+      }
     };
 
     ws.onmessage = (event) => {
@@ -6584,6 +6841,7 @@ function initSpamChatWebSocket() {
           if (state.user && Number(data.recipient_id) === Number(state.user.id)) {
             const notif = data.notification;
             if (notif) {
+              state.seenNotificationIds.add(Number(notif.id));
               state.notifications = [notif, ...state.notifications.filter((n) => Number(n.id) !== Number(notif.id))];
               state.unreadNotificationCount = (data.unread_count !== undefined) ? Number(data.unread_count) : (state.unreadNotificationCount + 1);
               updateNotificationBadge();
@@ -6592,6 +6850,7 @@ function initSpamChatWebSocket() {
                 renderNotificationsList();
               }
               showToast(`🔔 ${notif.title}`);
+              dispatchBrowserNotification(notif);
             }
           }
         } else if (data.type === "ai_session_updated") {
@@ -7301,6 +7560,7 @@ function initPwaSupport() {
   if ("serviceWorker" in navigator) {
     navigator.serviceWorker.register("/sw.js", { scope: "/" }).catch(() => { });
   }
+  initBrowserNotificationBridge();
 
   window.addEventListener("beforeinstallprompt", (e) => {
     e.preventDefault();
@@ -8102,6 +8362,10 @@ window.addEventListener("focus", () => {
 
 document.addEventListener("visibilitychange", () => {
   if (document.visibilityState === "visible") {
+    syncBrowserNotifToggleUI();
+    if (state.user && state.notifBaselineLoaded) {
+      loadNotifications();
+    }
     if (state.user && !state.aiIsGenerating && state.activeView === "ai-assistant") {
       syncAiSessionWithServer(true);
     }

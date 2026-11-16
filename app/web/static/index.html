@@ -24,7 +24,7 @@
   <link rel="icon" type="image/png" sizes="32x32" href="/static/favicon-32x32.png?v=20261113_1" />
   <link rel="icon" type="image/png" sizes="192x192" href="/static/favicon-192x192.png?v=20261113_1" />
   <link rel="shortcut icon" href="/favicon.ico?v=20261113_1" />
-  <link rel="stylesheet" href="/static/styles.css?v=20261115_1" />
+  <link rel="stylesheet" href="/static/styles.css?v=20261116_1" />
 </head>
 
 <body>
@@ -1305,6 +1305,24 @@
         Mark all read
       </button>
     </div>
+    <label id="browserNotifToggleRow" class="notif-browser-bar" for="browserNotifToggle">
+      <div class="notif-browser-info">
+        <div class="notif-browser-label">
+          <span aria-hidden="true">🔔</span>
+          <span>Enable notifications for browser</span>
+        </div>
+        <div id="browserNotifSub" class="notif-browser-sub">
+          Get browser alerts whenever a new notification arrives (not email)
+        </div>
+      </div>
+      <span class="notif-switch-wrap">
+        <input type="checkbox" id="browserNotifToggle" class="notif-switch-input" role="switch"
+          onchange="handleBrowserNotifToggleChange(this)" />
+        <span class="notif-switch-track" aria-hidden="true">
+          <span class="notif-switch-thumb"></span>
+        </span>
+      </span>
+    </label>
     <div id="notificationsList" class="notif-popover-list">
       <div class="notif-empty-state">No notifications yet</div>
     </div>
@@ -1514,7 +1532,7 @@
     </div>
   </div>
 
-  <script src="/static/app.js?v=20261115_1"></script>
+  <script src="/static/app.js?v=20261116_1"></script>
 </body>
 
 </html>

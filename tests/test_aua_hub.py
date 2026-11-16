@@ -3042,6 +3042,37 @@ class TestAuaHub(unittest.IsolatedAsyncioTestCase):
             reset_rate_limits()
             reset_global_email_rate_limit()
 
+    async def test_browser_notifications_menu_and_sw_assets(self) -> None:
+        """Verify notifications popover includes browser notification switch and matching SW hooks."""
+        from app.web.server import create_web_app
+
+        app = create_web_app()
+        async with TestClient(TestServer(app)) as client:
+            r_html = await client.get("/")
+            self.assertEqual(r_html.status, 200)
+            html_body = await r_html.text()
+            self.assertIn('id="notificationsPopover"', html_body)
+            self.assertIn('id="browserNotifToggle"', html_body)
+            self.assertIn('onchange="handleBrowserNotifToggleChange(this)"', html_body)
+            self.assertIn("/static/styles.css?v=20261116_1", html_body)
+            self.assertIn("/static/app.js?v=20261116_1", html_body)
+
+            r_js = await client.get("/static/app.js")
+            self.assertEqual(r_js.status, 200)
+            js_body = await r_js.text()
+            self.assertIn("function handleBrowserNotifToggleChange(", js_body)
+            self.assertIn("function dispatchBrowserNotification(", js_body)
+            self.assertIn("Notification.requestPermission()", js_body)
+            self.assertIn("AUA_HUB_OPEN_NOTIFICATION", js_body)
+
+            r_sw = await client.get("/sw.js")
+            self.assertEqual(r_sw.status, 200)
+            sw_body = await r_sw.text()
+            self.assertIn('addEventListener("notificationclick"', sw_body)
+            self.assertIn("AUA_HUB_OPEN_NOTIFICATION", sw_body)
+            self.assertIn("/static/styles.css?v=20261116_1", sw_body)
+            self.assertIn("/static/app.js?v=20261116_1", sw_body)
+
 
 if __name__ == "__main__":
     unittest.main()
