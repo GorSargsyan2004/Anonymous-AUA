@@ -256,25 +256,27 @@ a,
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 16px;
-  padding: 14px 22px;
+  gap: 12px;
+  padding: 12px 18px;
   position: sticky;
   top: 14px;
   z-index: 50;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
 }
 
 .brand-cluster {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 9px;
   cursor: pointer;
   user-select: none;
-  padding: 6px 14px;
+  padding: 6px 10px;
   border-radius: var(--radius-md);
   position: relative;
   overflow: visible;
   border: 1px solid transparent;
+  flex-shrink: 0;
+  white-space: nowrap;
   transition: transform 0.3s cubic-bezier(0.16, 1, 0.3, 1), box-shadow 0.3s cubic-bezier(0.16, 1, 0.3, 1), background-color 0.3s ease, border-color 0.3s ease;
 }
 
@@ -867,8 +869,19 @@ a,
 .nav-tabs {
   display: flex;
   align-items: center;
-  gap: 6px;
-  flex-wrap: wrap;
+  justify-content: center;
+  gap: 4px;
+  flex: 1 1 auto;
+  min-width: 0;
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+.nav-tabs::-webkit-scrollbar {
+  display: none;
 }
 
 .nav-tab {
@@ -876,14 +889,16 @@ a,
   background: transparent;
   color: var(--text-secondary);
   border: 1px solid transparent;
-  padding: 9px 15px;
+  padding: 8px 11.5px;
   border-radius: var(--radius-pill);
-  font-size: 13.5px;
+  font-size: 13px;
   font-weight: 600;
   cursor: pointer;
   display: inline-flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
+  white-space: nowrap;
+  flex-shrink: 0;
   transition: all 0.22s ease;
 }
 
@@ -939,7 +954,20 @@ a,
 .auth-bar {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+@media (max-width: 1180px) and (min-width: 769px) {
+  .nav-tabs {
+    justify-content: flex-start;
+  }
+
+  .nav-tab {
+    padding: 7px 9.5px;
+    font-size: 12.5px;
+  }
 }
 
 .user-pill {
@@ -4183,6 +4211,7 @@ a,
     padding: 10px 12px;
     gap: 8px;
     border-radius: 16px;
+    flex-wrap: wrap;
   }
 
   .brand-title {
