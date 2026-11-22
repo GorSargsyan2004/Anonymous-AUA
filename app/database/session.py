@@ -512,6 +512,12 @@ async def init_db() -> None:
                 "CREATE UNIQUE INDEX IF NOT EXISTS ix_web_users_google_sub ON web_users (google_sub);"
             )
         )
+        # Clear any negative syllabus cache rows so previously failed uploads can be re-parsed cleanly
+        await conn.execute(
+            text(
+                "DELETE FROM syllabus_caches WHERE has_grading_breakdown IS FALSE;"
+            )
+        )
 
 
 

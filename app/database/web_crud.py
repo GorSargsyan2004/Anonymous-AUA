@@ -2772,15 +2772,25 @@ async def get_syllabus_cache_by_hash(
     file_hash: str,
     text_hash: Optional[str] = None,
 ) -> Optional[SyllabusCache]:
-    """Look up a cached syllabus parse result by exact file_hash or normalized text_hash."""
-    stmt = select(SyllabusCache).where(SyllabusCache.file_hash == file_hash)
+    """Look up a valid cached syllabus parse result (has_grading_breakdown=True) by file_hash or text_hash."""
+    stmt = select(SyllabusCache).where(
+        and_(
+            SyllabusCache.file_hash == file_hash,
+            SyllabusCache.has_grading_breakdown.is_(True),
+        )
+    )
     found = (await session.execute(stmt)).scalar_one_or_none()
     if found is not None:
         return found
     if text_hash:
         stmt_txt = (
             select(SyllabusCache)
-            .where(SyllabusCache.text_hash == text_hash)
+            .where(
+                and_(
+                    SyllabusCache.text_hash == text_hash,
+                    SyllabusCache.has_grading_breakdown.is_(True),
+                )
+            )
             .order_by(SyllabusCache.id.desc())
             .limit(1)
         )

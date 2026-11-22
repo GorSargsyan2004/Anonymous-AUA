@@ -4033,7 +4033,7 @@ class _SyllabusAssignmentItemSchema(BaseModel):
 
 
 class _SyllabusGradingScaleEntrySchema(BaseModel):
-    letter: str = Field(description="Letter grade symbol such as A+, A, A-, B+, B, B-, C+, C, C-, D+, D, D-, F")
+    grade: str = Field(description="Letter grade symbol such as A+, A, A-, B+, B, B-, C+, C, C-, D+, D, D-, F")
     min_percent: float = Field(description="Minimum percentage cutoff for this letter grade (0 to 100)")
 
 
@@ -4043,7 +4043,7 @@ class _SyllabusExtractionSchema(BaseModel):
     )
     course_name: Optional[str] = Field(
         default=None,
-        description="Detected course code and title (e.g. 'CS 120 - Data Structures') or null",
+        description="Detected course code and title (e.g. 'CS 121 - Data Structures') or null",
     )
     assignments: List[_SyllabusAssignmentItemSchema] = Field(
         default_factory=list,
@@ -4059,11 +4059,25 @@ class _SyllabusExtractionSchema(BaseModel):
     )
 
 
+class SyllabusAIParseError(Exception):
+    """Raised when the upstream Gemini AI call fails due to API, timeout, quota, or malformed JSON."""
+
+    def __init__(self, message: str, status_code: int = 502) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+
+
+def extract_syllabus_upload_extension(filename: str) -> str:
+    """Return strictly the final file extension (e.g. '.pdf' for 'CS121 Syllabus.docx.pdf')."""
+    clean_name = (filename or "").strip()
+    return Path(clean_name).suffix.lower()
+
+
 def validate_syllabus_file(data: bytes, ext: str) -> Tuple[bool, str]:
-    """Validate syllabus file signature/magic bytes and return (is_valid, mime_type)."""
+    """Validate syllabus file signature/magic bytes using strictly the final extension and return (is_valid, mime_type)."""
     if not data:
         return False, ""
-    ext_low = ext.lower()
+    ext_low = Path(f"file{ext}").suffix.lower() if not ext.startswith(".") else ext.lower()
     if ext_low == ".pdf":
         if len(data) >= 5 and data.startswith(b"%PDF-"):
             return True, "application/pdf"
@@ -4105,7 +4119,9 @@ def validate_syllabus_file(data: bytes, ext: str) -> Tuple[bool, str]:
 
 
 def extract_syllabus_text_and_hash(data: bytes, ext: str) -> Tuple[str, Optional[str]]:
-    """Extract readable text from TXT, DOCX, or PDF bytes and compute normalized SHA-256 text_hash."""
+    """Extract readable text strictly from TXT or DOCX files and compute normalized SHA-256 text_hash.
+    For PDF and image files, return ('', None) so raw binary bytes are passed directly to Gemini.
+    """
     ext_low = ext.lower()
     extracted = ""
     if ext_low == ".txt":
@@ -4123,17 +4139,6 @@ def extract_syllabus_text_and_hash(data: bytes, ext: str) -> Tuple[str, Optional
                 if elem.text and elem.text.strip():
                     chunks.append(elem.text.strip())
             extracted = "\n".join(chunks)
-        except Exception:
-            extracted = ""
-    elif ext_low == ".pdf":
-        # Lightweight stream literal extraction for text-based PDFs without heavy third-party C libs
-        try:
-            ascii_Preview = data.decode("latin-1", errors="ignore")
-            literals = re.findall(r"\(([^()\\]{3,120})\)", ascii_Preview)
-            if literals:
-                candidate = " ".join(literals)
-                if len(re.findall(r"[A-Za-z]{3,}", candidate)) >= 8:
-                    extracted = candidate
         except Exception:
             extracted = ""
 
@@ -4212,10 +4217,33 @@ def _heuristic_parse_syllabus_text(text: str, filename: str) -> Dict[str, Any]:
     seen_names: Set[str] = set()
     grade_scale_letters = {"A+", "A", "A-", "B+", "B", "B-", "C+", "C", "C-", "D+", "D", "D-", "F"}
 
+    # Match lines like "Midterm I: 23%", "Midterm I 23%", or "Quizzes (4*3.75=15%)"
+    formula_pattern = re.compile(
+        r"^[\-\*•\d\.\)\s]*([A-Za-z][A-Za-z0-9\s\/&\-\,]{1,60}?)\s*\(\s*(\d+)\s*[\*x×]\s*(\d+(?:\.\d+)?)\s*=\s*(\d+(?:\.\d+)?)\s*%\s*\)(.*)$"
+    )
     pattern = re.compile(
-        r"^[\-\*•\d\.\)\s]*([A-Za-z][A-Za-z0-9\s\/&\-\(\),]{2,65}?)\s*[:\-–—\t]+\s*(\d{1,3}(?:\.\d{1,2})?)\s*%(.*)$"
+        r"^[\-\*•\d\.\)\s]*([A-Za-z][A-Za-z0-9\s\/&\-\(\),]{1,65}?)(?:\s*[:\-–—\t]+\s*|\s+)(\d{1,3}(?:\.\d{1,2})?)\s*%(.*)$"
     )
     for ln in lines:
+        m_form = formula_pattern.match(ln)
+        if m_form:
+            base_name = m_form.group(1).strip(" :-–—\t")
+            count_items = int(m_form.group(2))
+            each_weight = round(float(m_form.group(3)), 2)
+            total_weight = round(float(m_form.group(4)), 2)
+            tail = (m_form.group(5) or "").lower()
+            is_extra = "extra credit" in base_name.lower() or "bonus" in base_name.lower() or "extra credit" in tail
+            if 1 < count_items <= 12 and abs(count_items * each_weight - total_weight) < 0.1:
+                singular = base_name[:-2] if base_name.lower().endswith("zes") else (base_name[:-1] if base_name.lower().endswith("s") else base_name)
+                if singular.lower().endswith("quiz"):
+                    singular = "Quiz"
+                for idx_q in range(1, count_items + 1):
+                    item_nm = f"{singular} {idx_q}"
+                    if item_nm.lower() not in seen_names:
+                        seen_names.add(item_nm.lower())
+                        assignments.append({"name": item_nm, "weight": each_weight, "is_extra_credit": is_extra})
+                continue
+
         m = pattern.match(ln)
         if not m:
             continue
@@ -4246,13 +4274,13 @@ def _heuristic_parse_syllabus_text(text: str, filename: str) -> Dict[str, Any]:
 
     scale_found: Dict[str, float] = {}
     for m_sc in re.finditer(
-        r"\b(A\+|A\-|A|B\+|B\-|B|C\+|C\-|C|D\+|D\-|D)\s*[:=\-–—]\s*(\d{2}(?:\.\d)?)\s*%?",
+        r"\b(A\+|A\-|A|B\+|B\-|B|C\+|C\-|C|D\+|D\-|D)\s*(?:[:=\-–—]|\s+)\s*(\d{2}(?:\.\d)?)\s*(?:%\s*|\s*[\-–—]\s*\d{2,3})?",
         text,
     ):
         ltr = m_sc.group(1).upper()
         try:
             val = float(m_sc.group(2))
-            if 40.0 <= val <= 100.0:
+            if 40.0 <= val <= 100.0 and ltr not in scale_found:
                 scale_found[ltr] = val
         except ValueError:
             pass
@@ -4267,8 +4295,11 @@ def _heuristic_parse_syllabus_text(text: str, filename: str) -> Dict[str, Any]:
 
     has_breakdown = len(assignments) >= 1
     if not course_name and has_breakdown:
-        stem = Path(filename or "Course").stem.replace("_", " ").replace("-", " ").strip()
-        course_name = stem[:120] if stem else "Imported Course"
+        clean_stem = Path(filename or "Course").name
+        while Path(clean_stem).suffix.lower() in ALLOWED_SYLLABUS_EXTENSIONS:
+            clean_stem = Path(clean_stem).stem
+        clean_stem = clean_stem.replace("_", " ").replace("-", " ").strip()
+        course_name = clean_stem[:120] if clean_stem else "Imported Course"
 
     return {
         "has_grading_breakdown": has_breakdown,
@@ -4286,7 +4317,9 @@ async def parse_syllabus_with_gemini(
     extracted_text: str,
     filename: str,
 ) -> Dict[str, Any]:
-    """Extract course grading breakdown from a syllabus file using Google Gemini with strict JSON schema."""
+    """Extract course grading breakdown from a syllabus file using Google Gemini with strict JSON schema.
+    Raises SyllabusAIParseError on upstream Gemini API / timeout / truncation failures.
+    """
     api_key = (getattr(settings, "GEMINI_API_KEY", "") or "").strip()
     is_placeholder_key = (
         not api_key
@@ -4294,64 +4327,91 @@ async def parse_syllabus_with_gemini(
         or api_key in ("placeholder", "test", "none")
     )
 
+    ext_low = ext.lower()
     if genai is None or genai_types is None or is_placeholder_key:
-        return _heuristic_parse_syllabus_text(extracted_text, filename)
+        if ext_low in (".docx", ".txt") and extracted_text:
+            return _heuristic_parse_syllabus_text(extracted_text, filename)
+        raise SyllabusAIParseError(
+            "AI syllabus parser is not configured on this server.",
+            status_code=503,
+        )
 
     prompt = (
         "You are an academic syllabus parser for the American University of Armenia (AUA). "
-        "Analyze the provided syllabus document and extract ONLY the official course grading breakdown.\n\n"
+        "Carefully scan ALL pages of the provided syllabus document from beginning to end "
+        "(grading tables and assessment breakdowns often appear on pages 2, 3, 4, or 5) and extract the official course grading breakdown.\n\n"
         "Rules:\n"
         "1. Set has_grading_breakdown=true ONLY if explicit assessment components with percentage weights "
-        "(e.g., Quizzes 15%, Midterm 30%, Final Exam 35%, Homework 20%) are present.\n"
-        "2. If a category has multiple items totaling a weight (e.g., '4 Quizzes (20% total)'), keep it as a single "
-        "component or clearly split only if individual weights are explicit, ensuring non-extra-credit weights reflect the syllabus total (usually 100%).\n"
+        "(e.g., Midterm I 23%, Midterm II 27%, Quizzes (4*3.75=15%), Final Exam 35%) are present anywhere in the document.\n"
+        "2. When an item specifies an explicit count and per-item formula such as 'Quizzes (4*3.75=15%)' or '4 Quizzes (3.75% each)', "
+        "either expand it into individual items ('Quiz 1' 3.75%, 'Quiz 2' 3.75%, 'Quiz 3' 3.75%, 'Quiz 4' 3.75%) or keep it as 'Quizzes' 15.0% "
+        "so that all non-extra-credit weights sum accurately to the syllabus total (100%).\n"
         "3. Mark is_extra_credit=true ONLY for bonus/extra-credit items beyond the base 100%.\n"
-        "4. Extract grading_scale_entries ONLY if the syllabus specifies letter grade percentage cutoffs (e.g. A: 93, A-: 90).\n"
-        "5. Summarize any special grading policies (e.g. 'Lowest quiz dropped', 'Attendance required') in notes."
+        "4. If the syllabus contains a letter grade cutoff table (e.g., A+, A, A-, B+, B, B-, C+, C, C-, D+, D, D-, F with percentage ranges), "
+        "extract each letter grade and its minimum percentage cutoff into grading_scale_entries.\n"
+        "5. Summarize any special grading policies (e.g. 'Lowest quiz dropped', 'Make-up policy', 'Attendance policy') concisely in notes."
     )
 
     contents: List[Any] = []
-    ext_low = ext.lower()
     if ext_low in (".pdf", ".png", ".jpg", ".jpeg"):
         contents.append(genai_types.Part.from_bytes(data=raw_bytes, mime_type=mime_type))
-        if extracted_text:
-            contents.append(f"Filename: {filename}\nExtracted text preview:\n{extracted_text[:12000]}")
-        else:
-            contents.append(f"Filename: {filename}")
-        contents.append(prompt)
+        contents.append(f"Filename: {filename}\n\n{prompt}")
     else:
-        doc_text = extracted_text[:30000]
+        doc_text = extracted_text[:35000]
         contents.append(f"Filename: {filename}\n\nSyllabus Document Text:\n{doc_text}\n\n{prompt}")
 
     try:
         client = genai.Client(api_key=api_key)
-        config = genai_types.GenerateContentConfig(
-            temperature=0.0,
-            response_mime_type="application/json",
-            response_schema=_SyllabusExtractionSchema,
-            max_output_tokens=1200,
-        )
+        config_kwargs: Dict[str, Any] = {
+            "temperature": 0.0,
+            "response_mime_type": "application/json",
+            "response_schema": _SyllabusExtractionSchema,
+            "max_output_tokens": 4096,
+        }
+        if hasattr(genai_types, "ThinkingConfig"):
+            try:
+                config_kwargs["thinking_config"] = genai_types.ThinkingConfig(thinking_budget=0)
+            except Exception:
+                pass
+        config = genai_types.GenerateContentConfig(**config_kwargs)
+
         response = await asyncio.wait_for(
             client.aio.models.generate_content(
                 model="gemini-2.5-flash",
                 contents=contents,
                 config=config,
             ),
-            timeout=35.0,
+            timeout=45.0,
         )
-        raw_json_text = getattr(response, "text", "") or ""
-        parsed_obj = json.loads(raw_json_text) if raw_json_text else {}
+
+        parsed_obj: Optional[Dict[str, Any]] = None
+        parsed_attr = getattr(response, "parsed", None)
+        if isinstance(parsed_attr, BaseModel):
+            parsed_obj = parsed_attr.model_dump()
+        elif isinstance(parsed_attr, dict):
+            parsed_obj = parsed_attr
+        else:
+            raw_json_text = (getattr(response, "text", "") or "").strip()
+            if not raw_json_text:
+                raise ValueError("Gemini returned an empty response body.")
+            parsed_obj = json.loads(raw_json_text)
+    except asyncio.TimeoutError as exc:
+        logger.exception("Gemini syllabus parse timed out for filename=%s", filename)
+        raise SyllabusAIParseError(
+            "AI syllabus analysis timed out while reading this file. Please try again.",
+            status_code=503,
+        ) from exc
     except Exception as exc:
-        logger.warning("Gemini syllabus parse failed (%s); attempting text fallback.", exc)
-        if extracted_text:
-            return _heuristic_parse_syllabus_text(extracted_text, filename)
-        return {
-            "has_grading_breakdown": False,
-            "course_name": None,
-            "assignments": [],
-            "grading_scale": None,
-            "notes": None,
-        }
+        logger.exception("Gemini syllabus parse failed for filename=%s: %s", filename, exc)
+        # Only fall back to local text heuristic if we actually have full extracted text from DOCX/TXT
+        if ext_low in (".docx", ".txt") and extracted_text:
+            fallback = _heuristic_parse_syllabus_text(extracted_text, filename)
+            if fallback.get("has_grading_breakdown") and fallback.get("assignments"):
+                return fallback
+        raise SyllabusAIParseError(
+            "AI syllabus parser encountered an upstream service error while reading this file. Please try again.",
+            status_code=502,
+        ) from exc
 
     raw_assignments = parsed_obj.get("assignments") or []
     clean_assignments: List[Dict[str, Any]] = []
@@ -4378,8 +4438,11 @@ async def parse_syllabus_with_gemini(
     if isinstance(raw_scale_entries, list) and raw_scale_entries:
         candidate_scale: Dict[str, float] = {}
         for entry in raw_scale_entries:
-            if isinstance(entry, dict) and entry.get("letter") is not None and entry.get("min_percent") is not None:
-                ltr = str(entry["letter"]).strip().upper()
+            if not isinstance(entry, dict):
+                continue
+            raw_ltr = entry.get("grade") if entry.get("grade") is not None else entry.get("letter")
+            if raw_ltr is not None and entry.get("min_percent") is not None:
+                ltr = str(raw_ltr).strip().upper()
                 try:
                     candidate_scale[ltr] = round(float(entry["min_percent"]), 2)
                 except (TypeError, ValueError):
@@ -4391,6 +4454,12 @@ async def parse_syllabus_with_gemini(
 
     has_breakdown = bool(parsed_obj.get("has_grading_breakdown")) and len(clean_assignments) > 0
     course_name = (str(parsed_obj.get("course_name") or "").strip()[:160]) or None
+    if not course_name and has_breakdown:
+        clean_stem = Path(filename or "Course").name
+        while Path(clean_stem).suffix.lower() in ALLOWED_SYLLABUS_EXTENSIONS:
+            clean_stem = Path(clean_stem).stem
+        clean_stem = clean_stem.replace("_", " ").replace("-", " ").strip()
+        course_name = clean_stem[:160] if clean_stem else None
     notes = (str(parsed_obj.get("notes") or "").strip()[:1000]) or None
 
     return {
@@ -4418,7 +4487,7 @@ async def api_gpa_parse_syllabus(request: web.Request) -> web.Response:
         return web.json_response({"ok": False, "error": "No file field provided."}, status=400)
 
     filename = (field.filename or "syllabus.pdf").strip()
-    ext = Path(filename).suffix.lower()
+    ext = extract_syllabus_upload_extension(filename)
     if ext not in ALLOWED_SYLLABUS_EXTENSIONS:
         return web.json_response(
             {
@@ -4457,7 +4526,7 @@ async def api_gpa_parse_syllabus(request: web.Request) -> web.Response:
     file_hash = hashlib.sha256(raw_bytes).hexdigest()
     extracted_text, text_hash = extract_syllabus_text_and_hash(raw_bytes, ext)
 
-    # 1. Check SyllabusCache BEFORE consuming AI rate limits
+    # 1. Check SyllabusCache BEFORE consuming AI rate limits (only positive cache entries are returned)
     async with get_db_session() as session:
         cached = await get_syllabus_cache_by_hash(session, file_hash=file_hash, text_hash=text_hash)
         if cached is not None:
@@ -4466,25 +4535,16 @@ async def api_gpa_parse_syllabus(request: web.Request) -> web.Response:
             except Exception:
                 parsed_payload = {}
             assignments = parsed_payload.get("assignments") or []
-            if not cached.has_grading_breakdown or not assignments:
+            if cached.has_grading_breakdown and assignments:
                 return web.json_response(
                     {
-                        "ok": False,
+                        "ok": True,
                         "cached": True,
                         "syllabus_cache_id": cached.id,
-                        "error": "AI could not extract grading percentages from this file.",
+                        "syllabus": parsed_payload,
                     },
                     status=200,
                 )
-            return web.json_response(
-                {
-                    "ok": True,
-                    "cached": True,
-                    "syllabus_cache_id": cached.id,
-                    "syllabus": parsed_payload,
-                },
-                status=200,
-            )
 
     # 2. Cache Miss: Enforce 30s cooldown, 5/hour, and 15/day per user and per IP
     client_ip = get_client_ip(request)
@@ -4503,17 +4563,37 @@ async def api_gpa_parse_syllabus(request: web.Request) -> web.Response:
 
     rel_backup_path = f"syllabus_backups/{backup_filename}"
 
-    # 4. Call Gemini parser
-    parsed_result = await parse_syllabus_with_gemini(
-        raw_bytes=raw_bytes,
-        ext=ext,
-        mime_type=mime_type,
-        extracted_text=extracted_text,
-        filename=filename,
-    )
+    # 4. Call Gemini parser (never swallow API errors into negative cache)
+    try:
+        parsed_result = await parse_syllabus_with_gemini(
+            raw_bytes=raw_bytes,
+            ext=ext,
+            mime_type=mime_type,
+            extracted_text=extracted_text,
+            filename=filename,
+        )
+    except SyllabusAIParseError as exc:
+        return web.json_response(
+            {
+                "ok": False,
+                "error": str(exc),
+            },
+            status=exc.status_code,
+        )
 
     has_breakdown = bool(parsed_result.get("has_grading_breakdown")) and bool(parsed_result.get("assignments"))
     parsed_result["has_grading_breakdown"] = has_breakdown
+
+    if not has_breakdown:
+        return web.json_response(
+            {
+                "ok": False,
+                "cached": False,
+                "syllabus_cache_id": None,
+                "error": "AI could not extract grading percentages from this file.",
+            },
+            status=200,
+        )
 
     async with get_db_session() as session:
         cache_entry = await upsert_syllabus_cache(
@@ -4522,19 +4602,8 @@ async def api_gpa_parse_syllabus(request: web.Request) -> web.Response:
             text_hash=text_hash,
             original_filename=filename,
             backup_path=rel_backup_path,
-            has_grading_breakdown=has_breakdown,
+            has_grading_breakdown=True,
             parsed_data=parsed_result,
-        )
-
-    if not has_breakdown:
-        return web.json_response(
-            {
-                "ok": False,
-                "cached": False,
-                "syllabus_cache_id": cache_entry.id,
-                "error": "AI could not extract grading percentages from this file.",
-            },
-            status=200,
         )
 
     return web.json_response(

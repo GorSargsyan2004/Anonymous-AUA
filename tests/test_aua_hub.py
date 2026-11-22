@@ -3133,19 +3133,51 @@ class TestAuaHub(unittest.IsolatedAsyncioTestCase):
 
                 # 3. Syllabus parse cache miss -> calls Gemini once, stores SyllabusCache & backup;
                 #    second identical upload -> cache hit without calling Gemini or hitting 30s cooldown!
-                sample_pdf = b"%PDF-1.4\n% Sample CS120 Syllabus with Grading Breakdown\n(Midterm: 30%) (Final: 40%) (Homework: 30%)\n%%EOF"
+                #    Also verify double-extension filename 'CS121 Data Structures Syllabus.docx.pdf',
+                #    Quizzes (4*3.75=15%), and A+..F grading scale handling.
+                sample_pdf = b"%PDF-1.4\n% Sample CS121 Syllabus with Grading Breakdown\n%%EOF"
                 test_hash_Cleanup.append(hashlib.sha256(sample_pdf).hexdigest())
+
+                self.assertEqual(
+                    web_server.extract_syllabus_upload_extension("CS121 Data Structures Syllabus.docx.pdf"),
+                    ".pdf",
+                )
+                valid_sig, mime_sig = web_server.validate_syllabus_file(sample_pdf, ".pdf")
+                self.assertTrue(valid_sig)
+                self.assertEqual(mime_sig, "application/pdf")
+                ext_txt, ext_thash = web_server.extract_syllabus_text_and_hash(sample_pdf, ".pdf")
+                self.assertEqual(ext_txt, "")
+                self.assertIsNone(ext_thash)
+
+                # Verify heuristic parser also handles 'Quizzes (4*3.75=15%)', 'Midterm I 23%', and A+..F table
+                heur_res = web_server._heuristic_parse_syllabus_text(
+                    "CS121 - Data Structures\n"
+                    "Midterm I 23%\n"
+                    "Midterm II 27%\n"
+                    "Quizzes (4*3.75=15%)\n"
+                    "Final Exam 35%\n"
+                    "A+ 97-100\nA 93-96\nA- 90-92\nB+ 87-89\nB 83-86\nB- 80-82\nC+ 77-79\nC 73-76\nC- 70-72\nD+ 67-69\nD 63-66\nD- 60-62\nF 0-59\n",
+                    "CS121 Data Structures Syllabus.docx.pdf",
+                )
+                self.assertTrue(heur_res["has_grading_breakdown"])
+                self.assertAlmostEqual(sum(a["weight"] for a in heur_res["assignments"]), 100.0)
+                self.assertEqual(heur_res["grading_scale"]["A"], 93.0)
+                self.assertEqual(heur_res["grading_scale"]["A-"], 90.0)
 
                 mock_gemini_return = {
                     "has_grading_breakdown": True,
-                    "course_name": "CS 120 - Data Structures",
+                    "course_name": "CS 121 - Data Structures",
                     "assignments": [
-                        {"name": "Homework", "weight": 30.0, "is_extra_credit": False},
-                        {"name": "Midterm Exam", "weight": 30.0, "is_extra_credit": False},
-                        {"name": "Final Exam", "weight": 40.0, "is_extra_credit": False},
+                        {"name": "Midterm I", "weight": 23.0, "is_extra_credit": False},
+                        {"name": "Midterm II", "weight": 27.0, "is_extra_credit": False},
+                        {"name": "Quiz 1", "weight": 3.75, "is_extra_credit": False},
+                        {"name": "Quiz 2", "weight": 3.75, "is_extra_credit": False},
+                        {"name": "Quiz 3", "weight": 3.75, "is_extra_credit": False},
+                        {"name": "Quiz 4", "weight": 3.75, "is_extra_credit": False},
+                        {"name": "Final Exam", "weight": 35.0, "is_extra_credit": False},
                     ],
-                    "grading_scale": {"A": 93.0, "A-": 90.0, "B+": 87.0},
-                    "notes": "Lowest homework score is dropped.",
+                    "grading_scale": {"A+": 97.0, "A": 93.0, "A-": 90.0, "B+": 87.0, "B": 83.0, "B-": 80.0},
+                    "notes": "4 Quizzes at 3.75% each (15% total).",
                 }
 
                 with patch.object(
@@ -3154,20 +3186,34 @@ class TestAuaHub(unittest.IsolatedAsyncioTestCase):
                     new=AsyncMock(return_value=mock_gemini_return),
                 ) as mock_gem:
                     fd1 = FormData()
-                    fd1.add_field("file", sample_pdf, filename="cs120_syllabus.pdf", content_type="application/pdf")
+                    fd1.add_field(
+                        "file",
+                        sample_pdf,
+                        filename="CS121 Data Structures Syllabus.docx.pdf",
+                        content_type="application/pdf",
+                    )
                     r_parse1 = await client.post("/api/gpa/parse-syllabus", data=fd1, headers=h1)
                     self.assertEqual(r_parse1.status, 200)
                     body1 = await r_parse1.json()
                     self.assertTrue(body1["ok"])
                     self.assertFalse(body1["cached"])
-                    self.assertEqual(body1["syllabus"]["course_name"], "CS 120 - Data Structures")
-                    self.assertEqual(len(body1["syllabus"]["assignments"]), 3)
+                    self.assertEqual(body1["syllabus"]["course_name"], "CS 121 - Data Structures")
+                    self.assertEqual(len(body1["syllabus"]["assignments"]), 7)
+                    self.assertAlmostEqual(
+                        sum(a["weight"] for a in body1["syllabus"]["assignments"]),
+                        100.0,
+                    )
                     self.assertEqual(mock_gem.call_count, 1)
                     cache_id = body1["syllabus_cache_id"]
 
                     # Immediate repeat upload (within 30s cooldown!) succeeds via SyllabusCache hit without calling Gemini
                     fd2 = FormData()
-                    fd2.add_field("file", sample_pdf, filename="cs120_copy.pdf", content_type="application/pdf")
+                    fd2.add_field(
+                        "file",
+                        sample_pdf,
+                        filename="CS121 Data Structures Syllabus.docx.pdf",
+                        content_type="application/pdf",
+                    )
                     r_parse2 = await client.post("/api/gpa/parse-syllabus", data=fd2, headers=h1)
                     self.assertEqual(r_parse2.status, 200)
                     body2 = await r_parse2.json()
@@ -3185,6 +3231,7 @@ class TestAuaHub(unittest.IsolatedAsyncioTestCase):
                     self.assertEqual(r_parse3.status, 429)
 
                     # After resetting cooldown, test extraction failure response when has_grading_breakdown=False
+                    # and verify it is NOT cached in SyllabusCache (no negative cache poisoning!)
                     reset_rate_limits()
                     mock_gem.return_value = {
                         "has_grading_breakdown": False,
@@ -3199,7 +3246,22 @@ class TestAuaHub(unittest.IsolatedAsyncioTestCase):
                     self.assertEqual(r_parse4.status, 200)
                     body4 = await r_parse4.json()
                     self.assertFalse(body4["ok"])
+                    self.assertIsNone(body4["syllabus_cache_id"])
                     self.assertEqual(body4["error"], "AI could not extract grading percentages from this file.")
+
+                    # Verify upstream AI exception returns 502 and is NOT swallowed as "no grading percentages"
+                    reset_rate_limits()
+                    mock_gem.side_effect = web_server.SyllabusAIParseError(
+                        "AI syllabus parser encountered an upstream service error while reading this file. Please try again.",
+                        status_code=502,
+                    )
+                    fd5 = FormData()
+                    fd5.add_field("file", diff_pdf, filename="api_error.pdf", content_type="application/pdf")
+                    r_parse5 = await client.post("/api/gpa/parse-syllabus", data=fd5, headers=h1)
+                    self.assertEqual(r_parse5.status, 502)
+                    body5 = await r_parse5.json()
+                    self.assertFalse(body5["ok"])
+                    self.assertIn("upstream service error", body5["error"])
 
                 # 4. UserCourse CRUD & strict per-user isolation
                 r_create = await client.post(
