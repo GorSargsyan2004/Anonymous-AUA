@@ -11,6 +11,7 @@ from zoneinfo import ZoneInfo
 import hashlib
 import hmac
 import html
+import io
 import ipaddress
 import json
 import logging
@@ -23,10 +24,20 @@ from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 from html.parser import HTMLParser
 import urllib.parse
 from urllib.parse import urlparse
+import xml.etree.ElementTree as ET
+import zipfile
 
 from aiohttp import ClientSession, ClientTimeout, WSMsgType, web
+from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
+
+try:
+    from google import genai
+    from google.genai import types as genai_types
+except ImportError:
+    genai = None
+    genai_types = None
 
 from app.config import settings
 from app.database.crud import mark_inbox_message_replied, record_bot_activity_snapshot
@@ -37,37 +48,44 @@ from app.database.models import (
     HaveNeedPost,
     InboxMessage,
     SpamChatMessage,
+    SyllabusCache,
     TelegramGroup,
     User,
+    UserCourse,
     UserNotification,
     WebUser,
 )
 from app.database.session import get_db_session, init_db
 from app.database.web_crud import (
+    ANON_POST_REPORT_HIDE_THRESHOLD,
+    DEFAULT_GRADING_SCALE,
     authenticate_web_user,
+    check_web_email_cooldown,
     create_academic_feedback,
     create_have_need_post,
     create_spam_chat_message,
     create_telegram_group,
+    create_user_course,
     create_user_notification,
-    check_web_email_cooldown,
     create_web_password_reset_otp,
-    record_web_email_dispatch,
     create_web_registration_otp,
     delete_academic_feedback,
     delete_have_need_post,
     delete_or_anonymize_web_user,
     delete_spam_chat_message,
     delete_telegram_group,
+    delete_user_course,
     edit_spam_chat_message,
     find_reciprocal_have_need_matches,
     generate_web_sync_code,
     get_active_semester_label,
     get_feedback_catalog,
+    get_full_admin_stata_payload,
     get_message_reactions,
     get_reported_anon_post_ids,
     get_spam_chat_last_read_id,
     get_spam_chat_unread_count,
+    get_syllabus_cache_by_hash,
     get_synced_web_inbox,
     get_unread_notification_count,
     get_web_user_by_email,
@@ -77,23 +95,28 @@ from app.database.web_crud import (
     list_have_need_posts,
     list_spam_chat_messages_for_user,
     list_telegram_groups,
+    list_user_courses,
     list_user_notifications,
     mark_all_notifications_read,
     mark_notification_read,
     mark_spam_chat_read,
+    normalize_assignments_list,
+    normalize_grading_scale,
     record_web_analytics_event,
+    record_web_email_dispatch,
     report_anonymous_public_post,
     search_courses,
+    serialize_user_course,
     serialize_user_notification,
     toggle_spam_chat_reaction,
     update_have_need_post,
     update_telegram_group,
+    update_user_course,
     update_web_user_profile,
     upsert_or_link_google_web_user,
+    upsert_syllabus_cache,
     verify_web_otp_and_register,
     verify_web_password_reset_otp,
-    ANON_POST_REPORT_HIDE_THRESHOLD,
-    get_full_admin_stata_payload,
 )
 from app.services.ai_agent import (
     MAX_PROMPTS_PER_SESSION,
@@ -129,7 +152,12 @@ TEMPLATES_DIR = BASE_DIR / "templates"
 PROJECT_ROOT = BASE_DIR.parent.parent
 UPLOADS_DIR = PROJECT_ROOT / "uploads"
 UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
+SYLLABUS_BACKUPS_DIR = PROJECT_ROOT / "syllabus_backups"
+SYLLABUS_BACKUPS_DIR.mkdir(parents=True, exist_ok=True)
 ADMIN_STATA_EMAIL = "gor_sargsyan@edu.aua.am"
+
+ALLOWED_SYLLABUS_EXTENSIONS = {".pdf", ".docx", ".txt", ".png", ".jpg", ".jpeg"}
+MAX_SYLLABUS_UPLOAD_BYTES = 5 * 1024 * 1024  # 5 MB limit for syllabus uploads
 
 ALLOWED_IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
 ALLOWED_VIDEO_EXTENSIONS = {".mp4", ".webm", ".mov"}
@@ -3992,6 +4020,710 @@ async def api_ai_reset(request: web.Request) -> web.Response:
     )
 
     return web.json_response(payload)
+
+
+# ------------------------------------------------------------------------------
+# 8A-2. GPA Tracker & AI Syllabus Parser (/api/gpa/*)
+# ------------------------------------------------------------------------------
+
+class _SyllabusAssignmentItemSchema(BaseModel):
+    name: str = Field(description="Assignment or assessment component name (e.g. Midterm Exam, Homework, Final Project)")
+    weight: float = Field(description="Percentage weight toward final grade (e.g. 25.0 for 25%)")
+    is_extra_credit: bool = Field(default=False, description="True only if explicitly marked as bonus or extra credit")
+
+
+class _SyllabusGradingScaleEntrySchema(BaseModel):
+    letter: str = Field(description="Letter grade symbol such as A+, A, A-, B+, B, B-, C+, C, C-, D+, D, D-, F")
+    min_percent: float = Field(description="Minimum percentage cutoff for this letter grade (0 to 100)")
+
+
+class _SyllabusExtractionSchema(BaseModel):
+    has_grading_breakdown: bool = Field(
+        description="True only if the document contains an explicit course grading breakdown with percentage weights"
+    )
+    course_name: Optional[str] = Field(
+        default=None,
+        description="Detected course code and title (e.g. 'CS 120 - Data Structures') or null",
+    )
+    assignments: List[_SyllabusAssignmentItemSchema] = Field(
+        default_factory=list,
+        description="List of graded components and their percentage weights",
+    )
+    grading_scale_entries: Optional[List[_SyllabusGradingScaleEntrySchema]] = Field(
+        default=None,
+        description="Optional letter-grade to minimum-percentage cutoffs if specified in the syllabus",
+    )
+    notes: Optional[str] = Field(
+        default=None,
+        description="Concise grading policies such as drop-lowest quiz, attendance policy, or pass thresholds",
+    )
+
+
+def validate_syllabus_file(data: bytes, ext: str) -> Tuple[bool, str]:
+    """Validate syllabus file signature/magic bytes and return (is_valid, mime_type)."""
+    if not data:
+        return False, ""
+    ext_low = ext.lower()
+    if ext_low == ".pdf":
+        if len(data) >= 5 and data.startswith(b"%PDF-"):
+            return True, "application/pdf"
+        return False, ""
+    if ext_low == ".png":
+        if len(data) >= 8 and data.startswith(b"\x89PNG\r\n\x1a\n"):
+            return True, "image/png"
+        return False, ""
+    if ext_low in (".jpg", ".jpeg"):
+        if len(data) >= 3 and data.startswith(b"\xff\xd8\xff"):
+            return True, "image/jpeg"
+        return False, ""
+    if ext_low == ".docx":
+        if len(data) >= 4 and data.startswith(b"PK\x03\x04"):
+            try:
+                with zipfile.ZipFile(io.BytesIO(data)) as zf:
+                    if "word/document.xml" in zf.namelist():
+                        return (
+                            True,
+                            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                        )
+            except Exception:
+                return False, ""
+        return False, ""
+    if ext_low == ".txt":
+        # Reject binary files masquerading as .txt
+        if b"\x00" in data and not data.startswith((b"\xff\xfe", b"\xfe\xff")):
+            return False, ""
+        try:
+            data.decode("utf-8")
+            return True, "text/plain"
+        except UnicodeDecodeError:
+            try:
+                data.decode("utf-16")
+                return True, "text/plain"
+            except UnicodeDecodeError:
+                return False, ""
+    return False, ""
+
+
+def extract_syllabus_text_and_hash(data: bytes, ext: str) -> Tuple[str, Optional[str]]:
+    """Extract readable text from TXT, DOCX, or PDF bytes and compute normalized SHA-256 text_hash."""
+    ext_low = ext.lower()
+    extracted = ""
+    if ext_low == ".txt":
+        try:
+            extracted = data.decode("utf-8", errors="ignore")
+        except Exception:
+            extracted = ""
+    elif ext_low == ".docx":
+        try:
+            with zipfile.ZipFile(io.BytesIO(data)) as zf:
+                xml_bytes = zf.read("word/document.xml")
+            root = ET.fromstring(xml_bytes)
+            chunks: List[str] = []
+            for elem in root.iter():
+                if elem.text and elem.text.strip():
+                    chunks.append(elem.text.strip())
+            extracted = "\n".join(chunks)
+        except Exception:
+            extracted = ""
+    elif ext_low == ".pdf":
+        # Lightweight stream literal extraction for text-based PDFs without heavy third-party C libs
+        try:
+            ascii_Preview = data.decode("latin-1", errors="ignore")
+            literals = re.findall(r"\(([^()\\]{3,120})\)", ascii_Preview)
+            if literals:
+                candidate = " ".join(literals)
+                if len(re.findall(r"[A-Za-z]{3,}", candidate)) >= 8:
+                    extracted = candidate
+        except Exception:
+            extracted = ""
+
+    normalized = " ".join(extracted.lower().split())
+    text_hash: Optional[str] = None
+    if len(normalized) >= 24:
+        text_hash = hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+    return extracted.strip(), text_hash
+
+
+def _check_syllabus_parse_rate_limits(user_id: int, client_ip: str) -> Optional[web.Response]:
+    """Enforce 30-second cooldown, 5 parses/hour, and 15 parses/day per user and per IP on cache misses."""
+    now = time.monotonic()
+    uid_key = str(user_id)
+    ip_key = str(client_ip or "unknown")
+
+    checks = [
+        ("gpa_syllabus_cd_user", uid_key, 1, 30.0, "Please wait {retry}s before uploading another syllabus."),
+        ("gpa_syllabus_cd_ip", ip_key, 1, 30.0, "Please wait {retry}s before uploading another syllabus."),
+        ("gpa_syllabus_1h_user", uid_key, 5, 3600.0, "Hourly AI syllabus parse limit (5/hour) reached. Try again in {retry}s."),
+        ("gpa_syllabus_1h_ip", ip_key, 5, 3600.0, "Hourly AI syllabus parse limit (5/hour) reached. Try again in {retry}s."),
+        ("gpa_syllabus_24h_user", uid_key, 15, 86400.0, "Daily AI syllabus parse limit (15/day) reached. Try again in {retry}s."),
+        ("gpa_syllabus_24h_ip", ip_key, 15, 86400.0, "Daily AI syllabus parse limit (15/day) reached. Try again in {retry}s."),
+    ]
+
+    # First verify all windows without mutating so a blocked call doesn't burn outer quota
+    pruned_map: Dict[str, List[float]] = {}
+    for bucket, key, max_calls, window_sec, msg_tmpl in checks:
+        composite_key = f"{bucket}:{key}"
+        _RATE_BUCKET_WINDOWS[bucket] = max(_RATE_BUCKET_WINDOWS.get(bucket, 0.0), float(window_sec))
+        cutoff = now - window_sec
+        timestamps = [ts for ts in _RATE_BUCKETS.get(composite_key, []) if ts > cutoff]
+        pruned_map[composite_key] = timestamps
+        if len(timestamps) >= max_calls:
+            _RATE_BUCKETS[composite_key] = timestamps
+            retry_after = max(1, int(window_sec - (now - timestamps[0])) + 1)
+            return web.json_response(
+                {
+                    "ok": False,
+                    "error": msg_tmpl.format(retry=retry_after),
+                    "retry_after": retry_after,
+                },
+                status=429,
+                headers={"Retry-After": str(retry_after)},
+            )
+
+    for composite_key, timestamps in pruned_map.items():
+        timestamps.append(now)
+        _RATE_BUCKETS[composite_key] = timestamps
+    return None
+
+
+def _heuristic_parse_syllabus_text(text: str, filename: str) -> Dict[str, Any]:
+    """Fallback deterministic parser for structured plain-text / DOCX syllabus grading tables."""
+    if not text:
+        return {
+            "has_grading_breakdown": False,
+            "course_name": None,
+            "assignments": [],
+            "grading_scale": None,
+            "notes": None,
+        }
+
+    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+    course_name: Optional[str] = None
+    for ln in lines[:12]:
+        m_course = re.search(
+            r"\b([A-Z]{2,4}\s*[-_]?\s*\d{3}[A-Za-z]?(?:\s*[:\-–—]\s*[^\n\r]{3,70})?)",
+            ln,
+        )
+        if m_course:
+            course_name = m_course.group(1).strip()[:120]
+            break
+
+    assignments: List[Dict[str, Any]] = []
+    seen_names: Set[str] = set()
+    grade_scale_letters = {"A+", "A", "A-", "B+", "B", "B-", "C+", "C", "C-", "D+", "D", "D-", "F"}
+
+    pattern = re.compile(
+        r"^[\-\*•\d\.\)\s]*([A-Za-z][A-Za-z0-9\s\/&\-\(\),]{2,65}?)\s*[:\-–—\t]+\s*(\d{1,3}(?:\.\d{1,2})?)\s*%(.*)$"
+    )
+    for ln in lines:
+        m = pattern.match(ln)
+        if not m:
+            continue
+        raw_name = m.group(1).strip(" :-–—\t")
+        if raw_name.upper() in grade_scale_letters:
+            continue
+        if any(skip in raw_name.lower() for skip in ("total", "grade scale", "grading scale", "cutoff", "attendance threshold")):
+            continue
+        try:
+            weight = round(float(m.group(2)), 2)
+        except ValueError:
+            continue
+        if weight <= 0 or weight > 100:
+            continue
+        key_low = raw_name.lower()
+        if key_low in seen_names:
+            continue
+        seen_names.add(key_low)
+        tail = (m.group(3) or "").lower()
+        is_extra = "extra credit" in key_low or "bonus" in key_low or "extra credit" in tail or "bonus" in tail
+        assignments.append(
+            {
+                "name": raw_name[:120],
+                "weight": weight,
+                "is_extra_credit": is_extra,
+            }
+        )
+
+    scale_found: Dict[str, float] = {}
+    for m_sc in re.finditer(
+        r"\b(A\+|A\-|A|B\+|B\-|B|C\+|C\-|C|D\+|D\-|D)\s*[:=\-–—]\s*(\d{2}(?:\.\d)?)\s*%?",
+        text,
+    ):
+        ltr = m_sc.group(1).upper()
+        try:
+            val = float(m_sc.group(2))
+            if 40.0 <= val <= 100.0:
+                scale_found[ltr] = val
+        except ValueError:
+            pass
+
+    notes_list: List[str] = []
+    for ln in lines:
+        low = ln.lower()
+        if any(k in low for k in ("drop lowest", "lowest quiz", "extra credit", "late policy", "curve")):
+            if len(ln) <= 180:
+                notes_list.append(ln)
+    notes = " | ".join(notes_list[:3]) if notes_list else None
+
+    has_breakdown = len(assignments) >= 1
+    if not course_name and has_breakdown:
+        stem = Path(filename or "Course").stem.replace("_", " ").replace("-", " ").strip()
+        course_name = stem[:120] if stem else "Imported Course"
+
+    return {
+        "has_grading_breakdown": has_breakdown,
+        "course_name": course_name,
+        "assignments": assignments,
+        "grading_scale": normalize_grading_scale(scale_found) if len(scale_found) >= 3 else None,
+        "notes": notes,
+    }
+
+
+async def parse_syllabus_with_gemini(
+    raw_bytes: bytes,
+    ext: str,
+    mime_type: str,
+    extracted_text: str,
+    filename: str,
+) -> Dict[str, Any]:
+    """Extract course grading breakdown from a syllabus file using Google Gemini with strict JSON schema."""
+    api_key = (getattr(settings, "GEMINI_API_KEY", "") or "").strip()
+    is_placeholder_key = (
+        not api_key
+        or api_key.startswith("your_")
+        or api_key in ("placeholder", "test", "none")
+    )
+
+    if genai is None or genai_types is None or is_placeholder_key:
+        return _heuristic_parse_syllabus_text(extracted_text, filename)
+
+    prompt = (
+        "You are an academic syllabus parser for the American University of Armenia (AUA). "
+        "Analyze the provided syllabus document and extract ONLY the official course grading breakdown.\n\n"
+        "Rules:\n"
+        "1. Set has_grading_breakdown=true ONLY if explicit assessment components with percentage weights "
+        "(e.g., Quizzes 15%, Midterm 30%, Final Exam 35%, Homework 20%) are present.\n"
+        "2. If a category has multiple items totaling a weight (e.g., '4 Quizzes (20% total)'), keep it as a single "
+        "component or clearly split only if individual weights are explicit, ensuring non-extra-credit weights reflect the syllabus total (usually 100%).\n"
+        "3. Mark is_extra_credit=true ONLY for bonus/extra-credit items beyond the base 100%.\n"
+        "4. Extract grading_scale_entries ONLY if the syllabus specifies letter grade percentage cutoffs (e.g. A: 93, A-: 90).\n"
+        "5. Summarize any special grading policies (e.g. 'Lowest quiz dropped', 'Attendance required') in notes."
+    )
+
+    contents: List[Any] = []
+    ext_low = ext.lower()
+    if ext_low in (".pdf", ".png", ".jpg", ".jpeg"):
+        contents.append(genai_types.Part.from_bytes(data=raw_bytes, mime_type=mime_type))
+        if extracted_text:
+            contents.append(f"Filename: {filename}\nExtracted text preview:\n{extracted_text[:12000]}")
+        else:
+            contents.append(f"Filename: {filename}")
+        contents.append(prompt)
+    else:
+        doc_text = extracted_text[:30000]
+        contents.append(f"Filename: {filename}\n\nSyllabus Document Text:\n{doc_text}\n\n{prompt}")
+
+    try:
+        client = genai.Client(api_key=api_key)
+        config = genai_types.GenerateContentConfig(
+            temperature=0.0,
+            response_mime_type="application/json",
+            response_schema=_SyllabusExtractionSchema,
+            max_output_tokens=1200,
+        )
+        response = await asyncio.wait_for(
+            client.aio.models.generate_content(
+                model="gemini-2.5-flash",
+                contents=contents,
+                config=config,
+            ),
+            timeout=35.0,
+        )
+        raw_json_text = getattr(response, "text", "") or ""
+        parsed_obj = json.loads(raw_json_text) if raw_json_text else {}
+    except Exception as exc:
+        logger.warning("Gemini syllabus parse failed (%s); attempting text fallback.", exc)
+        if extracted_text:
+            return _heuristic_parse_syllabus_text(extracted_text, filename)
+        return {
+            "has_grading_breakdown": False,
+            "course_name": None,
+            "assignments": [],
+            "grading_scale": None,
+            "notes": None,
+        }
+
+    raw_assignments = parsed_obj.get("assignments") or []
+    clean_assignments: List[Dict[str, Any]] = []
+    for item in raw_assignments[:60]:
+        if not isinstance(item, dict):
+            continue
+        nm = str(item.get("name") or "").strip()[:140]
+        try:
+            wt = round(float(item.get("weight", 0.0) or 0.0), 2)
+        except (TypeError, ValueError):
+            wt = 0.0
+        if not nm or wt <= 0 or wt > 200:
+            continue
+        clean_assignments.append(
+            {
+                "name": nm,
+                "weight": wt,
+                "is_extra_credit": bool(item.get("is_extra_credit", False)),
+            }
+        )
+
+    scale_dict: Optional[Dict[str, float]] = None
+    raw_scale_entries = parsed_obj.get("grading_scale_entries")
+    if isinstance(raw_scale_entries, list) and raw_scale_entries:
+        candidate_scale: Dict[str, float] = {}
+        for entry in raw_scale_entries:
+            if isinstance(entry, dict) and entry.get("letter") is not None and entry.get("min_percent") is not None:
+                ltr = str(entry["letter"]).strip().upper()
+                try:
+                    candidate_scale[ltr] = round(float(entry["min_percent"]), 2)
+                except (TypeError, ValueError):
+                    pass
+        if candidate_scale:
+            scale_dict = normalize_grading_scale(candidate_scale)
+    elif isinstance(parsed_obj.get("grading_scale"), dict) and parsed_obj.get("grading_scale"):
+        scale_dict = normalize_grading_scale(parsed_obj["grading_scale"])
+
+    has_breakdown = bool(parsed_obj.get("has_grading_breakdown")) and len(clean_assignments) > 0
+    course_name = (str(parsed_obj.get("course_name") or "").strip()[:160]) or None
+    notes = (str(parsed_obj.get("notes") or "").strip()[:1000]) or None
+
+    return {
+        "has_grading_breakdown": has_breakdown,
+        "course_name": course_name,
+        "assignments": clean_assignments,
+        "grading_scale": scale_dict,
+        "notes": notes,
+    }
+
+
+@routes.post("/api/gpa/parse-syllabus")
+async def api_gpa_parse_syllabus(request: web.Request) -> web.Response:
+    user = await get_current_web_user(request)
+    if not user:
+        return web.json_response({"ok": False, "error": "Please sign in to use the Syllabus Parser."}, status=401)
+
+    try:
+        reader = await request.multipart()
+        field = await reader.next()
+    except Exception:
+        return web.json_response({"ok": False, "error": "Invalid multipart upload request."}, status=400)
+
+    if field is None or field.name != "file":
+        return web.json_response({"ok": False, "error": "No file field provided."}, status=400)
+
+    filename = (field.filename or "syllabus.pdf").strip()
+    ext = Path(filename).suffix.lower()
+    if ext not in ALLOWED_SYLLABUS_EXTENSIONS:
+        return web.json_response(
+            {
+                "ok": False,
+                "error": "Unsupported file type. Allowed formats: PDF, DOCX, TXT, PNG, JPG (up to 5 MB).",
+            },
+            status=400,
+        )
+
+    chunks = bytearray()
+    while True:
+        chunk = await field.read_chunk(65536)
+        if not chunk:
+            break
+        chunks.extend(chunk)
+        if len(chunks) > MAX_SYLLABUS_UPLOAD_BYTES:
+            return web.json_response(
+                {"ok": False, "error": "File size exceeds the 5 MB limit for syllabus uploads."},
+                status=413,
+            )
+
+    if not chunks:
+        return web.json_response({"ok": False, "error": "Uploaded syllabus file is empty."}, status=400)
+
+    raw_bytes = bytes(chunks)
+    is_valid, mime_type = validate_syllabus_file(raw_bytes, ext)
+    if not is_valid:
+        return web.json_response(
+            {
+                "ok": False,
+                "error": f"Uploaded file content does not match a valid {ext.upper()} signature.",
+            },
+            status=400,
+        )
+
+    file_hash = hashlib.sha256(raw_bytes).hexdigest()
+    extracted_text, text_hash = extract_syllabus_text_and_hash(raw_bytes, ext)
+
+    # 1. Check SyllabusCache BEFORE consuming AI rate limits
+    async with get_db_session() as session:
+        cached = await get_syllabus_cache_by_hash(session, file_hash=file_hash, text_hash=text_hash)
+        if cached is not None:
+            try:
+                parsed_payload = json.loads(cached.parsed_json or "{}")
+            except Exception:
+                parsed_payload = {}
+            assignments = parsed_payload.get("assignments") or []
+            if not cached.has_grading_breakdown or not assignments:
+                return web.json_response(
+                    {
+                        "ok": False,
+                        "cached": True,
+                        "syllabus_cache_id": cached.id,
+                        "error": "AI could not extract grading percentages from this file.",
+                    },
+                    status=200,
+                )
+            return web.json_response(
+                {
+                    "ok": True,
+                    "cached": True,
+                    "syllabus_cache_id": cached.id,
+                    "syllabus": parsed_payload,
+                },
+                status=200,
+            )
+
+    # 2. Cache Miss: Enforce 30s cooldown, 5/hour, and 15/day per user and per IP
+    client_ip = get_client_ip(request)
+    rate_err = _check_syllabus_parse_rate_limits(user.id, client_ip)
+    if rate_err is not None:
+        return rate_err
+
+    # 3. Save deduplicated backup copy keyed by file_hash
+    backup_filename = f"{file_hash}{ext}"
+    backup_file_path = SYLLABUS_BACKUPS_DIR / backup_filename
+    try:
+        if not backup_file_path.exists():
+            backup_file_path.write_bytes(raw_bytes)
+    except Exception as exc:
+        logger.warning("Failed to write syllabus backup %s: %s", backup_file_path, exc)
+
+    rel_backup_path = f"syllabus_backups/{backup_filename}"
+
+    # 4. Call Gemini parser
+    parsed_result = await parse_syllabus_with_gemini(
+        raw_bytes=raw_bytes,
+        ext=ext,
+        mime_type=mime_type,
+        extracted_text=extracted_text,
+        filename=filename,
+    )
+
+    has_breakdown = bool(parsed_result.get("has_grading_breakdown")) and bool(parsed_result.get("assignments"))
+    parsed_result["has_grading_breakdown"] = has_breakdown
+
+    async with get_db_session() as session:
+        cache_entry = await upsert_syllabus_cache(
+            session=session,
+            file_hash=file_hash,
+            text_hash=text_hash,
+            original_filename=filename,
+            backup_path=rel_backup_path,
+            has_grading_breakdown=has_breakdown,
+            parsed_data=parsed_result,
+        )
+
+    if not has_breakdown:
+        return web.json_response(
+            {
+                "ok": False,
+                "cached": False,
+                "syllabus_cache_id": cache_entry.id,
+                "error": "AI could not extract grading percentages from this file.",
+            },
+            status=200,
+        )
+
+    return web.json_response(
+        {
+            "ok": True,
+            "cached": False,
+            "syllabus_cache_id": cache_entry.id,
+            "syllabus": parsed_result,
+        },
+        status=200,
+    )
+
+
+@routes.get("/api/gpa/courses")
+async def api_get_gpa_courses(request: web.Request) -> web.Response:
+    user = await get_current_web_user(request)
+    if not user:
+        return web.json_response({"error": "Authentication required."}, status=401)
+
+    async with get_db_session() as session:
+        courses = await list_user_courses(session, user_id=user.id)
+        serialized = [serialize_user_course(c) for c in courses]
+
+    return web.json_response(
+        {
+            "ok": True,
+            "courses": serialized,
+            "default_grading_scale": DEFAULT_GRADING_SCALE,
+        }
+    )
+
+
+@routes.post("/api/gpa/courses")
+async def api_create_gpa_course(request: web.Request) -> web.Response:
+    user = await get_current_web_user(request)
+    if not user:
+        return web.json_response({"error": "Authentication required."}, status=401)
+
+    allowed, retry = check_rate_limit("gpa_course_write", str(user.id), max_calls=30, window_sec=60)
+    if not allowed:
+        return web.json_response({"error": f"Too many course updates. Please wait {retry}s."}, status=429)
+
+    try:
+        data = await request.json()
+        if not isinstance(data, dict):
+            return web.json_response({"error": "Invalid JSON body."}, status=400)
+    except Exception:
+        return web.json_response({"error": "Invalid JSON body."}, status=400)
+
+    course_name = str(data.get("course_name") or "").strip()
+    if not course_name:
+        return web.json_response({"error": "Course name is required."}, status=400)
+
+    try:
+        credits = float(data.get("credits", 3.0) if data.get("credits") is not None else 3.0)
+    except (TypeError, ValueError):
+        return web.json_response({"error": "Invalid credits value."}, status=400)
+    if credits < 0.0 or credits > 30.0:
+        return web.json_response({"error": "Credits must be between 0 and 30."}, status=400)
+
+    try:
+        target_percent = float(
+            data.get("target_percent", 90.0) if data.get("target_percent") is not None else 90.0
+        )
+    except (TypeError, ValueError):
+        return web.json_response({"error": "Invalid target percentage."}, status=400)
+    if target_percent < 0.0 or target_percent > 120.0:
+        return web.json_response({"error": "Target percentage must be between 0 and 120."}, status=400)
+
+    raw_cache_id = data.get("syllabus_cache_id")
+    syllabus_cache_id: Optional[int] = None
+    if raw_cache_id is not None and str(raw_cache_id).strip() != "":
+        try:
+            syllabus_cache_id = int(raw_cache_id)
+        except (TypeError, ValueError):
+            syllabus_cache_id = None
+
+    async with get_db_session() as session:
+        existing_courses = await list_user_courses(session, user_id=user.id)
+        if len(existing_courses) >= 50:
+            return web.json_response(
+                {"error": "Maximum of 50 tracked courses reached. Please delete an old course first."},
+                status=400,
+            )
+        if syllabus_cache_id is not None:
+            cache_exists = (
+                await session.execute(
+                    select(SyllabusCache.id).where(SyllabusCache.id == syllabus_cache_id)
+                )
+            ).scalar_one_or_none()
+            if cache_exists is None:
+                syllabus_cache_id = None
+
+        course = await create_user_course(
+            session=session,
+            user_id=user.id,
+            course_name=course_name,
+            credits=credits,
+            target_percent=target_percent,
+            grading_scale=data.get("grading_scale"),
+            assignments=data.get("assignments"),
+            notes=data.get("notes"),
+            syllabus_cache_id=syllabus_cache_id,
+        )
+
+    return web.json_response({"ok": True, "course": serialize_user_course(course)}, status=201)
+
+
+@routes.put("/api/gpa/courses/{course_id:\\d+}")
+async def api_update_gpa_course(request: web.Request) -> web.Response:
+    user = await get_current_web_user(request)
+    if not user:
+        return web.json_response({"error": "Authentication required."}, status=401)
+
+    allowed, retry = check_rate_limit("gpa_course_write", str(user.id), max_calls=60, window_sec=60)
+    if not allowed:
+        return web.json_response({"error": f"Too many course updates. Please wait {retry}s."}, status=429)
+
+    try:
+        course_id = int(request.match_info["course_id"])
+    except (KeyError, ValueError):
+        return web.json_response({"error": "Invalid course ID."}, status=400)
+
+    try:
+        data = await request.json()
+        if not isinstance(data, dict):
+            return web.json_response({"error": "Invalid JSON body."}, status=400)
+    except Exception:
+        return web.json_response({"error": "Invalid JSON body."}, status=400)
+
+    course_name = data.get("course_name")
+    if course_name is not None and not str(course_name).strip():
+        return web.json_response({"error": "Course name cannot be empty."}, status=400)
+
+    credits: Optional[float] = None
+    if "credits" in data and data.get("credits") is not None:
+        try:
+            credits = float(data["credits"])
+        except (TypeError, ValueError):
+            return web.json_response({"error": "Invalid credits value."}, status=400)
+        if credits < 0.0 or credits > 30.0:
+            return web.json_response({"error": "Credits must be between 0 and 30."}, status=400)
+
+    target_percent: Optional[float] = None
+    if "target_percent" in data and data.get("target_percent") is not None:
+        try:
+            target_percent = float(data["target_percent"])
+        except (TypeError, ValueError):
+            return web.json_response({"error": "Invalid target percentage."}, status=400)
+        if target_percent < 0.0 or target_percent > 120.0:
+            return web.json_response({"error": "Target percentage must be between 0 and 120."}, status=400)
+
+    async with get_db_session() as session:
+        updated = await update_user_course(
+            session=session,
+            course_id=course_id,
+            user_id=user.id,
+            course_name=str(course_name).strip() if course_name is not None else None,
+            credits=credits,
+            target_percent=target_percent,
+            grading_scale=data.get("grading_scale") if "grading_scale" in data else None,
+            assignments=data.get("assignments") if "assignments" in data else None,
+            notes=data.get("notes") if "notes" in data else None,
+        )
+
+    if not updated:
+        return web.json_response({"error": "Course not found."}, status=404)
+
+    return web.json_response({"ok": True, "course": serialize_user_course(updated)})
+
+
+@routes.delete("/api/gpa/courses/{course_id:\\d+}")
+async def api_delete_gpa_course(request: web.Request) -> web.Response:
+    user = await get_current_web_user(request)
+    if not user:
+        return web.json_response({"error": "Authentication required."}, status=401)
+
+    try:
+        course_id = int(request.match_info["course_id"])
+    except (KeyError, ValueError):
+        return web.json_response({"error": "Invalid course ID."}, status=400)
+
+    async with get_db_session() as session:
+        deleted = await delete_user_course(session, course_id=course_id, user_id=user.id)
+
+    if not deleted:
+        return web.json_response({"error": "Course not found."}, status=404)
+
+    return web.json_response({"ok": True, "deleted_id": course_id})
 
 
 # ------------------------------------------------------------------------------

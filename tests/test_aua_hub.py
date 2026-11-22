@@ -3054,8 +3054,8 @@ class TestAuaHub(unittest.IsolatedAsyncioTestCase):
             self.assertIn('id="notificationsPopover"', html_body)
             self.assertIn('id="browserNotifToggle"', html_body)
             self.assertIn('onchange="handleBrowserNotifToggleChange(this)"', html_body)
-            self.assertIn("/static/styles.css?v=20261116_1", html_body)
-            self.assertIn("/static/app.js?v=20261116_1", html_body)
+            self.assertIn("/static/styles.css?v=20261122_1", html_body)
+            self.assertIn("/static/app.js?v=20261122_1", html_body)
 
             r_js = await client.get("/static/app.js")
             self.assertEqual(r_js.status, 200)
@@ -3070,8 +3070,217 @@ class TestAuaHub(unittest.IsolatedAsyncioTestCase):
             sw_body = await r_sw.text()
             self.assertIn('addEventListener("notificationclick"', sw_body)
             self.assertIn("AUA_HUB_OPEN_NOTIFICATION", sw_body)
-            self.assertIn("/static/styles.css?v=20261116_1", sw_body)
-            self.assertIn("/static/app.js?v=20261116_1", sw_body)
+            self.assertIn("/static/styles.css?v=20261122_1", sw_body)
+            self.assertIn("/static/app.js?v=20261122_1", sw_body)
+
+    async def test_gpa_tracker_syllabus_cache_rate_limits_and_course_crud(self) -> None:
+        """Verify GPA Tracker navbar placement, SyllabusCache hit/miss deduplication, rate limits, and user-scoped Course CRUD."""
+        import hashlib
+        from aiohttp import FormData
+        from app.database.models import SyllabusCache, UserCourse
+        import app.web.server as web_server
+        from app.web.server import create_web_app
+
+        reset_rate_limits()
+        reset_global_email_rate_limit()
+
+        uid_1 = None
+        uid_2 = None
+        test_hash_Cleanup: List[str] = []
+
+        try:
+            async with get_db_session() as session:
+                await init_db()
+                u1 = WebUser(
+                    name="GPA Student One",
+                    email="gpa_student_one@edu.aua.am",
+                    password_hash="hash1",
+                )
+                u2 = WebUser(
+                    name="GPA Student Two",
+                    email="gpa_student_two@edu.aua.am",
+                    password_hash="hash2",
+                )
+                session.add_all([u1, u2])
+                await session.commit()
+                await session.refresh(u1)
+                await session.refresh(u2)
+                uid_1, uid_2 = u1.id, u2.id
+
+            tok_1 = create_jwt_token(uid_1, token_version=1)
+            tok_2 = create_jwt_token(uid_2, token_version=1)
+            h1 = {"Authorization": f"Bearer {tok_1}"}
+            h2 = {"Authorization": f"Bearer {tok_2}"}
+
+            app = create_web_app()
+            async with TestClient(TestServer(app)) as client:
+                # 1. Verify #gpa-tracker is in navbar directly between AI Assistant and Have-Need
+                r_index = await client.get("/")
+                self.assertEqual(r_index.status, 200)
+                index_html = await r_index.text()
+                pos_ai = index_html.find('data-view="ai-assistant"')
+                pos_gpa = index_html.find('data-view="gpa-tracker"')
+                pos_hn = index_html.find('data-view="have-need"')
+                self.assertTrue(0 < pos_ai < pos_gpa < pos_hn)
+                self.assertIn('id="view-gpa-tracker"', index_html)
+                self.assertIn('id="gpaCalculatorSubview"', index_html)
+                self.assertIn('id="gpaTrackerSubview"', index_html)
+
+                # 2. Unauthenticated requests to /api/gpa/* return 401
+                self.assertEqual((await client.get("/api/gpa/courses")).status, 401)
+                self.assertEqual((await client.post("/api/gpa/courses", json={"course_name": "CS 101"})).status, 401)
+                self.assertEqual((await client.post("/api/gpa/parse-syllabus")).status, 401)
+
+                # 3. Syllabus parse cache miss -> calls Gemini once, stores SyllabusCache & backup;
+                #    second identical upload -> cache hit without calling Gemini or hitting 30s cooldown!
+                sample_pdf = b"%PDF-1.4\n% Sample CS120 Syllabus with Grading Breakdown\n(Midterm: 30%) (Final: 40%) (Homework: 30%)\n%%EOF"
+                test_hash_Cleanup.append(hashlib.sha256(sample_pdf).hexdigest())
+
+                mock_gemini_return = {
+                    "has_grading_breakdown": True,
+                    "course_name": "CS 120 - Data Structures",
+                    "assignments": [
+                        {"name": "Homework", "weight": 30.0, "is_extra_credit": False},
+                        {"name": "Midterm Exam", "weight": 30.0, "is_extra_credit": False},
+                        {"name": "Final Exam", "weight": 40.0, "is_extra_credit": False},
+                    ],
+                    "grading_scale": {"A": 93.0, "A-": 90.0, "B+": 87.0},
+                    "notes": "Lowest homework score is dropped.",
+                }
+
+                with patch.object(
+                    web_server,
+                    "parse_syllabus_with_gemini",
+                    new=AsyncMock(return_value=mock_gemini_return),
+                ) as mock_gem:
+                    fd1 = FormData()
+                    fd1.add_field("file", sample_pdf, filename="cs120_syllabus.pdf", content_type="application/pdf")
+                    r_parse1 = await client.post("/api/gpa/parse-syllabus", data=fd1, headers=h1)
+                    self.assertEqual(r_parse1.status, 200)
+                    body1 = await r_parse1.json()
+                    self.assertTrue(body1["ok"])
+                    self.assertFalse(body1["cached"])
+                    self.assertEqual(body1["syllabus"]["course_name"], "CS 120 - Data Structures")
+                    self.assertEqual(len(body1["syllabus"]["assignments"]), 3)
+                    self.assertEqual(mock_gem.call_count, 1)
+                    cache_id = body1["syllabus_cache_id"]
+
+                    # Immediate repeat upload (within 30s cooldown!) succeeds via SyllabusCache hit without calling Gemini
+                    fd2 = FormData()
+                    fd2.add_field("file", sample_pdf, filename="cs120_copy.pdf", content_type="application/pdf")
+                    r_parse2 = await client.post("/api/gpa/parse-syllabus", data=fd2, headers=h1)
+                    self.assertEqual(r_parse2.status, 200)
+                    body2 = await r_parse2.json()
+                    self.assertTrue(body2["ok"])
+                    self.assertTrue(body2["cached"])
+                    self.assertEqual(body2["syllabus_cache_id"], cache_id)
+                    self.assertEqual(mock_gem.call_count, 1)
+
+                    # Different non-cached file within 30s triggers 429 cooldown
+                    diff_pdf = b"%PDF-1.4\n% Different uncached syllabus bytes 99999\n%%EOF"
+                    test_hash_Cleanup.append(hashlib.sha256(diff_pdf).hexdigest())
+                    fd3 = FormData()
+                    fd3.add_field("file", diff_pdf, filename="other.pdf", content_type="application/pdf")
+                    r_parse3 = await client.post("/api/gpa/parse-syllabus", data=fd3, headers=h1)
+                    self.assertEqual(r_parse3.status, 429)
+
+                    # After resetting cooldown, test extraction failure response when has_grading_breakdown=False
+                    reset_rate_limits()
+                    mock_gem.return_value = {
+                        "has_grading_breakdown": False,
+                        "course_name": None,
+                        "assignments": [],
+                        "grading_scale": None,
+                        "notes": None,
+                    }
+                    fd4 = FormData()
+                    fd4.add_field("file", diff_pdf, filename="no_grades.pdf", content_type="application/pdf")
+                    r_parse4 = await client.post("/api/gpa/parse-syllabus", data=fd4, headers=h1)
+                    self.assertEqual(r_parse4.status, 200)
+                    body4 = await r_parse4.json()
+                    self.assertFalse(body4["ok"])
+                    self.assertEqual(body4["error"], "AI could not extract grading percentages from this file.")
+
+                # 4. UserCourse CRUD & strict per-user isolation
+                r_create = await client.post(
+                    "/api/gpa/courses",
+                    headers=h1,
+                    json={
+                        "course_name": "CS 120 - Data Structures",
+                        "credits": 3.0,
+                        "target_percent": 93.0,
+                        "assignments": [
+                            {"id": "a1", "name": "Midterm", "weight": 40, "score": 88.5, "is_extra_credit": False},
+                            {"id": "a2", "name": "Final", "weight": 60, "score": None, "is_extra_credit": False},
+                        ],
+                        "notes": "Drop lowest quiz",
+                        "syllabus_cache_id": cache_id,
+                    },
+                )
+                self.assertEqual(r_create.status, 201)
+                created_course = (await r_create.json())["course"]
+                cid = created_course["id"]
+                self.assertEqual(created_course["course_name"], "CS 120 - Data Structures")
+                self.assertEqual(len(created_course["assignments"]), 2)
+                self.assertEqual(created_course["assignments"][0]["score"], 88.5)
+                self.assertIsNone(created_course["assignments"][1]["score"])
+
+                # User 2 cannot list, update, or delete User 1's course
+                r_list_u2 = await client.get("/api/gpa/courses", headers=h2)
+                self.assertEqual(r_list_u2.status, 200)
+                self.assertEqual((await r_list_u2.json())["courses"], [])
+
+                r_put_u2 = await client.put(
+                    f"/api/gpa/courses/{cid}",
+                    headers=h2,
+                    json={"course_name": "Hacked Name"},
+                )
+                self.assertEqual(r_put_u2.status, 404)
+
+                r_del_u2 = await client.delete(f"/api/gpa/courses/{cid}", headers=h2)
+                self.assertEqual(r_del_u2.status, 404)
+
+                # User 1 can update and delete their own course
+                r_put_u1 = await client.put(
+                    f"/api/gpa/courses/{cid}",
+                    headers=h1,
+                    json={
+                        "target_percent": 90.0,
+                        "assignments": [
+                            {"id": "a1", "name": "Midterm", "weight": 40, "score": 92.0, "is_extra_credit": False},
+                            {"id": "a2", "name": "Final", "weight": 60, "score": 89.0, "is_extra_credit": False},
+                        ],
+                    },
+                )
+                self.assertEqual(r_put_u1.status, 200)
+                updated_c = (await r_put_u1.json())["course"]
+                self.assertEqual(updated_c["target_percent"], 90.0)
+                self.assertEqual(updated_c["assignments"][1]["score"], 89.0)
+
+                r_del_u1 = await client.delete(f"/api/gpa/courses/{cid}", headers=h1)
+                self.assertEqual(r_del_u1.status, 200)
+                r_list_u1 = await client.get("/api/gpa/courses", headers=h1)
+                self.assertEqual((await r_list_u1.json())["courses"], [])
+        finally:
+            async with get_db_session() as session:
+                if uid_1 or uid_2:
+                    uids = [u for u in (uid_1, uid_2) if u is not None]
+                    await session.execute(delete(UserCourse).where(UserCourse.user_id.in_(uids)))
+                    await session.execute(delete(WebUser).where(WebUser.id.in_(uids)))
+                if test_hash_Cleanup:
+                    await session.execute(
+                        delete(SyllabusCache).where(SyllabusCache.file_hash.in_(test_hash_Cleanup))
+                    )
+                await session.commit()
+            for fh in test_hash_Cleanup:
+                bp = web_server.SYLLABUS_BACKUPS_DIR / f"{fh}.pdf"
+                if bp.exists():
+                    try:
+                        bp.unlink()
+                    except Exception:
+                        pass
+            reset_rate_limits()
+            reset_global_email_rate_limit()
 
 
 if __name__ == "__main__":

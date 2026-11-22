@@ -1060,5 +1060,62 @@ class AIUsageLog(Base):
     )
 
 
+class SyllabusCache(Base):
+    """Deduplicated cache of parsed syllabus files keyed by SHA-256 file_hash and optional text_hash."""
+    __tablename__ = "syllabus_caches"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    file_hash: Mapped[str] = mapped_column(String(64), unique=True, nullable=False, index=True)
+    text_hash: Mapped[Optional[str]] = mapped_column(String(64), nullable=True, index=True)
+    original_filename: Mapped[str] = mapped_column(String(256), nullable=False)
+    backup_path: Mapped[str] = mapped_column(String(512), nullable=False)
+    has_grading_breakdown: Mapped[bool] = mapped_column(
+        Boolean, default=False, nullable=False, server_default=text("false")
+    )
+    parsed_json: Mapped[str] = mapped_column(
+        Text, default="{}", nullable=False, server_default=text("'{}'")
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False, index=True
+    )
+
+
+class UserCourse(Base):
+    """Stores an authenticated student's tracked course, grading scale, and assignment weights/scores."""
+    __tablename__ = "user_courses"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("web_users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    course_name: Mapped[str] = mapped_column(String(180), nullable=False)
+    credits: Mapped[float] = mapped_column(
+        Float, default=3.0, nullable=False, server_default=text("3.0")
+    )
+    target_percent: Mapped[float] = mapped_column(
+        Float, default=90.0, nullable=False, server_default=text("90.0")
+    )
+    grading_scale_json: Mapped[str] = mapped_column(
+        Text, default="{}", nullable=False, server_default=text("'{}'")
+    )
+    assignments_json: Mapped[str] = mapped_column(
+        Text, default="[]", nullable=False, server_default=text("'[]'")
+    )
+    notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    syllabus_cache_id: Mapped[Optional[int]] = mapped_column(
+        Integer, ForeignKey("syllabus_caches.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False, index=True
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+    user = relationship("WebUser", foreign_keys=[user_id])
+    syllabus_cache = relationship("SyllabusCache", foreign_keys=[syllabus_cache_id])
+
+
+
 
 

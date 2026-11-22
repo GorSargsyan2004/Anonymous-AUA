@@ -6784,3 +6784,627 @@ a,
     filter: drop-shadow(0 0 6px rgba(56, 189, 248, 0.55));
   }
 }
+
+/* ==========================================================================
+   GPA Tracker (#view-gpa-tracker): Calculator & AI Course Tracker
+   ========================================================================== */
+
+.gpa-calc-layout {
+  display: grid;
+  grid-template-columns: 1.55fr 1fr;
+  gap: 20px;
+  align-items: start;
+}
+
+.gpa-calc-main-card,
+.gpa-hud-card,
+.gpa-nodes-bar-panel,
+.gpa-course-editor-card {
+  padding: 22px 24px;
+}
+
+.gpa-card-header-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+  flex-wrap: wrap;
+  margin-bottom: 18px;
+}
+
+.gpa-card-title {
+  font-size: 18px;
+  font-weight: 800;
+  color: var(--text-white);
+  margin: 0;
+}
+
+.gpa-card-sub {
+  font-size: 13px;
+  color: var(--text-secondary);
+  margin-top: 4px;
+  line-height: 1.45;
+}
+
+.gpa-calc-actions-wrap {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.gpa-calc-table-head {
+  display: grid;
+  grid-template-columns: minmax(140px, 2.2fr) 95px 135px 64px 38px;
+  gap: 10px;
+  padding: 0 6px 8px 6px;
+  font-size: 11.5px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+  border-bottom: 1px solid rgba(56, 189, 248, 0.14);
+}
+
+.gpa-calc-rows-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.gpa-calc-row {
+  display: grid;
+  grid-template-columns: minmax(140px, 2.2fr) 95px 135px 64px 38px;
+  gap: 10px;
+  align-items: center;
+  padding: 8px 6px;
+  border-radius: 12px;
+  background: rgba(15, 23, 42, 0.48);
+  border: 1px solid rgba(56, 189, 248, 0.14);
+  transition: border-color 0.18s ease, background 0.18s ease;
+}
+
+.gpa-calc-row:hover {
+  border-color: rgba(56, 189, 248, 0.34);
+  background: rgba(15, 25, 48, 0.72);
+}
+
+.gpa-calc-pts-pill {
+  font-family: "JetBrains Mono", monospace;
+  font-size: 12.5px;
+  font-weight: 700;
+  color: var(--neon-blue-bright);
+  text-align: center;
+  padding: 6px 8px;
+  border-radius: 8px;
+  background: rgba(14, 165, 233, 0.12);
+  border: 1px solid rgba(56, 189, 248, 0.25);
+}
+
+.gpa-row-del-btn {
+  width: 34px;
+  height: 34px;
+  border-radius: 9px;
+  border: 1px solid rgba(239, 68, 68, 0.28);
+  background: rgba(239, 68, 68, 0.1);
+  color: #fca5a5;
+  font-size: 16px;
+  font-weight: 700;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.16s ease;
+}
+
+.gpa-row-del-btn:hover {
+  background: rgba(239, 68, 68, 0.25);
+  border-color: #ef4444;
+  color: #ffffff;
+}
+
+.gpa-scale-footnote {
+  font-size: 11.5px;
+  color: var(--text-muted);
+  font-family: "JetBrains Mono", monospace;
+}
+
+.gpa-hud-kicker {
+  font-size: 11.5px;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--neon-blue-bright);
+  margin-bottom: 10px;
+}
+
+.gpa-hud-main-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.gpa-hud-big-number {
+  font-family: "JetBrains Mono", monospace;
+  font-size: 42px;
+  font-weight: 800;
+  line-height: 1.05;
+  color: var(--text-white);
+  text-shadow: 0 0 24px rgba(56, 189, 248, 0.45);
+}
+
+.gpa-hud-meta {
+  font-size: 12.5px;
+  color: var(--text-secondary);
+  margin-top: 6px;
+}
+
+.gpa-letter-orb {
+  width: 62px;
+  height: 62px;
+  border-radius: 18px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: "JetBrains Mono", monospace;
+  font-size: 24px;
+  font-weight: 800;
+  color: #ffffff;
+  background: linear-gradient(135deg, rgba(2, 132, 199, 0.45), rgba(56, 189, 248, 0.25));
+  border: 1.5px solid rgba(125, 211, 252, 0.65);
+  box-shadow: 0 0 22px rgba(56, 189, 248, 0.32);
+  flex-shrink: 0;
+}
+
+.gpa-hud-divider {
+  height: 1px;
+  background: rgba(56, 189, 248, 0.16);
+  margin: 18px 0;
+}
+
+.gpa-cumu-title {
+  font-size: 14px;
+  font-weight: 800;
+  color: var(--text-white);
+}
+
+.gpa-cumu-desc {
+  font-size: 12px;
+  color: var(--text-secondary);
+  margin: 4px 0 12px 0;
+}
+
+.gpa-cumu-inputs-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  margin-bottom: 14px;
+}
+
+.gpa-cumu-result-box {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 13px 15px;
+  border-radius: 14px;
+  background: linear-gradient(135deg, rgba(14, 165, 233, 0.16), rgba(15, 23, 42, 0.82));
+  border: 1px solid rgba(56, 189, 248, 0.38);
+}
+
+.gpa-cumu-res-label {
+  font-size: 13px;
+  font-weight: 800;
+  color: var(--text-white);
+}
+
+.gpa-cumu-res-sub {
+  font-size: 11.5px;
+  color: var(--text-secondary);
+  margin-top: 2px;
+}
+
+.gpa-cumu-res-number {
+  font-family: "JetBrains Mono", monospace;
+  font-size: 26px;
+  font-weight: 800;
+  color: #7dd3fc;
+}
+
+/* Course Tracker Workspace & Nodes */
+.gpa-tracker-workspace {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.gpa-nodes-bar-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.gpa-course-nodes-scroll {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  overflow-x: auto;
+  padding-bottom: 4px;
+  flex: 1;
+  min-width: 0;
+}
+
+.gpa-course-node-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 14px;
+  border-radius: 13px;
+  background: rgba(15, 23, 42, 0.72);
+  border: 1px solid rgba(56, 189, 248, 0.22);
+  color: var(--text-ice);
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: all 0.18s ease;
+}
+
+.gpa-course-node-btn:hover {
+  border-color: rgba(56, 189, 248, 0.52);
+  background: rgba(14, 165, 233, 0.14);
+}
+
+.gpa-course-node-btn.active {
+  background: linear-gradient(135deg, rgba(2, 132, 199, 0.34), rgba(15, 25, 50, 0.92));
+  border-color: var(--neon-blue-bright);
+  color: #ffffff;
+  box-shadow: 0 0 18px rgba(56, 189, 248, 0.28);
+}
+
+.gpa-node-status-pill {
+  font-family: "JetBrains Mono", monospace;
+  font-size: 11px;
+  font-weight: 800;
+  padding: 2px 8px;
+  border-radius: 999px;
+  letter-spacing: -0.01em;
+}
+
+.gpa-node-status-pill.status-secured {
+  background: rgba(16, 185, 129, 0.2);
+  border: 1px solid rgba(52, 211, 153, 0.55);
+  color: #6ee7b7;
+}
+
+.gpa-node-status-pill.status-on-track {
+  background: rgba(14, 165, 233, 0.2);
+  border: 1px solid rgba(56, 189, 248, 0.55);
+  color: #7dd3fc;
+}
+
+.gpa-node-status-pill.status-needs {
+  background: rgba(245, 158, 11, 0.2);
+  border: 1px solid rgba(251, 191, 36, 0.55);
+  color: #fde68a;
+}
+
+.gpa-node-status-pill.status-unreachable {
+  background: rgba(239, 68, 68, 0.2);
+  border: 1px solid rgba(248, 113, 113, 0.55);
+  color: #fca5a5;
+}
+
+/* Add Course & Syllabus Uploader Drawer */
+.gpa-new-course-drawer {
+  margin-top: 16px;
+  padding-top: 16px;
+  border-top: 1px solid rgba(56, 189, 248, 0.18);
+}
+
+.gpa-drawer-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+.gpa-drawer-title {
+  font-size: 16px;
+  font-weight: 800;
+  color: var(--text-white);
+  margin: 0;
+}
+
+.gpa-drawer-sub {
+  font-size: 12.5px;
+  color: var(--text-secondary);
+  margin-top: 3px;
+}
+
+.gpa-drawer-grid {
+  display: grid;
+  grid-template-columns: 1.35fr 1fr;
+  gap: 16px;
+  align-items: stretch;
+}
+
+.gpa-syllabus-dropzone {
+  border: 1.5px dashed rgba(56, 189, 248, 0.45);
+  border-radius: 16px;
+  padding: 26px 20px;
+  text-align: center;
+  background: rgba(10, 18, 36, 0.65);
+  cursor: pointer;
+  transition: all 0.2s ease;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  min-height: 175px;
+}
+
+.gpa-syllabus-dropzone:hover,
+.gpa-syllabus-dropzone.drag-over {
+  border-color: var(--neon-blue-bright);
+  background: rgba(14, 165, 233, 0.12);
+  box-shadow: 0 0 24px rgba(56, 189, 248, 0.2);
+}
+
+.gpa-dropzone-icon {
+  font-size: 30px;
+  margin-bottom: 8px;
+}
+
+.gpa-dropzone-title {
+  font-size: 14.5px;
+  font-weight: 800;
+  color: var(--text-white);
+}
+
+.gpa-dropzone-sub {
+  font-size: 12px;
+  color: var(--text-secondary);
+  margin-top: 6px;
+  line-height: 1.45;
+}
+
+.gpa-syllabus-error-banner {
+  margin-top: 12px;
+  padding: 12px 14px;
+  border-radius: 12px;
+  background: rgba(239, 68, 68, 0.14);
+  border: 1px solid rgba(248, 113, 113, 0.45);
+  color: #fecaca;
+  font-size: 12.5px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.gpa-manual-create-box {
+  padding: 16px 18px;
+  border-radius: 16px;
+  background: rgba(15, 23, 42, 0.62);
+  border: 1px solid rgba(56, 189, 248, 0.2);
+}
+
+.gpa-manual-box-title {
+  font-size: 14px;
+  font-weight: 800;
+  color: var(--text-white);
+}
+
+.gpa-manual-box-sub {
+  font-size: 12px;
+  color: var(--text-secondary);
+  margin: 4px 0 12px 0;
+}
+
+/* Course Editor Header, Optimal Banner, Weight Alert & Assignment Table */
+.gpa-course-top-grid {
+  display: grid;
+  grid-template-columns: minmax(180px, 2fr) 95px 130px 115px auto;
+  gap: 12px;
+  align-items: end;
+  margin-bottom: 16px;
+}
+
+.gpa-course-meta-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.gpa-save-status-pill {
+  font-family: "JetBrains Mono", monospace;
+  font-size: 11.5px;
+  font-weight: 700;
+  padding: 5px 10px;
+  border-radius: 999px;
+  background: rgba(15, 23, 42, 0.75);
+  border: 1px solid rgba(148, 163, 184, 0.3);
+  color: var(--text-secondary);
+}
+
+.gpa-save-status-pill.saved {
+  color: #6ee7b7;
+  border-color: rgba(52, 211, 153, 0.45);
+  background: rgba(16, 185, 129, 0.12);
+}
+
+.gpa-save-status-pill.saving {
+  color: #7dd3fc;
+  border-color: rgba(56, 189, 248, 0.45);
+}
+
+.gpa-weight-warning-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 12px 16px;
+  margin-bottom: 16px;
+  border-radius: 13px;
+  background: rgba(245, 158, 11, 0.14);
+  border: 1px solid rgba(251, 191, 36, 0.48);
+  color: #fde68a;
+  font-size: 13px;
+}
+
+.gpa-optimal-banner {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(120px, 1fr));
+  gap: 12px;
+  margin-bottom: 18px;
+}
+
+.gpa-metric-tile {
+  padding: 13px 15px;
+  border-radius: 14px;
+  background: rgba(15, 23, 42, 0.65);
+  border: 1px solid rgba(56, 189, 248, 0.22);
+}
+
+.gpa-metric-label {
+  font-size: 11.5px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+}
+
+.gpa-metric-val {
+  font-family: "JetBrains Mono", monospace;
+  font-size: 21px;
+  font-weight: 800;
+  color: var(--text-white);
+  margin-top: 4px;
+}
+
+.gpa-metric-sub {
+  font-size: 11.5px;
+  color: var(--text-secondary);
+  margin-top: 3px;
+}
+
+.gpa-assignments-head {
+  display: grid;
+  grid-template-columns: minmax(150px, 2.2fr) 110px minmax(150px, 1.5fr) 90px 40px;
+  gap: 10px;
+  padding: 0 8px 8px 8px;
+  font-size: 11.5px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+  border-bottom: 1px solid rgba(56, 189, 248, 0.15);
+}
+
+.gpa-assignment-row {
+  display: grid;
+  grid-template-columns: minmax(150px, 2.2fr) 110px minmax(150px, 1.5fr) 90px 40px;
+  gap: 10px;
+  align-items: center;
+  padding: 9px 8px;
+  border-radius: 12px;
+  background: rgba(15, 23, 42, 0.46);
+  border: 1px solid rgba(56, 189, 248, 0.14);
+  margin-top: 8px;
+}
+
+.gpa-score-cell-wrap {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.gpa-score-cell-wrap .input-glass {
+  padding-right: 98px;
+}
+
+.gpa-req-hint-badge {
+  position: absolute;
+  right: 8px;
+  pointer-events: none;
+  font-family: "JetBrains Mono", monospace;
+  font-size: 11px;
+  font-weight: 800;
+  padding: 3px 8px;
+  border-radius: 999px;
+  white-space: nowrap;
+}
+
+.gpa-req-hint-badge.hint-need {
+  background: rgba(14, 165, 233, 0.2);
+  border: 1px solid rgba(56, 189, 248, 0.5);
+  color: #7dd3fc;
+}
+
+.gpa-req-hint-badge.hint-secured {
+  background: rgba(16, 185, 129, 0.2);
+  border: 1px solid rgba(52, 211, 153, 0.5);
+  color: #6ee7b7;
+}
+
+.gpa-req-hint-badge.hint-unreachable {
+  background: rgba(239, 68, 68, 0.22);
+  border: 1px solid rgba(248, 113, 113, 0.55);
+  color: #fca5a5;
+}
+
+.gpa-scale-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(95px, 1fr));
+  gap: 8px;
+  margin-top: 10px;
+  padding: 12px;
+  border-radius: 12px;
+  background: rgba(10, 16, 32, 0.72);
+  border: 1px solid rgba(56, 189, 248, 0.18);
+}
+
+@media (max-width: 920px) {
+  .gpa-calc-layout,
+  .gpa-drawer-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .gpa-course-top-grid {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .gpa-optimal-banner {
+    grid-template-columns: 1fr 1fr;
+  }
+}
+
+@media (max-width: 640px) {
+  .gpa-calc-table-head,
+  .gpa-assignments-head {
+    display: none;
+  }
+
+  .gpa-calc-row {
+    grid-template-columns: 1fr 80px 105px;
+    gap: 8px;
+  }
+
+  .gpa-assignment-row {
+    grid-template-columns: 1fr 88px;
+    gap: 8px;
+  }
+
+  .gpa-score-cell-wrap {
+    grid-column: 1 / -1;
+  }
+}

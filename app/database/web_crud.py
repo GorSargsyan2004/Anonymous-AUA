@@ -38,8 +38,10 @@ from app.database.models import (
     SpamChatMessage,
     SpamChatReaction,
     SpamChatRead,
+    SyllabusCache,
     TelegramGroup,
     User,
+    UserCourse,
     UserNotification,
     WebAnalyticsEvent,
     WebEmailCooldown,
@@ -580,12 +582,15 @@ async def delete_or_anonymize_web_user(
         delete(UserNotification).where(UserNotification.recipient_id == web_user_id)
     )
 
-    # 6. Clean up Chat Reactions & Unread Pointers
+    # 6. Clean up Chat Reactions, Unread Pointers, and GPA Tracker Courses
     await session.execute(
         delete(SpamChatReaction).where(SpamChatReaction.web_user_id == web_user_id)
     )
     await session.execute(
         delete(SpamChatRead).where(SpamChatRead.web_user_id == web_user_id)
+    )
+    await session.execute(
+        delete(UserCourse).where(UserCourse.user_id == web_user_id)
     )
 
     await session.commit()
@@ -2643,4 +2648,293 @@ async def find_reciprocal_have_need_matches(
     )
     result = await session.execute(stmt)
     return list(result.scalars().all())
+
+
+# ==============================================================================
+# 12. GPA Tracker: SyllabusCache & UserCourse CRUD
+# ==============================================================================
+
+DEFAULT_GRADING_SCALE: Dict[str, float] = {
+    "A+": 97.0,
+    "A": 93.0,
+    "A-": 90.0,
+    "B+": 87.0,
+    "B": 83.0,
+    "B-": 80.0,
+    "C+": 77.0,
+    "C": 73.0,
+    "C-": 70.0,
+    "D+": 67.0,
+    "D": 63.0,
+    "D-": 60.0,
+    "F": 0.0,
+}
+
+ALLOWED_LETTER_GRADES = (
+    "A+", "A", "A-", "B+", "B", "B-", "C+", "C", "C-", "D+", "D", "D-", "F"
+)
+
+
+def normalize_grading_scale(raw_scale: Any) -> Dict[str, float]:
+    """Validate and normalize a letter-to-min-percentage grading scale dictionary."""
+    scale = dict(DEFAULT_GRADING_SCALE)
+    if isinstance(raw_scale, str):
+        try:
+            raw_scale = json.loads(raw_scale)
+        except Exception:
+            raw_scale = None
+    if isinstance(raw_scale, dict):
+        for k, v in raw_scale.items():
+            key_up = str(k).strip().upper()
+            if key_up in ALLOWED_LETTER_GRADES and v is not None:
+                try:
+                    val = round(float(v), 2)
+                    if 0.0 <= val <= 105.0:
+                        scale[key_up] = val
+                except (TypeError, ValueError):
+                    pass
+    scale["F"] = 0.0
+    return scale
+
+
+def normalize_assignments_list(raw_assignments: Any) -> List[Dict[str, Any]]:
+    """Validate and normalize a course's assignments list."""
+    if isinstance(raw_assignments, str):
+        try:
+            raw_assignments = json.loads(raw_assignments)
+        except Exception:
+            raw_assignments = []
+    if not isinstance(raw_assignments, list):
+        return []
+
+    normalized: List[Dict[str, Any]] = []
+    seen_ids = set()
+    for idx, item in enumerate(raw_assignments[:80], start=1):
+        if not isinstance(item, dict):
+            continue
+        raw_id = str(item.get("id") or "").strip()[:48]
+        if not raw_id or raw_id in seen_ids:
+            raw_id = f"a_{idx}_{secrets.token_hex(3)}"
+        seen_ids.add(raw_id)
+
+        name = str(item.get("name") or "").strip()[:160]
+        if not name:
+            name = f"Assignment {idx}"
+
+        try:
+            weight = round(float(item.get("weight", 0.0) or 0.0), 2)
+        except (TypeError, ValueError):
+            weight = 0.0
+        weight = max(0.0, min(200.0, weight))
+
+        raw_score = item.get("score")
+        score: Optional[float] = None
+        if raw_score is not None and str(raw_score).strip() != "":
+            try:
+                parsed_score = round(float(raw_score), 2)
+                if 0.0 <= parsed_score <= 200.0:
+                    score = parsed_score
+            except (TypeError, ValueError):
+                score = None
+
+        is_extra = bool(item.get("is_extra_credit", False))
+        normalized.append(
+            {
+                "id": raw_id,
+                "name": name,
+                "weight": weight,
+                "score": score,
+                "is_extra_credit": is_extra,
+            }
+        )
+    return normalized
+
+
+def serialize_user_course(c: UserCourse) -> Dict[str, Any]:
+    """Serialize a UserCourse ORM instance to a JSON-friendly dictionary."""
+    return {
+        "id": c.id,
+        "user_id": c.user_id,
+        "course_name": c.course_name,
+        "credits": float(c.credits if c.credits is not None else 3.0),
+        "target_percent": float(c.target_percent if c.target_percent is not None else 90.0),
+        "grading_scale": normalize_grading_scale(c.grading_scale_json),
+        "assignments": normalize_assignments_list(c.assignments_json),
+        "notes": c.notes or "",
+        "syllabus_cache_id": c.syllabus_cache_id,
+        "created_at": c.created_at.isoformat() if c.created_at else None,
+        "updated_at": c.updated_at.isoformat() if c.updated_at else None,
+    }
+
+
+async def get_syllabus_cache_by_hash(
+    session: AsyncSession,
+    file_hash: str,
+    text_hash: Optional[str] = None,
+) -> Optional[SyllabusCache]:
+    """Look up a cached syllabus parse result by exact file_hash or normalized text_hash."""
+    stmt = select(SyllabusCache).where(SyllabusCache.file_hash == file_hash)
+    found = (await session.execute(stmt)).scalar_one_or_none()
+    if found is not None:
+        return found
+    if text_hash:
+        stmt_txt = (
+            select(SyllabusCache)
+            .where(SyllabusCache.text_hash == text_hash)
+            .order_by(SyllabusCache.id.desc())
+            .limit(1)
+        )
+        return (await session.execute(stmt_txt)).scalar_one_or_none()
+    return None
+
+
+async def upsert_syllabus_cache(
+    session: AsyncSession,
+    file_hash: str,
+    text_hash: Optional[str],
+    original_filename: str,
+    backup_path: str,
+    has_grading_breakdown: bool,
+    parsed_data: Dict[str, Any],
+) -> SyllabusCache:
+    """Insert or update a SyllabusCache entry keyed by file_hash."""
+    existing = (
+        await session.execute(
+            select(SyllabusCache).where(SyllabusCache.file_hash == file_hash)
+        )
+    ).scalar_one_or_none()
+    payload_str = json.dumps(parsed_data, ensure_ascii=False)
+    if existing:
+        existing.text_hash = text_hash or existing.text_hash
+        existing.original_filename = original_filename[:256]
+        existing.backup_path = backup_path[:512]
+        existing.has_grading_breakdown = bool(has_grading_breakdown)
+        existing.parsed_json = payload_str
+        await session.commit()
+        await session.refresh(existing)
+        return existing
+
+    entry = SyllabusCache(
+        file_hash=file_hash,
+        text_hash=text_hash,
+        original_filename=original_filename[:256],
+        backup_path=backup_path[:512],
+        has_grading_breakdown=bool(has_grading_breakdown),
+        parsed_json=payload_str,
+    )
+    session.add(entry)
+    await session.commit()
+    await session.refresh(entry)
+    return entry
+
+
+async def list_user_courses(
+    session: AsyncSession,
+    user_id: int,
+) -> List[UserCourse]:
+    """List all saved courses belonging strictly to user_id."""
+    stmt = (
+        select(UserCourse)
+        .where(UserCourse.user_id == user_id)
+        .order_by(UserCourse.created_at.asc(), UserCourse.id.asc())
+    )
+    result = await session.execute(stmt)
+    return list(result.scalars().all())
+
+
+async def create_user_course(
+    session: AsyncSession,
+    user_id: int,
+    course_name: str,
+    credits: float = 3.0,
+    target_percent: float = 90.0,
+    grading_scale: Any = None,
+    assignments: Any = None,
+    notes: Optional[str] = None,
+    syllabus_cache_id: Optional[int] = None,
+) -> UserCourse:
+    """Create a new tracked course node for user_id."""
+    clean_name = (course_name or "Untitled Course").strip()[:180] or "Untitled Course"
+    clean_credits = round(max(0.0, min(30.0, float(credits if credits is not None else 3.0))), 2)
+    clean_target = round(max(0.0, min(120.0, float(target_percent if target_percent is not None else 90.0))), 2)
+    norm_scale = normalize_grading_scale(grading_scale)
+    norm_assignments = normalize_assignments_list(assignments)
+    clean_notes = (notes or "").strip()[:2000] or None
+
+    course = UserCourse(
+        user_id=user_id,
+        course_name=clean_name,
+        credits=clean_credits,
+        target_percent=clean_target,
+        grading_scale_json=json.dumps(norm_scale, ensure_ascii=False),
+        assignments_json=json.dumps(norm_assignments, ensure_ascii=False),
+        notes=clean_notes,
+        syllabus_cache_id=syllabus_cache_id,
+    )
+    session.add(course)
+    await session.commit()
+    await session.refresh(course)
+    return course
+
+
+async def update_user_course(
+    session: AsyncSession,
+    course_id: int,
+    user_id: int,
+    course_name: Optional[str] = None,
+    credits: Optional[float] = None,
+    target_percent: Optional[float] = None,
+    grading_scale: Any = None,
+    assignments: Any = None,
+    notes: Optional[str] = None,
+    syllabus_cache_id: Optional[int] = None,
+) -> Optional[UserCourse]:
+    """Update a user's course node, strictly verifying ownership by user_id."""
+    stmt = select(UserCourse).where(
+        and_(UserCourse.id == course_id, UserCourse.user_id == user_id)
+    )
+    course = (await session.execute(stmt)).scalar_one_or_none()
+    if not course:
+        return None
+
+    if course_name is not None:
+        clean_name = str(course_name).strip()[:180]
+        if clean_name:
+            course.course_name = clean_name
+    if credits is not None:
+        course.credits = round(max(0.0, min(30.0, float(credits))), 2)
+    if target_percent is not None:
+        course.target_percent = round(max(0.0, min(120.0, float(target_percent))), 2)
+    if grading_scale is not None:
+        course.grading_scale_json = json.dumps(
+            normalize_grading_scale(grading_scale), ensure_ascii=False
+        )
+    if assignments is not None:
+        course.assignments_json = json.dumps(
+            normalize_assignments_list(assignments), ensure_ascii=False
+        )
+    if notes is not None:
+        course.notes = str(notes).strip()[:2000] or None
+    if syllabus_cache_id is not None:
+        course.syllabus_cache_id = int(syllabus_cache_id) if syllabus_cache_id else None
+
+    course.updated_at = datetime.now(timezone.utc)
+    await session.commit()
+    await session.refresh(course)
+    return course
+
+
+async def delete_user_course(
+    session: AsyncSession,
+    course_id: int,
+    user_id: int,
+) -> bool:
+    """Delete a user's course node, strictly scoped to user_id."""
+    stmt = delete(UserCourse).where(
+        and_(UserCourse.id == course_id, UserCourse.user_id == user_id)
+    )
+    result = await session.execute(stmt)
+    await session.commit()
+    return bool(result.rowcount and result.rowcount > 0)
+
 

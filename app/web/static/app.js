@@ -665,6 +665,7 @@ function renderUserProfileModalContent(u, isSelf, haveNeedPosts = [], telegramGr
 const VALID_VIEWS = [
   "home",
   "ai-assistant",
+  "gpa-tracker",
   "have-need",
   "feedbacks",
   "anonymous",
@@ -755,6 +756,9 @@ function switchView(viewName, pushHistory = true) {
   } else if (viewName === "ai-assistant") {
     trackWebEvent("click_ai_assistant");
     initAiAssistantView();
+  } else if (viewName === "gpa-tracker") {
+    trackWebEvent("click_gpa_tracker");
+    initGpaTrackerView();
   } else if (viewName === "have-need") {
     trackWebEvent("click_have_need");
     loadHaveNeedPosts();
@@ -1191,6 +1195,10 @@ function _applySignedInAuthSession(res) {
   loadNotifications();
   renderAiAssistantAuthState();
   syncAiSessionWithServer(true);
+  if (typeof renderGpaTrackerAuthState === "function") {
+    renderGpaTrackerAuthState();
+    loadGpaUserCourses(true);
+  }
   renderNavbarAuth();
   closeAuthModal();
   refreshActiveViewData();
@@ -1354,6 +1362,9 @@ async function logoutUser() {
   localStorage.removeItem("aua_hub_token");
   try { localStorage.removeItem("aua_hub_user"); } catch { }
   clearLocalAiSessionState();
+  if (typeof clearLocalGpaTrackerState === "function") {
+    clearLocalGpaTrackerState();
+  }
   updateUnreadBadge(0);
   renderNavbarAuth();
   renderAiAssistantAuthState();
@@ -8374,3 +8385,1292 @@ document.addEventListener("visibilitychange", () => {
     }
   }
 });
+
+/* ==========================================================================
+   GPA Tracker (#gpa-tracker): AUA 4.0 GPA Calculator & AI Course Tracker
+   ========================================================================== */
+
+const AUA_GPA_4_SCALE = {
+  "A+": 4.0,
+  "A": 4.0,
+  "A-": 3.7,
+  "B+": 3.3,
+  "B": 3.0,
+  "B-": 2.7,
+  "C+": 2.3,
+  "C": 2.0,
+  "C-": 1.7,
+  "D+": 1.3,
+  "D": 1.0,
+  "D-": 0.7,
+  "F": 0.0,
+  "P": null,
+  "NP": null,
+  "W": null,
+};
+
+const AUA_DEFAULT_PERCENT_SCALE = {
+  "A+": 97,
+  "A": 93,
+  "A-": 90,
+  "B+": 87,
+  "B": 83,
+  "B-": 80,
+  "C+": 77,
+  "C": 73,
+  "C-": 70,
+  "D+": 67,
+  "D": 63,
+  "D-": 60,
+  "F": 0,
+};
+
+const ORDERED_PERCENT_LETTERS = [
+  "A+", "A", "A-", "B+", "B", "B-", "C+", "C", "C-", "D+", "D", "D-", "F"
+];
+
+const GPA_CALC_STORAGE_KEY = "aua_hub_gpa_calc_v1";
+
+state.gpaSubtab = "calculator";
+state.gpaCalcRows = [];
+state.gpaPriorGpa = "";
+state.gpaPriorCredits = "";
+state.gpaCourses = [];
+state.gpaActiveCourseId = null;
+state.gpaCoursesLoaded = false;
+state.gpaSaveTimers = {};
+state.gpaSaveStatus = "saved";
+state.gpaScaleEditorOpen = false;
+state.gpaLastFailedFilename = "";
+
+function initGpaTrackerView() {
+  initGpaCalculatorState();
+  renderGpaCalculatorRows();
+  recalculateGpaHud();
+  renderGpaTrackerAuthState();
+  if (state.user && !state.gpaCoursesLoaded) {
+    loadGpaUserCourses(false);
+  } else if (state.user) {
+    renderGpaCourseNodesBar();
+    renderActiveGpaCourseEditor();
+  }
+}
+
+function switchGpaSubtab(subtab) {
+  state.gpaSubtab = subtab === "tracker" ? "tracker" : "calculator";
+  const btnCalc = document.getElementById("gpaSubtabCalc");
+  const btnTrack = document.getElementById("gpaSubtabTracker");
+  const viewCalc = document.getElementById("gpaCalculatorSubview");
+  const viewTrack = document.getElementById("gpaTrackerSubview");
+
+  if (btnCalc) btnCalc.classList.toggle("active", state.gpaSubtab === "calculator");
+  if (btnTrack) btnTrack.classList.toggle("active", state.gpaSubtab === "tracker");
+  if (viewCalc) viewCalc.style.display = state.gpaSubtab === "calculator" ? "block" : "none";
+  if (viewTrack) viewTrack.style.display = state.gpaSubtab === "tracker" ? "block" : "none";
+
+  if (state.gpaSubtab === "tracker") {
+    renderGpaTrackerAuthState();
+    if (state.user && !state.gpaCoursesLoaded) {
+      loadGpaUserCourses(false);
+    }
+  }
+}
+
+function renderGpaTrackerAuthState() {
+  const gate = document.getElementById("gpaTrackerGuestGate");
+  const ws = document.getElementById("gpaTrackerAuthWorkspace");
+  if (!gate || !ws) return;
+  if (state.user) {
+    gate.classList.add("hidden");
+    ws.classList.remove("hidden");
+  } else {
+    gate.classList.remove("hidden");
+    ws.classList.add("hidden");
+  }
+}
+
+function clearLocalGpaTrackerState() {
+  Object.values(state.gpaSaveTimers || {}).forEach((t) => clearTimeout(t));
+  state.gpaSaveTimers = {};
+  state.gpaCourses = [];
+  state.gpaActiveCourseId = null;
+  state.gpaCoursesLoaded = false;
+  renderGpaTrackerAuthState();
+}
+
+/* --------------------------------------------------------------------------
+   Sub-View 1: Free AUA 4.0 GPA Calculator
+   -------------------------------------------------------------------------- */
+
+function _defaultGpaCalcRows() {
+  return [
+    { id: "r1", name: "Course 1", credits: 3, grade: "A" },
+    { id: "r2", name: "Course 2", credits: 3, grade: "A-" },
+    { id: "r3", name: "Course 3", credits: 3, grade: "B+" },
+    { id: "r4", name: "Course 4", credits: 3, grade: "A" },
+  ];
+}
+
+function initGpaCalculatorState() {
+  if (state.gpaCalcRows && state.gpaCalcRows.length > 0) return;
+  try {
+    const raw = localStorage.getItem(GPA_CALC_STORAGE_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (parsed && Array.isArray(parsed.rows) && parsed.rows.length > 0) {
+        state.gpaCalcRows = parsed.rows;
+        state.gpaPriorGpa = parsed.priorGpa || "";
+        state.gpaPriorCredits = parsed.priorCredits || "";
+      }
+    }
+  } catch { }
+  if (!state.gpaCalcRows || state.gpaCalcRows.length === 0) {
+    state.gpaCalcRows = _defaultGpaCalcRows();
+  }
+  const pGpaEl = document.getElementById("gpaPriorGpaInput");
+  const pCrEl = document.getElementById("gpaPriorCreditsInput");
+  if (pGpaEl && state.gpaPriorGpa !== "") pGpaEl.value = state.gpaPriorGpa;
+  if (pCrEl && state.gpaPriorCredits !== "") pCrEl.value = state.gpaPriorCredits;
+}
+
+function saveGpaCalculatorDraft() {
+  try {
+    localStorage.setItem(
+      GPA_CALC_STORAGE_KEY,
+      JSON.stringify({
+        rows: state.gpaCalcRows,
+        priorGpa: state.gpaPriorGpa,
+        priorCredits: state.gpaPriorCredits,
+      })
+    );
+  } catch { }
+}
+
+function renderGpaCalculatorRows() {
+  const container = document.getElementById("gpaCalcRowsContainer");
+  if (!container) return;
+
+  const gradeKeys = Object.keys(AUA_GPA_4_SCALE);
+  container.innerHTML = state.gpaCalcRows
+    .map((row, idx) => {
+      const pts = AUA_GPA_4_SCALE[row.grade];
+      const ptsLabel = pts === null || pts === undefined ? "—" : pts.toFixed(1);
+      const optionsHtml = gradeKeys
+        .map((g) => {
+          const gPts = AUA_GPA_4_SCALE[g];
+          const suffix = gPts === null ? " (No GPA)" : ` (${gPts.toFixed(1)})`;
+          const sel = g === row.grade ? " selected" : "";
+          return `<option value="${g}"${sel}>${g}${suffix}</option>`;
+        })
+        .join("");
+
+      return `
+        <div class="gpa-calc-row" data-row-id="${escapeHtml(row.id)}">
+          <input type="text" class="input-glass" value="${escapeHtml(row.name)}"
+            placeholder="Course ${idx + 1}" maxlength="120"
+            oninput="updateGpaCalculatorRow('${escapeHtml(row.id)}', 'name', this.value)" />
+          <input type="number" class="input-glass" value="${Number(row.credits ?? 3)}"
+            min="0" max="30" step="0.5"
+            oninput="updateGpaCalculatorRow('${escapeHtml(row.id)}', 'credits', this.value)" />
+          <select class="input-glass"
+            onchange="updateGpaCalculatorRow('${escapeHtml(row.id)}', 'grade', this.value)">
+            ${optionsHtml}
+          </select>
+          <span class="gpa-calc-pts-pill" id="gpaCalcPts_${escapeHtml(row.id)}">${ptsLabel}</span>
+          <button type="button" class="gpa-row-del-btn" title="Remove course row"
+            onclick="removeGpaCalculatorRow('${escapeHtml(row.id)}')">&times;</button>
+        </div>
+      `;
+    })
+    .join("");
+}
+
+function updateGpaCalculatorRow(rowId, field, value) {
+  const row = (state.gpaCalcRows || []).find((r) => r.id === rowId);
+  if (!row) return;
+  if (field === "name") {
+    row.name = String(value || "").slice(0, 120);
+  } else if (field === "credits") {
+    const c = parseFloat(value);
+    row.credits = Number.isFinite(c) ? Math.max(0, Math.min(30, c)) : 0;
+  } else if (field === "grade") {
+    if (value in AUA_GPA_4_SCALE) {
+      row.grade = value;
+      const pill = document.getElementById(`gpaCalcPts_${rowId}`);
+      if (pill) {
+        const pts = AUA_GPA_4_SCALE[value];
+        pill.textContent = pts === null ? "—" : pts.toFixed(1);
+      }
+    }
+  }
+  saveGpaCalculatorDraft();
+  recalculateGpaHud();
+}
+
+function addGpaCalculatorRow() {
+  const nextNum = (state.gpaCalcRows?.length || 0) + 1;
+  state.gpaCalcRows.push({
+    id: `r_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+    name: `Course ${nextNum}`,
+    credits: 3,
+    grade: "A",
+  });
+  saveGpaCalculatorDraft();
+  renderGpaCalculatorRows();
+  recalculateGpaHud();
+}
+
+function removeGpaCalculatorRow(rowId) {
+  if (!state.gpaCalcRows || state.gpaCalcRows.length <= 1) {
+    state.gpaCalcRows = [{ id: "r1", name: "Course 1", credits: 3, grade: "A" }];
+  } else {
+    state.gpaCalcRows = state.gpaCalcRows.filter((r) => r.id !== rowId);
+  }
+  saveGpaCalculatorDraft();
+  renderGpaCalculatorRows();
+  recalculateGpaHud();
+}
+
+function resetGpaCalculatorRows() {
+  state.gpaCalcRows = _defaultGpaCalcRows();
+  state.gpaPriorGpa = "";
+  state.gpaPriorCredits = "";
+  const pGpaEl = document.getElementById("gpaPriorGpaInput");
+  const pCrEl = document.getElementById("gpaPriorCreditsInput");
+  if (pGpaEl) pGpaEl.value = "";
+  if (pCrEl) pCrEl.value = "";
+  saveGpaCalculatorDraft();
+  renderGpaCalculatorRows();
+  recalculateGpaHud();
+  showToast("GPA Calculator reset to defaults.");
+}
+
+function handlePriorGpaInputsChange() {
+  const pGpaEl = document.getElementById("gpaPriorGpaInput");
+  const pCrEl = document.getElementById("gpaPriorCreditsInput");
+  state.gpaPriorGpa = pGpaEl ? pGpaEl.value : "";
+  state.gpaPriorCredits = pCrEl ? pCrEl.value : "";
+  saveGpaCalculatorDraft();
+  recalculateGpaHud();
+}
+
+function _gpaValueToLetter(gpa) {
+  if (gpa >= 3.85) return "A";
+  if (gpa >= 3.5) return "A-";
+  if (gpa >= 3.15) return "B+";
+  if (gpa >= 2.85) return "B";
+  if (gpa >= 2.5) return "B-";
+  if (gpa >= 2.15) return "C+";
+  if (gpa >= 1.85) return "C";
+  if (gpa >= 1.5) return "C-";
+  if (gpa >= 1.15) return "D+";
+  if (gpa >= 0.85) return "D";
+  if (gpa >= 0.5) return "D-";
+  return "F";
+}
+
+function recalculateGpaHud() {
+  let gpaCredits = 0;
+  let totalCredits = 0;
+  let qualityPoints = 0;
+
+  for (const row of state.gpaCalcRows || []) {
+    const cr = Number(row.credits);
+    if (!Number.isFinite(cr) || cr <= 0) continue;
+    if (row.grade !== "W" && row.grade !== "NP") {
+      totalCredits += cr;
+    }
+    const pts = AUA_GPA_4_SCALE[row.grade];
+    if (pts !== null && pts !== undefined) {
+      gpaCredits += cr;
+      qualityPoints += cr * pts;
+    }
+  }
+
+  const semGpa = gpaCredits > 0 ? qualityPoints / gpaCredits : 0.0;
+  const semValEl = document.getElementById("gpaSemesterValue");
+  const semMetaEl = document.getElementById("gpaSemesterMeta");
+  const semOrbEl = document.getElementById("gpaSemesterLetterPill");
+
+  if (semValEl) semValEl.textContent = semGpa.toFixed(2);
+  if (semMetaEl) {
+    semMetaEl.textContent = `${gpaCredits.toFixed(1).replace(/\.0$/, "")} GPA Credits • ${totalCredits
+      .toFixed(1)
+      .replace(/\.0$/, "")} Earned Credits`;
+  }
+  if (semOrbEl) {
+    semOrbEl.textContent = gpaCredits > 0 ? _gpaValueToLetter(semGpa) : "—";
+  }
+
+  const priorGpaNum = parseFloat(state.gpaPriorGpa);
+  const priorCrNum = parseFloat(state.gpaPriorCredits);
+  const hasValidPrior =
+    Number.isFinite(priorGpaNum) &&
+    priorGpaNum >= 0 &&
+    priorGpaNum <= 4.0 &&
+    Number.isFinite(priorCrNum) &&
+    priorCrNum > 0;
+
+  const cumValEl = document.getElementById("gpaCumulativeValue");
+  const cumMetaEl = document.getElementById("gpaCumulativeMeta");
+  if (hasValidPrior) {
+    const combinedCr = priorCrNum + gpaCredits;
+    const combinedPts = priorGpaNum * priorCrNum + qualityPoints;
+    const cumGpa = combinedCr > 0 ? combinedPts / combinedCr : 0.0;
+    if (cumValEl) cumValEl.textContent = cumGpa.toFixed(2);
+    if (cumMetaEl) {
+      cumMetaEl.textContent = `Combined across ${combinedCr.toFixed(1).replace(/\.0$/, "")} total GPA credits`;
+    }
+  } else {
+    if (cumValEl) cumValEl.textContent = semGpa.toFixed(2);
+    if (cumMetaEl) {
+      cumMetaEl.textContent = `Enter prior GPA & credits above (currently showing Semester GPA)`;
+    }
+  }
+}
+
+function percentToLetterFromScale(percent, scaleObj) {
+  const scale = Object.assign({}, AUA_DEFAULT_PERCENT_SCALE, scaleObj || {});
+  const val = Number(percent);
+  if (!Number.isFinite(val)) return "A-";
+  for (const ltr of ORDERED_PERCENT_LETTERS) {
+    const minCut = Number(scale[ltr] ?? AUA_DEFAULT_PERCENT_SCALE[ltr] ?? 0);
+    if (val >= minCut - 1e-6) {
+      return ltr;
+    }
+  }
+  return "F";
+}
+
+async function importGpaCalcFromTrackedCourses() {
+  if (!state.user) {
+    openAuthModal("login");
+    showToast("Sign in to import your saved courses from Course Tracker.", true);
+    return;
+  }
+  if (!state.gpaCoursesLoaded) {
+    await loadGpaUserCourses(false);
+  }
+  if (!state.gpaCourses || state.gpaCourses.length === 0) {
+    showToast("You have no saved courses in Course Tracker yet. Add one in the Course Tracker tab!", true);
+    switchGpaSubtab("tracker");
+    return;
+  }
+
+  state.gpaCalcRows = state.gpaCourses.map((c, idx) => {
+    const metrics = computeCourseOptimalMetrics(c);
+    // Use current normalized standing if at least one assignment has a score, otherwise target_percent
+    const refPercent = metrics.gradedWeight > 0 ? metrics.currentStandingPercent : Number(c.target_percent ?? 90);
+    const letter = percentToLetterFromScale(refPercent, c.grading_scale);
+    return {
+      id: `imp_${c.id}_${idx}`,
+      name: c.course_name || `Course ${idx + 1}`,
+      credits: Number(c.credits ?? 3),
+      grade: letter in AUA_GPA_4_SCALE ? letter : "A-",
+    };
+  });
+
+  saveGpaCalculatorDraft();
+  renderGpaCalculatorRows();
+  recalculateGpaHud();
+  showToast(`Imported ${state.gpaCalcRows.length} course(s) from your Course Tracker!`);
+}
+
+/* --------------------------------------------------------------------------
+   Sub-View 2: Authenticated Course Tracker & Optimal Grade Engine
+   -------------------------------------------------------------------------- */
+
+function computeCourseOptimalMetrics(course) {
+  const assignments = Array.isArray(course?.assignments) ? course.assignments : [];
+  const target = Number(course?.target_percent ?? 90);
+
+  let baseWeightSum = 0;
+  let earned = 0;
+  let gradedWeight = 0;
+  let remainingWeight = 0;
+
+  for (const a of assignments) {
+    const w = Math.max(0, Number(a.weight || 0));
+    const isExtra = Boolean(a.is_extra_credit);
+    if (!isExtra) {
+      baseWeightSum += w;
+    }
+
+    const hasScore = a.score !== null && a.score !== undefined && String(a.score).trim() !== "";
+    if (hasScore) {
+      const s = Number(a.score);
+      if (Number.isFinite(s)) {
+        earned += (s * w) / 100.0;
+        if (!isExtra) {
+          gradedWeight += w;
+        }
+      }
+    } else if (!isExtra) {
+      remainingWeight += w;
+    }
+  }
+
+  const weightMismatch = Math.abs(baseWeightSum - 100.0) > 0.05;
+  const maxPossible = earned + remainingWeight;
+  const currentStandingPercent = gradedWeight > 0 ? (earned / gradedWeight) * 100.0 : earned;
+
+  let requiredUniformScore = null;
+  let statusKey = "on-track";
+  let statusBadgeText = "On Track";
+  let verdictTitle = "";
+  let verdictSub = "";
+
+  if (remainingWeight > 0) {
+    requiredUniformScore = ((target - earned) / remainingWeight) * 100.0;
+    if (requiredUniformScore <= 0) {
+      statusKey = "secured";
+      statusBadgeText = "Secured";
+      verdictTitle = `🎯 Target Secured (${earned.toFixed(1)}% locked in)`;
+      verdictSub = `You have already reached your ${target.toFixed(1)}% target even with 0% on remaining items.`;
+    } else if (requiredUniformScore > 100.0) {
+      statusKey = "unreachable";
+      statusBadgeText = "Unreachable";
+      verdictTitle = `⚠️ Unreachable (Max possible: ${maxPossible.toFixed(1)}%)`;
+      verdictSub = `Even with 100% on the remaining ${remainingWeight.toFixed(1)}% weight, the maximum possible score is ${maxPossible.toFixed(1)}%.`;
+    } else if (requiredUniformScore <= 85.0) {
+      statusKey = "on-track";
+      statusBadgeText = `On Track (Need ${requiredUniformScore.toFixed(1)}%)`;
+      verdictTitle = `📐 Need ${requiredUniformScore.toFixed(1)}% across remaining ${remainingWeight.toFixed(1)}% weight`;
+      verdictSub = `Scoring an average of ${requiredUniformScore.toFixed(1)}% on ungraded items achieves your ${target.toFixed(1)}% target.`;
+    } else {
+      statusKey = "needs";
+      statusBadgeText = `Needs ${requiredUniformScore.toFixed(1)}%`;
+      verdictTitle = `🔥 Need ${requiredUniformScore.toFixed(1)}% across remaining ${remainingWeight.toFixed(1)}% weight`;
+      verdictSub = `High average needed on remaining assessments to reach your ${target.toFixed(1)}% goal.`;
+    }
+  } else {
+    requiredUniformScore = target - earned <= 0 ? 0 : Infinity;
+    if (earned >= target - 1e-6) {
+      statusKey = "secured";
+      statusBadgeText = "Secured";
+      verdictTitle = `🎯 Target Secured! Final Score: ${earned.toFixed(1)}%`;
+      verdictSub = `All assignments are graded and your score meets your ${target.toFixed(1)}% target.`;
+    } else {
+      statusKey = "unreachable";
+      statusBadgeText = `Final: ${earned.toFixed(1)}%`;
+      verdictTitle = `All items graded — Final Score: ${earned.toFixed(1)}%`;
+      verdictSub = `Target was ${target.toFixed(1)}% (short by ${(target - earned).toFixed(1)}%).`;
+    }
+  }
+
+  return {
+    baseWeightSum,
+    weightMismatch,
+    earned,
+    gradedWeight,
+    remainingWeight,
+    maxPossible,
+    currentStandingPercent,
+    requiredUniformScore,
+    statusKey,
+    statusBadgeText,
+    verdictTitle,
+    verdictSub,
+    target,
+  };
+}
+
+async function loadGpaUserCourses(silent = false) {
+  if (!state.user) return;
+  try {
+    const res = await apiFetch("/api/gpa/courses");
+    if (res && res.ok) {
+      state.gpaCourses = Array.isArray(res.courses) ? res.courses : [];
+      state.gpaCoursesLoaded = true;
+      if (
+        !state.gpaActiveCourseId ||
+        !state.gpaCourses.some((c) => Number(c.id) === Number(state.gpaActiveCourseId))
+      ) {
+        state.gpaActiveCourseId = state.gpaCourses.length > 0 ? state.gpaCourses[0].id : null;
+      }
+      renderGpaCourseNodesBar();
+      renderActiveGpaCourseEditor();
+    }
+  } catch (err) {
+    if (!silent) {
+      showToast(err.message || "Could not load your tracked courses.", true);
+    }
+  }
+}
+
+function getActiveGpaCourse() {
+  return (state.gpaCourses || []).find((c) => Number(c.id) === Number(state.gpaActiveCourseId)) || null;
+}
+
+function selectGpaCourseNode(courseId) {
+  state.gpaActiveCourseId = Number(courseId);
+  renderGpaCourseNodesBar();
+  renderActiveGpaCourseEditor();
+}
+
+function renderGpaCourseNodesBar() {
+  const listEl = document.getElementById("gpaCourseNodesList");
+  if (!listEl) return;
+
+  if (!state.gpaCourses || state.gpaCourses.length === 0) {
+    listEl.innerHTML = `
+      <span style="font-size:13px; color:var(--text-secondary);">
+        No courses tracked yet — click <b>+ Add Course</b> to upload a syllabus or build manually.
+      </span>
+    `;
+    return;
+  }
+
+  listEl.innerHTML = state.gpaCourses
+    .map((c) => {
+      const isAct = Number(c.id) === Number(state.gpaActiveCourseId);
+      const m = computeCourseOptimalMetrics(c);
+      return `
+        <button type="button" role="tab" aria-selected="${isAct}"
+          id="gpaNodeTab_${c.id}"
+          class="gpa-course-node-btn${isAct ? " active" : ""}"
+          onclick="selectGpaCourseNode(${c.id})">
+          <span class="gpa-node-name">${escapeHtml(c.course_name)}</span>
+          <span id="gpaNodeStatus_${c.id}" class="gpa-node-status-pill status-${m.statusKey}">
+            ${escapeHtml(m.statusBadgeText)}
+          </span>
+        </button>
+      `;
+    })
+    .join("");
+}
+
+function openGpaNewCourseDrawer() {
+  const drawer = document.getElementById("gpaNewCourseDrawer");
+  const errBanner = document.getElementById("gpaSyllabusErrorBanner");
+  if (errBanner) errBanner.classList.add("hidden");
+  if (drawer) drawer.classList.remove("hidden");
+}
+
+function closeGpaNewCourseDrawer() {
+  const drawer = document.getElementById("gpaNewCourseDrawer");
+  if (drawer) drawer.classList.add("hidden");
+}
+
+function handleGpaSyllabusDragOver(e) {
+  e.preventDefault();
+  e.stopPropagation();
+  const dz = document.getElementById("gpaSyllabusDropzone");
+  if (dz) dz.classList.add("drag-over");
+}
+
+function handleGpaSyllabusDragLeave(e) {
+  e.preventDefault();
+  e.stopPropagation();
+  const dz = document.getElementById("gpaSyllabusDropzone");
+  if (dz) dz.classList.remove("drag-over");
+}
+
+function handleGpaSyllabusDrop(e) {
+  e.preventDefault();
+  e.stopPropagation();
+  const dz = document.getElementById("gpaSyllabusDropzone");
+  if (dz) dz.classList.remove("drag-over");
+  const file = e.dataTransfer?.files?.[0];
+  if (file) {
+    uploadAndCreateCourseFromSyllabus(file);
+  }
+}
+
+function handleGpaSyllabusFileSelect(e) {
+  const file = e.target?.files?.[0];
+  if (file) {
+    uploadAndCreateCourseFromSyllabus(file);
+  }
+  if (e.target) e.target.value = "";
+}
+
+async function uploadAndCreateCourseFromSyllabus(file) {
+  if (!state.user) {
+    openAuthModal("login");
+    return;
+  }
+
+  const idleEl = document.getElementById("gpaUploadIdleContent");
+  const loadEl = document.getElementById("gpaUploadLoadingContent");
+  const errBanner = document.getElementById("gpaSyllabusErrorBanner");
+  const errText = document.getElementById("gpaSyllabusErrorText");
+
+  if (errBanner) errBanner.classList.add("hidden");
+  if (idleEl) idleEl.classList.add("hidden");
+  if (loadEl) loadEl.classList.remove("hidden");
+
+  const stemName = (file.name || "New Course").replace(/\.[^/.]+$/, "").replace(/[_-]+/g, " ").trim();
+  state.gpaLastFailedFilename = stemName || "New Course";
+
+  try {
+    if (file.size > 5 * 1024 * 1024) {
+      throw new Error("File size exceeds the 5 MB limit for syllabus uploads.");
+    }
+
+    const fd = new FormData();
+    fd.append("file", file);
+    const res = await apiFetch("/api/gpa/parse-syllabus", {
+      method: "POST",
+      body: fd,
+    });
+
+    if (!res || !res.ok || !res.syllabus || !Array.isArray(res.syllabus.assignments) || res.syllabus.assignments.length === 0) {
+      const msg = (res && res.error) || "AI could not extract grading percentages from this file.";
+      if (errText) errText.textContent = msg;
+      if (errBanner) errBanner.classList.remove("hidden");
+      showToast(msg, true);
+      return;
+    }
+
+    const syl = res.syllabus;
+    const scale = Object.assign({}, AUA_DEFAULT_PERCENT_SCALE, syl.grading_scale || {});
+    const defaultTarget = Number(scale["A"] ?? 93);
+
+    const createRes = await apiFetch("/api/gpa/courses", {
+      method: "POST",
+      body: JSON.stringify({
+        course_name: syl.course_name || stemName || "Imported Syllabus Course",
+        credits: 3.0,
+        target_percent: defaultTarget,
+        grading_scale: scale,
+        assignments: syl.assignments.map((a, idx) => ({
+          id: `a_${idx + 1}`,
+          name: a.name,
+          weight: Number(a.weight || 0),
+          score: null,
+          is_extra_credit: Boolean(a.is_extra_credit),
+        })),
+        notes: syl.notes || "",
+        syllabus_cache_id: res.syllabus_cache_id || null,
+      }),
+    });
+
+    if (createRes && createRes.ok && createRes.course) {
+      state.gpaCourses.push(createRes.course);
+      state.gpaActiveCourseId = createRes.course.id;
+      closeGpaNewCourseDrawer();
+      renderGpaCourseNodesBar();
+      renderActiveGpaCourseEditor();
+      showToast(
+        res.cached
+          ? `⚡ Loaded "${createRes.course.course_name}" from instant syllabus cache!`
+          : `✨ Extracted ${createRes.course.assignments.length} grading components for "${createRes.course.course_name}"!`
+      );
+    }
+  } catch (err) {
+    const msg = err.message || "AI could not extract grading percentages from this file.";
+    if (errText) errText.textContent = msg;
+    if (errBanner) errBanner.classList.remove("hidden");
+    showToast(msg, true);
+  } finally {
+    if (idleEl) idleEl.classList.remove("hidden");
+    if (loadEl) loadEl.classList.add("hidden");
+  }
+}
+
+function _defaultStarterAssignments() {
+  return [
+    { id: "a_1", name: "Homework & Quizzes", weight: 25, score: null, is_extra_credit: false },
+    { id: "a_2", name: "Midterm Exam", weight: 35, score: null, is_extra_credit: false },
+    { id: "a_3", name: "Final Exam / Project", weight: 40, score: null, is_extra_credit: false },
+  ];
+}
+
+async function createManualGpaCourse(prefillName = "") {
+  if (!state.user) {
+    openAuthModal("login");
+    return;
+  }
+  const nameEl = document.getElementById("gpaNewManualName");
+  const crEl = document.getElementById("gpaNewManualCredits");
+  const tgtEl = document.getElementById("gpaNewManualTarget");
+
+  const courseName =
+    (prefillName || (nameEl ? nameEl.value : "") || "").trim() ||
+    `Course ${(state.gpaCourses?.length || 0) + 1}`;
+  const credits = crEl ? parseFloat(crEl.value) || 3.0 : 3.0;
+  const targetPercent = tgtEl ? parseFloat(tgtEl.value) || 93.0 : 93.0;
+
+  try {
+    const res = await apiFetch("/api/gpa/courses", {
+      method: "POST",
+      body: JSON.stringify({
+        course_name: courseName,
+        credits,
+        target_percent: targetPercent,
+        grading_scale: AUA_DEFAULT_PERCENT_SCALE,
+        assignments: _defaultStarterAssignments(),
+        notes: "",
+      }),
+    });
+    if (res && res.ok && res.course) {
+      state.gpaCourses.push(res.course);
+      state.gpaActiveCourseId = res.course.id;
+      if (nameEl) nameEl.value = "";
+      closeGpaNewCourseDrawer();
+      renderGpaCourseNodesBar();
+      renderActiveGpaCourseEditor();
+      showToast(`Created "${res.course.course_name}" — customize your assignments below.`);
+    }
+  } catch (err) {
+    showToast(err.message || "Failed to create course.", true);
+  }
+}
+
+function createManualGpaCourseFromError() {
+  createManualGpaCourse(state.gpaLastFailedFilename || "Manual Course");
+}
+
+function _buildBlankScoreHintInfo(metrics, isExtraCredit) {
+  if (isExtraCredit) {
+    return {
+      placeholder: "Bonus % (optional)",
+      badgeText: "Extra Credit",
+      badgeClass: "hint-need",
+    };
+  }
+  const req = metrics.requiredUniformScore;
+  if (req === null || req === undefined) {
+    return { placeholder: "Ungraded", badgeText: "", badgeClass: "" };
+  }
+  if (req <= 0) {
+    return {
+      placeholder: "Target Secured (0% needed)",
+      badgeText: "Target Secured",
+      badgeClass: "hint-secured",
+    };
+  }
+  if (req > 100) {
+    return {
+      placeholder: `Unreachable (Max: ${metrics.maxPossible.toFixed(1)}%)`,
+      badgeText: `Need ${req.toFixed(1)}%`,
+      badgeClass: "hint-unreachable",
+    };
+  }
+  return {
+    placeholder: `Need ${req.toFixed(1)}%`,
+    badgeText: `Need ${req.toFixed(1)}%`,
+    badgeClass: "hint-need",
+  };
+}
+
+function renderActiveGpaCourseEditor() {
+  const container = document.getElementById("gpaActiveCourseEditor");
+  if (!container) return;
+
+  const course = getActiveGpaCourse();
+  if (!course) {
+    openGpaNewCourseDrawer();
+    container.innerHTML = "";
+    return;
+  }
+
+  const metrics = computeCourseOptimalMetrics(course);
+  const scale = Object.assign({}, AUA_DEFAULT_PERCENT_SCALE, course.grading_scale || {});
+  const currentTargetLetter = percentToLetterFromScale(course.target_percent, scale);
+
+  const letterOptionsHtml = ORDERED_PERCENT_LETTERS.filter((l) => l !== "F")
+    .map((ltr) => {
+      const cut = Number(scale[ltr] ?? AUA_DEFAULT_PERCENT_SCALE[ltr] ?? 0);
+      const sel = ltr === currentTargetLetter ? " selected" : "";
+      return `<option value="${ltr}"${sel}>${ltr} (${cut}%+)</option>`;
+    })
+    .join("");
+
+  const scaleInputsHtml = ORDERED_PERCENT_LETTERS.filter((l) => l !== "F")
+    .map((ltr) => {
+      const val = Number(scale[ltr] ?? AUA_DEFAULT_PERCENT_SCALE[ltr] ?? 0);
+      return `
+        <div>
+          <label class="field-label" style="font-size:11px;">${ltr} Min %</label>
+          <input type="number" class="input-glass" style="padding:7px 9px; font-size:12.5px;"
+            value="${val}" min="0" max="105" step="0.5"
+            oninput="handleGpaScaleCutoffChange('${ltr}', this.value)" />
+        </div>
+      `;
+    })
+    .join("");
+
+  const assignmentsHtml = (course.assignments || [])
+    .map((a) => {
+      const hasScore = a.score !== null && a.score !== undefined && String(a.score).trim() !== "";
+      const scoreVal = hasScore ? Number(a.score) : "";
+      const hint = _buildBlankScoreHintInfo(metrics, Boolean(a.is_extra_credit));
+      const showHintBadge = !hasScore && hint.badgeText;
+
+      return `
+        <div class="gpa-assignment-row" data-assign-id="${escapeHtml(a.id)}">
+          <input type="text" class="input-glass" value="${escapeHtml(a.name)}"
+            placeholder="Assignment name" maxlength="140"
+            oninput="handleGpaAssignmentEdit('${escapeHtml(a.id)}', 'name', this.value)" />
+          <input type="number" class="input-glass" value="${Number(a.weight ?? 0)}"
+            min="0" max="200" step="0.5" placeholder="Weight %"
+            oninput="handleGpaAssignmentEdit('${escapeHtml(a.id)}', 'weight', this.value)" />
+          <div class="gpa-score-cell-wrap">
+            <input type="number" class="input-glass gpa-assign-score-input"
+              data-score-for="${escapeHtml(a.id)}"
+              value="${scoreVal}" min="0" max="200" step="0.1"
+              placeholder="${escapeHtml(hint.placeholder)}"
+              oninput="handleGpaAssignmentEdit('${escapeHtml(a.id)}', 'score', this.value)" />
+            <span id="gpaHintBadge_${escapeHtml(a.id)}"
+              class="gpa-req-hint-badge ${hint.badgeClass}${showHintBadge ? "" : " hidden"}">
+              ${escapeHtml(hint.badgeText)}
+            </span>
+          </div>
+          <label style="display:inline-flex; align-items:center; gap:6px; font-size:12px; color:var(--text-secondary); cursor:pointer;">
+            <input type="checkbox" ${a.is_extra_credit ? "checked" : ""}
+              style="accent-color:#38bdf8; width:15px; height:15px;"
+              onchange="handleGpaAssignmentEdit('${escapeHtml(a.id)}', 'is_extra_credit', this.checked)" />
+            <span>Bonus</span>
+          </label>
+          <button type="button" class="gpa-row-del-btn" title="Delete assignment row"
+            onclick="removeGpaAssignmentRow('${escapeHtml(a.id)}')">&times;</button>
+        </div>
+      `;
+    })
+    .join("");
+
+  container.innerHTML = `
+    <div class="glass-panel gpa-course-editor-card">
+      <!-- Top Course Configuration Row -->
+      <div class="gpa-course-top-grid">
+        <div>
+          <label class="field-label" for="gpaActiveCourseName">Course Name</label>
+          <input type="text" id="gpaActiveCourseName" class="input-glass" maxlength="160"
+            value="${escapeHtml(course.course_name)}"
+            oninput="handleGpaCourseMetaEdit('course_name', this.value)" />
+        </div>
+        <div>
+          <label class="field-label" for="gpaActiveCourseCredits">Credits</label>
+          <input type="number" id="gpaActiveCourseCredits" class="input-glass" min="0" max="30" step="0.5"
+            value="${Number(course.credits ?? 3)}"
+            oninput="handleGpaCourseMetaEdit('credits', this.value)" />
+        </div>
+        <div>
+          <label class="field-label" for="gpaActiveTargetLetter">Target Letter</label>
+          <select id="gpaActiveTargetLetter" class="input-glass"
+            onchange="handleGpaTargetLetterChange(this.value)">
+            ${letterOptionsHtml}
+          </select>
+        </div>
+        <div>
+          <label class="field-label" for="gpaActiveTargetPercent">Target (%)</label>
+          <input type="number" id="gpaActiveTargetPercent" class="input-glass" min="0" max="120" step="0.5"
+            value="${Number(course.target_percent ?? 90)}"
+            oninput="handleGpaTargetPercentChange(this.value)" />
+        </div>
+        <div class="gpa-course-meta-actions">
+          <span id="gpaSaveStatusPill" class="gpa-save-status-pill saved">Saved ✓</span>
+          <button type="button" class="btn-glass btn-sm" onclick="saveActiveGpaCourseNow()" title="Save changes now">
+            💾 Save
+          </button>
+          <button type="button" class="btn-glass btn-sm" onclick="toggleGpaScaleEditor()">
+            ⚙️ Scale
+          </button>
+          <button type="button" class="btn-glass btn-sm" style="border-color:rgba(239,68,68,0.4); color:#fca5a5;"
+            onclick="deleteActiveGpaCourse()">
+            🗑️ Delete
+          </button>
+        </div>
+      </div>
+
+      <!-- Collapsible Custom Grading Scale Cutoffs -->
+      <div id="gpaScaleEditorBox" class="${state.gpaScaleEditorOpen ? "" : "hidden"}" style="margin-bottom:16px;">
+        <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;">
+          <span style="font-size:12.5px; font-weight:700; color:var(--text-ice);">
+            Letter Grade Minimum % Cutoffs (Customizable per Syllabus)
+          </span>
+          <button type="button" class="btn-glass btn-sm" onclick="resetActiveCourseGradingScale()">
+            Reset to AUA Default
+          </button>
+        </div>
+        <div class="gpa-scale-grid">
+          ${scaleInputsHtml}
+        </div>
+      </div>
+
+      <!-- Non-100% Weight Warning & 1-Click Normalize Banner -->
+      <div id="gpaWeightWarningBanner" class="gpa-weight-warning-bar${metrics.weightMismatch ? "" : " hidden"}" role="alert">
+        <div>
+          ⚠️ <strong>Weight Sum Notice:</strong> Non-extra-credit weights currently sum to
+          <strong id="gpaWeightSumValue">${metrics.baseWeightSum.toFixed(1)}%</strong> (expected <code>100%</code>).
+        </div>
+        <button type="button" class="btn-illuminated btn-sm" onclick="normalizeActiveCourseWeights()">
+          ⚡ Normalize to 100%
+        </button>
+      </div>
+
+      <!-- Real-Time Optimal Grade Engine Summary Tiles -->
+      <div class="gpa-optimal-banner">
+        <div class="gpa-metric-tile">
+          <div class="gpa-metric-label">Earned Toward Final</div>
+          <div id="gpaMetricEarnedVal" class="gpa-metric-val">${metrics.earned.toFixed(1)}%</div>
+          <div id="gpaMetricEarnedSub" class="gpa-metric-sub">
+            ${metrics.gradedWeight > 0
+              ? `Standing: ${metrics.currentStandingPercent.toFixed(1)}% across ${metrics.gradedWeight.toFixed(1)}% graded`
+              : "No graded assignments entered yet"}
+          </div>
+        </div>
+        <div class="gpa-metric-tile">
+          <div class="gpa-metric-label">Remaining Weight</div>
+          <div id="gpaMetricRemVal" class="gpa-metric-val">${metrics.remainingWeight.toFixed(1)}%</div>
+          <div id="gpaMetricRemSub" class="gpa-metric-sub">
+            Max possible final: ${metrics.maxPossible.toFixed(1)}%
+          </div>
+        </div>
+        <div class="gpa-metric-tile" style="grid-column: span 2;">
+          <div class="gpa-metric-label">Optimal Grade Engine Verdict</div>
+          <div id="gpaMetricVerdictTitle" class="gpa-metric-val" style="font-size:17px;">
+            ${escapeHtml(metrics.verdictTitle)}
+          </div>
+          <div id="gpaMetricVerdictSub" class="gpa-metric-sub">
+            ${escapeHtml(metrics.verdictSub)}
+          </div>
+        </div>
+      </div>
+
+      <!-- Interactive Assignments Table -->
+      <div class="gpa-assignments-head" aria-hidden="true">
+        <span>Assignment / Component</span>
+        <span>Weight (%)</span>
+        <span>Earned Score (%) &bull; Optimal Hint</span>
+        <span>Extra Cr.</span>
+        <span></span>
+      </div>
+
+      <div id="gpaAssignmentsListContainer">
+        ${assignmentsHtml}
+      </div>
+
+      <div style="margin-top:14px; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px;">
+        <button type="button" class="btn-illuminated btn-sm" onclick="addGpaAssignmentRow()">
+          + Add Assignment
+        </button>
+        <span style="font-size:12px; color:var(--text-secondary);">
+          Leave <b>Earned Score</b> blank for ungraded items to see the exact score needed.
+        </span>
+      </div>
+
+      <!-- Course Notes / Drop-Lowest Policy -->
+      <div style="margin-top:16px;">
+        <label class="field-label" for="gpaActiveCourseNotes">Syllabus Notes / Special Policies (e.g. Drop-Lowest Quiz)</label>
+        <input type="text" id="gpaActiveCourseNotes" class="input-glass" maxlength="1000"
+          placeholder="e.g. Lowest quiz is dropped; minimum 60% on final exam required to pass"
+          value="${escapeHtml(course.notes || "")}"
+          oninput="handleGpaCourseMetaEdit('notes', this.value)" />
+      </div>
+    </div>
+  `;
+}
+
+function refreshOptimalMetricsInPlace(course) {
+  if (!course) return;
+  const metrics = computeCourseOptimalMetrics(course);
+
+  // 1. Update node tab status pill & name
+  const nodeTab = document.getElementById(`gpaNodeTab_${course.id}`);
+  if (nodeTab) {
+    const nameEl = nodeTab.querySelector(".gpa-node-name");
+    if (nameEl) nameEl.textContent = course.course_name;
+  }
+  const nodePill = document.getElementById(`gpaNodeStatus_${course.id}`);
+  if (nodePill) {
+    nodePill.className = `gpa-node-status-pill status-${metrics.statusKey}`;
+    nodePill.textContent = metrics.statusBadgeText;
+  }
+
+  // 2. Weight warning banner
+  const warnBanner = document.getElementById("gpaWeightWarningBanner");
+  const warnSum = document.getElementById("gpaWeightSumValue");
+  if (warnBanner) warnBanner.classList.toggle("hidden", !metrics.weightMismatch);
+  if (warnSum) warnSum.textContent = `${metrics.baseWeightSum.toFixed(1)}%`;
+
+  // 3. Summary HUD tiles
+  const earnedVal = document.getElementById("gpaMetricEarnedVal");
+  const earnedSub = document.getElementById("gpaMetricEarnedSub");
+  const remVal = document.getElementById("gpaMetricRemVal");
+  const remSub = document.getElementById("gpaMetricRemSub");
+  const vTitle = document.getElementById("gpaMetricVerdictTitle");
+  const vSub = document.getElementById("gpaMetricVerdictSub");
+
+  if (earnedVal) earnedVal.textContent = `${metrics.earned.toFixed(1)}%`;
+  if (earnedSub) {
+    earnedSub.textContent =
+      metrics.gradedWeight > 0
+        ? `Standing: ${metrics.currentStandingPercent.toFixed(1)}% across ${metrics.gradedWeight.toFixed(1)}% graded`
+        : "No graded assignments entered yet";
+  }
+  if (remVal) remVal.textContent = `${metrics.remainingWeight.toFixed(1)}%`;
+  if (remSub) remSub.textContent = `Max possible final: ${metrics.maxPossible.toFixed(1)}%`;
+  if (vTitle) vTitle.textContent = metrics.verdictTitle;
+  if (vSub) vSub.textContent = metrics.verdictSub;
+
+  // 4. Update blank score placeholders & hint badges without losing focus
+  for (const a of course.assignments || []) {
+    const hasScore = a.score !== null && a.score !== undefined && String(a.score).trim() !== "";
+    const hint = _buildBlankScoreHintInfo(metrics, Boolean(a.is_extra_credit));
+    const inputEl = document.querySelector(`.gpa-assign-score-input[data-score-for="${CSS.escape(a.id)}"]`);
+    if (inputEl) {
+      inputEl.placeholder = hint.placeholder;
+    }
+    const badgeEl = document.getElementById(`gpaHintBadge_${a.id}`);
+    if (badgeEl) {
+      if (!hasScore && hint.badgeText) {
+        badgeEl.className = `gpa-req-hint-badge ${hint.badgeClass}`;
+        badgeEl.textContent = hint.badgeText;
+      } else {
+        badgeEl.className = "gpa-req-hint-badge hidden";
+      }
+    }
+  }
+}
+
+function setGpaSaveStatusIndicator(status) {
+  state.gpaSaveStatus = status;
+  const pill = document.getElementById("gpaSaveStatusPill");
+  if (!pill) return;
+  pill.classList.remove("saved", "saving");
+  if (status === "saved") {
+    pill.classList.add("saved");
+    pill.textContent = "Saved ✓";
+  } else if (status === "saving") {
+    pill.classList.add("saving");
+    pill.textContent = "Saving...";
+  } else {
+    pill.textContent = "Unsaved...";
+  }
+}
+
+function scheduleGpaCourseAutoSave(courseId) {
+  setGpaSaveStatusIndicator("unsaved");
+  if (state.gpaSaveTimers[courseId]) {
+    clearTimeout(state.gpaSaveTimers[courseId]);
+  }
+  state.gpaSaveTimers[courseId] = setTimeout(() => {
+    persistGpaCourseToBackend(courseId, true);
+  }, 800);
+}
+
+async function persistGpaCourseToBackend(courseId, silent = true) {
+  const course = (state.gpaCourses || []).find((c) => Number(c.id) === Number(courseId));
+  if (!course || !state.user) return;
+  if (state.gpaSaveTimers[courseId]) {
+    clearTimeout(state.gpaSaveTimers[courseId]);
+    delete state.gpaSaveTimers[courseId];
+  }
+  setGpaSaveStatusIndicator("saving");
+  try {
+    const res = await apiFetch(`/api/gpa/courses/${course.id}`, {
+      method: "PUT",
+      body: JSON.stringify({
+        course_name: course.course_name,
+        credits: course.credits,
+        target_percent: course.target_percent,
+        grading_scale: course.grading_scale,
+        assignments: course.assignments,
+        notes: course.notes,
+      }),
+    });
+    if (res && res.ok && res.course) {
+      setGpaSaveStatusIndicator("saved");
+      if (!silent) {
+        showToast("Course changes saved!");
+      }
+    }
+  } catch (err) {
+    setGpaSaveStatusIndicator("unsaved");
+    if (!silent) {
+      showToast(err.message || "Failed to save course changes.", true);
+    }
+  }
+}
+
+function saveActiveGpaCourseNow() {
+  const course = getActiveGpaCourse();
+  if (course) {
+    persistGpaCourseToBackend(course.id, false);
+  }
+}
+
+function handleGpaCourseMetaEdit(field, value) {
+  const course = getActiveGpaCourse();
+  if (!course) return;
+  if (field === "course_name") {
+    course.course_name = String(value || "").slice(0, 160) || "Untitled Course";
+  } else if (field === "credits") {
+    const cr = parseFloat(value);
+    course.credits = Number.isFinite(cr) ? Math.max(0, Math.min(30, cr)) : 3.0;
+  } else if (field === "notes") {
+    course.notes = String(value || "").slice(0, 1000);
+  }
+  refreshOptimalMetricsInPlace(course);
+  scheduleGpaCourseAutoSave(course.id);
+}
+
+function handleGpaTargetLetterChange(letter) {
+  const course = getActiveGpaCourse();
+  if (!course) return;
+  const scale = Object.assign({}, AUA_DEFAULT_PERCENT_SCALE, course.grading_scale || {});
+  const minPct = Number(scale[letter] ?? AUA_DEFAULT_PERCENT_SCALE[letter] ?? 90);
+  course.target_percent = minPct;
+  const pctInput = document.getElementById("gpaActiveTargetPercent");
+  if (pctInput) pctInput.value = minPct;
+  refreshOptimalMetricsInPlace(course);
+  scheduleGpaCourseAutoSave(course.id);
+}
+
+function handleGpaTargetPercentChange(rawVal) {
+  const course = getActiveGpaCourse();
+  if (!course) return;
+  const pct = parseFloat(rawVal);
+  course.target_percent = Number.isFinite(pct) ? Math.max(0, Math.min(120, pct)) : 0;
+  const letterSelect = document.getElementById("gpaActiveTargetLetter");
+  if (letterSelect) {
+    const matched = percentToLetterFromScale(course.target_percent, course.grading_scale);
+    if (matched !== "F") letterSelect.value = matched;
+  }
+  refreshOptimalMetricsInPlace(course);
+  scheduleGpaCourseAutoSave(course.id);
+}
+
+function handleGpaAssignmentEdit(assignId, field, rawVal) {
+  const course = getActiveGpaCourse();
+  if (!course) return;
+  const item = (course.assignments || []).find((a) => a.id === assignId);
+  if (!item) return;
+
+  if (field === "name") {
+    item.name = String(rawVal || "").slice(0, 140);
+  } else if (field === "weight") {
+    const w = parseFloat(rawVal);
+    item.weight = Number.isFinite(w) ? Math.max(0, Math.min(200, w)) : 0;
+  } else if (field === "score") {
+    if (rawVal === null || rawVal === undefined || String(rawVal).trim() === "") {
+      item.score = null;
+    } else {
+      const s = parseFloat(rawVal);
+      item.score = Number.isFinite(s) ? Math.max(0, Math.min(200, s)) : null;
+    }
+  } else if (field === "is_extra_credit") {
+    item.is_extra_credit = Boolean(rawVal);
+  }
+
+  refreshOptimalMetricsInPlace(course);
+  scheduleGpaCourseAutoSave(course.id);
+}
+
+function addGpaAssignmentRow() {
+  const course = getActiveGpaCourse();
+  if (!course) return;
+  if (!Array.isArray(course.assignments)) course.assignments = [];
+  const nextIdx = course.assignments.length + 1;
+  course.assignments.push({
+    id: `a_${Date.now()}_${Math.random().toString(36).slice(2, 5)}`,
+    name: `Assignment ${nextIdx}`,
+    weight: 10,
+    score: null,
+    is_extra_credit: false,
+  });
+  renderActiveGpaCourseEditor();
+  refreshOptimalMetricsInPlace(course);
+  scheduleGpaCourseAutoSave(course.id);
+}
+
+function removeGpaAssignmentRow(assignId) {
+  const course = getActiveGpaCourse();
+  if (!course || !Array.isArray(course.assignments)) return;
+  course.assignments = course.assignments.filter((a) => a.id !== assignId);
+  renderActiveGpaCourseEditor();
+  refreshOptimalMetricsInPlace(course);
+  scheduleGpaCourseAutoSave(course.id);
+}
+
+function normalizeActiveCourseWeights() {
+  const course = getActiveGpaCourse();
+  if (!course || !Array.isArray(course.assignments)) return;
+
+  const baseItems = course.assignments.filter((a) => !a.is_extra_credit);
+  if (baseItems.length === 0) {
+    showToast("Add at least one non-extra-credit assignment to normalize weights.", true);
+    return;
+  }
+
+  const currentSum = baseItems.reduce((acc, a) => acc + Math.max(0, Number(a.weight || 0)), 0);
+  if (currentSum <= 0) {
+    const equalShare = Math.round((100.0 / baseItems.length) * 100) / 100;
+    baseItems.forEach((a, i) => {
+      a.weight = i === baseItems.length - 1
+        ? Math.round((100.0 - equalShare * (baseItems.length - 1)) * 100) / 100
+        : equalShare;
+    });
+  } else {
+    let running = 0;
+    baseItems.forEach((a, i) => {
+      if (i === baseItems.length - 1) {
+        a.weight = Math.max(0, Math.round((100.0 - running) * 100) / 100);
+      } else {
+        const scaled = Math.round(((Math.max(0, Number(a.weight || 0)) / currentSum) * 100.0) * 100) / 100;
+        a.weight = scaled;
+        running += scaled;
+      }
+    });
+  }
+
+  renderActiveGpaCourseEditor();
+  refreshOptimalMetricsInPlace(course);
+  scheduleGpaCourseAutoSave(course.id);
+  showToast("⚡ Normalized non-extra-credit weights to 100%!");
+}
+
+function toggleGpaScaleEditor() {
+  state.gpaScaleEditorOpen = !state.gpaScaleEditorOpen;
+  const box = document.getElementById("gpaScaleEditorBox");
+  if (box) box.classList.toggle("hidden", !state.gpaScaleEditorOpen);
+}
+
+function handleGpaScaleCutoffChange(letter, rawVal) {
+  const course = getActiveGpaCourse();
+  if (!course) return;
+  if (!course.grading_scale) {
+    course.grading_scale = Object.assign({}, AUA_DEFAULT_PERCENT_SCALE);
+  }
+  const v = parseFloat(rawVal);
+  if (Number.isFinite(v) && v >= 0 && v <= 105) {
+    course.grading_scale[letter] = Math.round(v * 100) / 100;
+    scheduleGpaCourseAutoSave(course.id);
+  }
+}
+
+function resetActiveCourseGradingScale() {
+  const course = getActiveGpaCourse();
+  if (!course) return;
+  course.grading_scale = Object.assign({}, AUA_DEFAULT_PERCENT_SCALE);
+  renderActiveGpaCourseEditor();
+  scheduleGpaCourseAutoSave(course.id);
+  showToast("Grading scale reset to AUA default cutoffs.");
+}
+
+async function deleteActiveGpaCourse() {
+  const course = getActiveGpaCourse();
+  if (!course) return;
+  if (!window.confirm(`Delete tracked course "${course.course_name}"?`)) return;
+
+  if (state.gpaSaveTimers[course.id]) {
+    clearTimeout(state.gpaSaveTimers[course.id]);
+    delete state.gpaSaveTimers[course.id];
+  }
+
+  try {
+    const res = await apiFetch(`/api/gpa/courses/${course.id}`, { method: "DELETE" });
+    if (res && res.ok) {
+      state.gpaCourses = state.gpaCourses.filter((c) => Number(c.id) !== Number(course.id));
+      state.gpaActiveCourseId = state.gpaCourses.length > 0 ? state.gpaCourses[0].id : null;
+      renderGpaCourseNodesBar();
+      renderActiveGpaCourseEditor();
+      showToast(`Deleted "${course.course_name}".`);
+    }
+  } catch (err) {
+    showToast(err.message || "Failed to delete course.", true);
+  }
+}

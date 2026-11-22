@@ -24,7 +24,7 @@
   <link rel="icon" type="image/png" sizes="32x32" href="/static/favicon-32x32.png?v=20261113_1" />
   <link rel="icon" type="image/png" sizes="192x192" href="/static/favicon-192x192.png?v=20261113_1" />
   <link rel="shortcut icon" href="/favicon.ico?v=20261113_1" />
-  <link rel="stylesheet" href="/static/styles.css?v=20261116_1" />
+  <link rel="stylesheet" href="/static/styles.css?v=20261122_1" />
 </head>
 
 <body>
@@ -48,6 +48,9 @@
       <nav class="nav-tabs" aria-label="Main Navigation">
         <button class="nav-tab nav-tab-ai" data-view="ai-assistant" onclick="switchView('ai-assistant')">
           <span class="ai-sparkle-icon">✦</span> AI Assistant
+        </button>
+        <button class="nav-tab" data-view="gpa-tracker" onclick="switchView('gpa-tracker')">
+          GPA Tracker
         </button>
         <button class="nav-tab" data-view="have-need" onclick="switchView('have-need')">
           Have-Need
@@ -116,6 +119,15 @@
               <h3><span class="ai-sparkle-icon">✦</span> AI Assistant <span class="arrow">&rarr;</span></h3>
               <p style="margin-top:6px;">Ask anything about AUA professors, course feedbacks, Newsroom events, faculty
                 directory, The Highlander, or campus chat.</p>
+            </div>
+          </div>
+
+          <div class="glass-card home-module-card hero-reveal-card" style="--card-d: 0.55s;"
+            onclick="switchView('gpa-tracker')">
+            <div>
+              <h3>GPA Tracker <span class="arrow">&rarr;</span></h3>
+              <p style="margin-top:6px;">Calculate your AUA semester &amp; cumulative GPA or upload syllabi to track live
+                target scores across assignments.</p>
             </div>
           </div>
 
@@ -411,6 +423,242 @@
               </div>
             </div>
           </form>
+        </div>
+      </div>
+    </section>
+
+    <!-- ======================================================================
+         VIEW 0.75: <GPA Tracker> AUA 4.0 GPA Calculator & AI Course Tracker
+         ====================================================================== -->
+    <section id="view-gpa-tracker" class="view-section">
+      <div class="section-header">
+        <div>
+          <h1 class="section-title">AUA <span class="text-illuminate">GPA Tracker</span></h1>
+          <p class="section-subtitle">
+            Calculate your Semester &amp; Cumulative GPA on AUA's official 4.0 scale, or track live assignment weights
+            and required scores with AI syllabus parsing.
+          </p>
+        </div>
+
+        <div class="subtabs-bar" style="margin-bottom: 0;">
+          <button type="button" id="gpaSubtabCalc" class="subtab-btn active" onclick="switchGpaSubtab('calculator')">
+            🧮 GPA Calculator
+          </button>
+          <button type="button" id="gpaSubtabTracker" class="subtab-btn" onclick="switchGpaSubtab('tracker')">
+            📐 Course Tracker
+          </button>
+        </div>
+      </div>
+
+      <!-- SUB-VIEW 1: GPA Calculator (Accessible to all users, no login required) -->
+      <div id="gpaCalculatorSubview" class="gpa-subview">
+        <div class="gpa-calc-layout">
+          <!-- Left / Main Column: Course Rows & Controls -->
+          <div class="glass-panel gpa-calc-main-card">
+            <div class="gpa-card-header-row">
+              <div>
+                <h2 class="gpa-card-title">Semester Course List</h2>
+                <p class="gpa-card-sub">
+                  Add your courses, credits, and expected letter grades. Non-GPA grades (<code>P</code>, <code>NP</code>,
+                  <code>W</code>) are excluded from the GPA denominator.
+                </p>
+              </div>
+              <div class="gpa-calc-actions-wrap">
+                <button type="button" id="gpaImportCoursesBtn" class="btn-glass btn-sm"
+                  onclick="importGpaCalcFromTrackedCourses()" title="Import courses from your saved Course Tracker nodes">
+                  📥 Import from My Courses
+                </button>
+                <button type="button" class="btn-glass btn-sm" onclick="resetGpaCalculatorRows()">
+                  ↺ Reset
+                </button>
+                <button type="button" class="btn-illuminated btn-sm" onclick="addGpaCalculatorRow()">
+                  + Add Course
+                </button>
+              </div>
+            </div>
+
+            <div class="gpa-calc-table-head" aria-hidden="true">
+              <span>Course Name</span>
+              <span>Credits</span>
+              <span>Letter Grade</span>
+              <span>Pts</span>
+              <span></span>
+            </div>
+
+            <div id="gpaCalcRowsContainer" class="gpa-calc-rows-list"></div>
+
+            <div style="margin-top: 14px; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px;">
+              <button type="button" class="btn-glass btn-sm" onclick="addGpaCalculatorRow()">
+                + Add Another Course
+              </button>
+              <span class="gpa-scale-footnote">
+                AUA Scale: A+/A=4.0 &bull; A-=3.7 &bull; B+=3.3 &bull; B=3.0 &bull; B-=2.7 &bull; C+=2.3 &bull; C=2.0
+                &bull; C-=1.7 &bull; D+=1.3 &bull; D=1.0 &bull; D-=0.7 &bull; F=0.0
+              </span>
+            </div>
+          </div>
+
+          <!-- Right Column: Live Semester & Cumulative GPA HUD -->
+          <div class="gpa-calc-sidebar">
+            <div class="glass-panel gpa-hud-card">
+              <div class="gpa-hud-kicker">Live Semester Projection</div>
+              <div class="gpa-hud-main-row">
+                <div>
+                  <div id="gpaSemesterValue" class="gpa-hud-big-number">4.00</div>
+                  <div id="gpaSemesterMeta" class="gpa-hud-meta">0 GPA Credits &bull; 0 Total Credits</div>
+                </div>
+                <div id="gpaSemesterLetterPill" class="gpa-letter-orb">A</div>
+              </div>
+
+              <div class="gpa-hud-divider"></div>
+
+              <div class="gpa-cumu-section">
+                <div class="gpa-cumu-title">Cumulative GPA Projector (Optional)</div>
+                <p class="gpa-cumu-desc">Enter your prior standing from Sonis to project your new overall GPA:</p>
+                <div class="gpa-cumu-inputs-grid">
+                  <div>
+                    <label class="field-label" for="gpaPriorGpaInput">Prior Cumulative GPA</label>
+                    <input type="number" id="gpaPriorGpaInput" class="input-glass" min="0" max="4.0" step="0.01"
+                      placeholder="e.g. 3.55" oninput="handlePriorGpaInputsChange()" />
+                  </div>
+                  <div>
+                    <label class="field-label" for="gpaPriorCreditsInput">Prior GPA Credits</label>
+                    <input type="number" id="gpaPriorCreditsInput" class="input-glass" min="0" max="300" step="0.5"
+                      placeholder="e.g. 60" oninput="handlePriorGpaInputsChange()" />
+                  </div>
+                </div>
+
+                <div class="gpa-cumu-result-box">
+                  <div>
+                    <div class="gpa-cumu-res-label">Projected Cumulative GPA</div>
+                    <div id="gpaCumulativeMeta" class="gpa-cumu-res-sub">Combined across 0 total GPA credits</div>
+                  </div>
+                  <div id="gpaCumulativeValue" class="gpa-cumu-res-number">4.00</div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- SUB-VIEW 2: Course Tracker (Requires authenticated user) -->
+      <div id="gpaTrackerSubview" class="gpa-subview" style="display: none;">
+        <!-- Guest Sign-In CTA Gate -->
+        <div id="gpaTrackerGuestGate" class="glass-panel ai-auth-gate hidden" role="region"
+          aria-label="Sign in required to use Course Tracker">
+          <div class="ai-hero-emblem" style="margin-bottom: 14px;">
+            <div class="ai-hero-ring ring-outer"></div>
+            <div class="ai-hero-ring ring-inner"></div>
+            <span class="ai-hero-star">📐</span>
+          </div>
+          <h2 class="ai-hero-heading" style="margin-bottom: 8px;">
+            Sign In to Track <span class="ai-gradient-text">Courses &amp; Syllabi</span>
+          </h2>
+          <p class="ai-hero-desc" style="margin-bottom: 20px;">
+            Upload any course syllabus (<code>PDF</code>, <code>DOCX</code>, <code>TXT</code>, <code>PNG</code>,
+            <code>JPG</code>) to auto-extract assignment weights with AI, calculate exact target scores needed on
+            remaining exams, and sync your progress across devices.
+          </p>
+          <div style="display:flex; justify-content:center; gap:12px; flex-wrap:wrap;">
+            <button type="button" class="btn-glass" onclick="openAuthModal('login')">Sign In</button>
+            <button type="button" class="btn-illuminated" onclick="openAuthModal('register')">Register</button>
+          </div>
+        </div>
+
+        <!-- Authenticated Course Tracker Workspace -->
+        <div id="gpaTrackerAuthWorkspace" class="gpa-tracker-workspace hidden">
+          <!-- Course Node Tabs Bar -->
+          <div class="glass-panel gpa-nodes-bar-panel">
+            <div class="gpa-nodes-bar-top">
+              <div id="gpaCourseNodesList" class="gpa-course-nodes-scroll" role="tablist"
+                aria-label="Tracked Courses"></div>
+              <div class="gpa-nodes-bar-actions">
+                <button type="button" class="btn-illuminated btn-sm" onclick="openGpaNewCourseDrawer('upload')">
+                  + Add Course
+                </button>
+              </div>
+            </div>
+
+            <!-- Collapsible New Course / Syllabus Upload Drawer -->
+            <div id="gpaNewCourseDrawer" class="gpa-new-course-drawer hidden">
+              <div class="gpa-drawer-header">
+                <div>
+                  <h3 class="gpa-drawer-title">Add a Tracked Course</h3>
+                  <p class="gpa-drawer-sub">
+                    Upload a syllabus for automatic AI grading breakdown extraction, or start with a clean manual table.
+                  </p>
+                </div>
+                <button type="button" class="btn-glass btn-sm" onclick="closeGpaNewCourseDrawer()">
+                  Close &times;
+                </button>
+              </div>
+
+              <div class="gpa-drawer-grid">
+                <!-- Option A: Syllabus AI Uploader -->
+                <div class="gpa-dropzone-wrap">
+                  <div id="gpaSyllabusDropzone" class="gpa-syllabus-dropzone"
+                    onclick="document.getElementById('gpaSyllabusFileInput').click()"
+                    ondragover="handleGpaSyllabusDragOver(event)" ondragleave="handleGpaSyllabusDragLeave(event)"
+                    ondrop="handleGpaSyllabusDrop(event)">
+                    <input type="file" id="gpaSyllabusFileInput" accept=".pdf,.docx,.txt,.png,.jpg,.jpeg"
+                      style="display:none;" onchange="handleGpaSyllabusFileSelect(event)" />
+                    <div id="gpaUploadIdleContent">
+                      <div class="gpa-dropzone-icon">📄✨</div>
+                      <div class="gpa-dropzone-title">Drop Syllabus File Here or Click to Browse</div>
+                      <div class="gpa-dropzone-sub">
+                        Supports <b>PDF, DOCX, TXT, PNG, JPG</b> (up to 5 MB) &bull; Instant SHA-256 Cache + Gemini AI
+                      </div>
+                    </div>
+                    <div id="gpaUploadLoadingContent" class="hidden">
+                      <div class="gpa-dropzone-icon">⏳</div>
+                      <div class="gpa-dropzone-title">Analyzing Syllabus Breakdown...</div>
+                      <div class="gpa-dropzone-sub">Extracting assignment weights, grading scale &amp; course policies</div>
+                    </div>
+                  </div>
+
+                  <!-- Extraction Error Banner with Instant "Build Manually" CTA -->
+                  <div id="gpaSyllabusErrorBanner" class="gpa-syllabus-error-banner hidden" role="alert">
+                    <div class="gpa-err-text-wrap">
+                      <strong>⚠️ Syllabus Extraction Notice:</strong>
+                      <span id="gpaSyllabusErrorText">AI could not extract grading percentages from this file.</span>
+                    </div>
+                    <button type="button" class="btn-illuminated btn-sm" onclick="createManualGpaCourseFromError()">
+                      🛠️ Build Manually
+                    </button>
+                  </div>
+                </div>
+
+                <!-- Option B: Quick Manual Creation -->
+                <div class="gpa-manual-create-box">
+                  <div class="gpa-manual-box-title">Or Build Manually</div>
+                  <p class="gpa-manual-box-sub">Create a course node with starter assignment rows that you can customize:</p>
+                  <div style="margin-bottom: 10px;">
+                    <label class="field-label" for="gpaNewManualName">Course Name</label>
+                    <input type="text" id="gpaNewManualName" class="input-glass" maxlength="160"
+                      placeholder="e.g. CS 120 - Data Structures" />
+                  </div>
+                  <div style="display:grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 12px;">
+                    <div>
+                      <label class="field-label" for="gpaNewManualCredits">Credits</label>
+                      <input type="number" id="gpaNewManualCredits" class="input-glass" value="3" min="0" max="30"
+                        step="0.5" />
+                    </div>
+                    <div>
+                      <label class="field-label" for="gpaNewManualTarget">Target (%)</label>
+                      <input type="number" id="gpaNewManualTarget" class="input-glass" value="93" min="0" max="120"
+                        step="0.5" />
+                    </div>
+                  </div>
+                  <button type="button" class="btn-glass" style="width:100%;" onclick="createManualGpaCourse()">
+                    🛠️ Create Manual Course
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Active Course Detail View -->
+          <div id="gpaActiveCourseEditor"></div>
         </div>
       </div>
     </section>
@@ -1532,7 +1780,7 @@
     </div>
   </div>
 
-  <script src="/static/app.js?v=20261116_1"></script>
+  <script src="/static/app.js?v=20261122_1"></script>
 </body>
 
 </html>
