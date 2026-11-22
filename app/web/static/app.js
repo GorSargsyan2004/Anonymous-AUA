@@ -8940,16 +8940,59 @@ function renderGpaCourseNodesBar() {
     .join("");
 }
 
+function setGpaSyllabusUploaderState(mode = "idle", errorMessage = "") {
+  const idleEl = document.getElementById("gpaUploadIdleContent");
+  const loadEl = document.getElementById("gpaUploadLoadingContent");
+  const errBanner = document.getElementById("gpaSyllabusErrorBanner");
+  const errText = document.getElementById("gpaSyllabusErrorText");
+  const fileInput = document.getElementById("gpaSyllabusFileInput");
+
+  const setHidden = (el, hide) => {
+    if (!el) return;
+    el.classList.toggle("hidden", Boolean(hide));
+    if (hide) {
+      el.setAttribute("hidden", "");
+    } else {
+      el.removeAttribute("hidden");
+    }
+  };
+
+  if (mode === "loading") {
+    setHidden(idleEl, true);
+    setHidden(loadEl, false);
+    setHidden(errBanner, true);
+  } else if (mode === "error") {
+    if (fileInput) fileInput.value = "";
+    setHidden(loadEl, true);
+    setHidden(idleEl, false);
+    if (errText) {
+      errText.textContent = errorMessage || "AI could not extract grading percentages from this file.";
+    }
+    setHidden(errBanner, false);
+  } else {
+    if (fileInput) fileInput.value = "";
+    setHidden(loadEl, true);
+    setHidden(errBanner, true);
+    setHidden(idleEl, false);
+  }
+}
+
 function openGpaNewCourseDrawer() {
   const drawer = document.getElementById("gpaNewCourseDrawer");
-  const errBanner = document.getElementById("gpaSyllabusErrorBanner");
-  if (errBanner) errBanner.classList.add("hidden");
-  if (drawer) drawer.classList.remove("hidden");
+  setGpaSyllabusUploaderState("idle");
+  if (drawer) {
+    drawer.classList.remove("hidden");
+    drawer.removeAttribute("hidden");
+  }
 }
 
 function closeGpaNewCourseDrawer() {
   const drawer = document.getElementById("gpaNewCourseDrawer");
-  if (drawer) drawer.classList.add("hidden");
+  setGpaSyllabusUploaderState("idle");
+  if (drawer) {
+    drawer.classList.add("hidden");
+    drawer.setAttribute("hidden", "");
+  }
 }
 
 function handleGpaSyllabusDragOver(e) {
@@ -8991,14 +9034,7 @@ async function uploadAndCreateCourseFromSyllabus(file) {
     return;
   }
 
-  const idleEl = document.getElementById("gpaUploadIdleContent");
-  const loadEl = document.getElementById("gpaUploadLoadingContent");
-  const errBanner = document.getElementById("gpaSyllabusErrorBanner");
-  const errText = document.getElementById("gpaSyllabusErrorText");
-
-  if (errBanner) errBanner.classList.add("hidden");
-  if (idleEl) idleEl.classList.add("hidden");
-  if (loadEl) loadEl.classList.remove("hidden");
+  setGpaSyllabusUploaderState("loading");
 
   const stemName = (file.name || "New Course").replace(/\.[^/.]+$/, "").replace(/[_-]+/g, " ").trim();
   state.gpaLastFailedFilename = stemName || "New Course";
@@ -9017,8 +9053,7 @@ async function uploadAndCreateCourseFromSyllabus(file) {
 
     if (!res || !res.ok || !res.syllabus || !Array.isArray(res.syllabus.assignments) || res.syllabus.assignments.length === 0) {
       const msg = (res && res.error) || "AI could not extract grading percentages from this file.";
-      if (errText) errText.textContent = msg;
-      if (errBanner) errBanner.classList.remove("hidden");
+      setGpaSyllabusUploaderState("error", msg);
       showToast(msg, true);
       return;
     }
@@ -9057,15 +9092,13 @@ async function uploadAndCreateCourseFromSyllabus(file) {
           ? `⚡ Loaded "${createRes.course.course_name}" from instant syllabus cache!`
           : `✨ Extracted ${createRes.course.assignments.length} grading components for "${createRes.course.course_name}"!`
       );
+    } else {
+      setGpaSyllabusUploaderState("idle");
     }
   } catch (err) {
     const msg = err.message || "AI could not extract grading percentages from this file.";
-    if (errText) errText.textContent = msg;
-    if (errBanner) errBanner.classList.remove("hidden");
+    setGpaSyllabusUploaderState("error", msg);
     showToast(msg, true);
-  } finally {
-    if (idleEl) idleEl.classList.remove("hidden");
-    if (loadEl) loadEl.classList.add("hidden");
   }
 }
 
@@ -9119,6 +9152,16 @@ async function createManualGpaCourse(prefillName = "") {
 }
 
 function createManualGpaCourseFromError() {
+  setGpaSyllabusUploaderState("idle");
+  const nameEl = document.getElementById("gpaNewManualName");
+  if (nameEl) {
+    if (!nameEl.value.trim() && state.gpaLastFailedFilename) {
+      nameEl.value = state.gpaLastFailedFilename;
+    }
+    nameEl.focus();
+    nameEl.select();
+    return;
+  }
   createManualGpaCourse(state.gpaLastFailedFilename || "Manual Course");
 }
 

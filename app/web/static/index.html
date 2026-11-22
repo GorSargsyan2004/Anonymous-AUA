@@ -24,7 +24,7 @@
   <link rel="icon" type="image/png" sizes="32x32" href="/static/favicon-32x32.png?v=20261113_1" />
   <link rel="icon" type="image/png" sizes="192x192" href="/static/favicon-192x192.png?v=20261113_1" />
   <link rel="shortcut icon" href="/favicon.ico?v=20261113_1" />
-  <link rel="stylesheet" href="/static/styles.css?v=20261122_2" />
+  <link rel="stylesheet" href="/static/styles.css?v=20261122_3" />
 </head>
 
 <body>
@@ -610,7 +610,7 @@
                         Supports <b>PDF, DOCX, TXT, PNG, JPG</b> (up to 5 MB) &bull; Instant SHA-256 Cache + Gemini AI
                       </div>
                     </div>
-                    <div id="gpaUploadLoadingContent" class="hidden">
+                    <div id="gpaUploadLoadingContent" class="hidden" hidden>
                       <div class="gpa-dropzone-icon">⏳</div>
                       <div class="gpa-dropzone-title">Analyzing Syllabus Breakdown...</div>
                       <div class="gpa-dropzone-sub">Extracting assignment weights, grading scale &amp; course policies</div>
@@ -618,7 +618,7 @@
                   </div>
 
                   <!-- Extraction Error Banner with Instant "Build Manually" CTA -->
-                  <div id="gpaSyllabusErrorBanner" class="gpa-syllabus-error-banner hidden" role="alert">
+                  <div id="gpaSyllabusErrorBanner" class="gpa-syllabus-error-banner hidden" role="alert" hidden>
                     <div class="gpa-err-text-wrap">
                       <strong>⚠️ Syllabus Extraction Notice:</strong>
                       <span id="gpaSyllabusErrorText">AI could not extract grading percentages from this file.</span>
@@ -1781,7 +1781,7 @@
     </div>
   </div>
 
-  <script src="/static/app.js?v=20261122_2"></script>
+  <script src="/static/app.js?v=20261122_3"></script>
 </body>
 
 </html>

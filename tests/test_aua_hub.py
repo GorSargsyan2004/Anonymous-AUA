@@ -3054,8 +3054,8 @@ class TestAuaHub(unittest.IsolatedAsyncioTestCase):
             self.assertIn('id="notificationsPopover"', html_body)
             self.assertIn('id="browserNotifToggle"', html_body)
             self.assertIn('onchange="handleBrowserNotifToggleChange(this)"', html_body)
-            self.assertIn("/static/styles.css?v=20261122_2", html_body)
-            self.assertIn("/static/app.js?v=20261122_2", html_body)
+            self.assertIn("/static/styles.css?v=20261122_3", html_body)
+            self.assertIn("/static/app.js?v=20261122_3", html_body)
 
             r_js = await client.get("/static/app.js")
             self.assertEqual(r_js.status, 200)
@@ -3070,8 +3070,8 @@ class TestAuaHub(unittest.IsolatedAsyncioTestCase):
             sw_body = await r_sw.text()
             self.assertIn('addEventListener("notificationclick"', sw_body)
             self.assertIn("AUA_HUB_OPEN_NOTIFICATION", sw_body)
-            self.assertIn("/static/styles.css?v=20261122_2", sw_body)
-            self.assertIn("/static/app.js?v=20261122_2", sw_body)
+            self.assertIn("/static/styles.css?v=20261122_3", sw_body)
+            self.assertIn("/static/app.js?v=20261122_3", sw_body)
 
     async def test_gpa_tracker_syllabus_cache_rate_limits_and_course_crud(self) -> None:
         """Verify GPA Tracker navbar placement, SyllabusCache hit/miss deduplication, rate limits, and user-scoped Course CRUD."""
