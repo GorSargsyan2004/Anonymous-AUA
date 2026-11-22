@@ -752,6 +752,10 @@ function switchView(viewName, pushHistory = true) {
   }
 
   if (viewName === "home") {
+    const navStrip = document.querySelector(".nav-tabs");
+    if (navStrip) {
+      try { navStrip.scrollLeft = 0; } catch { }
+    }
     replayHomeHeroAnimation();
   } else if (viewName === "ai-assistant") {
     trackWebEvent("click_ai_assistant");
@@ -8566,13 +8570,13 @@ function renderGpaCalculatorRows() {
 
       return `
         <div class="gpa-calc-row" data-row-id="${escapeHtml(row.id)}">
-          <input type="text" class="input-glass" value="${escapeHtml(row.name)}"
+          <input type="text" class="input-glass gpa-calc-name-input" value="${escapeHtml(row.name)}"
             placeholder="Course ${idx + 1}" maxlength="120"
             oninput="updateGpaCalculatorRow('${escapeHtml(row.id)}', 'name', this.value)" />
           <input type="number" class="input-glass" value="${Number(row.credits ?? 3)}"
-            min="0" max="30" step="0.5"
+            min="0" max="30" step="0.5" aria-label="Credits"
             oninput="updateGpaCalculatorRow('${escapeHtml(row.id)}', 'credits', this.value)" />
-          <select class="input-glass"
+          <select class="input-glass" aria-label="Letter Grade"
             onchange="updateGpaCalculatorRow('${escapeHtml(row.id)}', 'grade', this.value)">
             ${optionsHtml}
           </select>
@@ -9244,26 +9248,26 @@ function renderActiveGpaCourseEditor() {
 
       return `
         <div class="gpa-assignment-row" data-assign-id="${escapeHtml(a.id)}">
-          <input type="text" class="input-glass" value="${escapeHtml(a.name)}"
+          <input type="text" class="input-glass gpa-assign-name-input" value="${escapeHtml(a.name)}"
             placeholder="Assignment name" maxlength="140"
             oninput="handleGpaAssignmentEdit('${escapeHtml(a.id)}', 'name', this.value)" />
-          <input type="number" class="input-glass" value="${Number(a.weight ?? 0)}"
-            min="0" max="200" step="0.5" placeholder="Weight %"
+          <input type="number" class="input-glass gpa-assign-weight-input" value="${Number(a.weight ?? 0)}"
+            min="0" max="200" step="0.5" placeholder="Weight %" aria-label="Weight percent"
             oninput="handleGpaAssignmentEdit('${escapeHtml(a.id)}', 'weight', this.value)" />
           <div class="gpa-score-cell-wrap">
             <input type="number" class="input-glass gpa-assign-score-input"
               data-score-for="${escapeHtml(a.id)}"
               value="${scoreVal}" min="0" max="200" step="0.1"
-              placeholder="${escapeHtml(hint.placeholder)}"
+              placeholder="${escapeHtml(hint.placeholder)}" aria-label="Earned score percent"
               oninput="handleGpaAssignmentEdit('${escapeHtml(a.id)}', 'score', this.value)" />
             <span id="gpaHintBadge_${escapeHtml(a.id)}"
               class="gpa-req-hint-badge ${hint.badgeClass}${showHintBadge ? "" : " hidden"}">
               ${escapeHtml(hint.badgeText)}
             </span>
           </div>
-          <label style="display:inline-flex; align-items:center; gap:6px; font-size:12px; color:var(--text-secondary); cursor:pointer;">
+          <label class="gpa-assign-bonus-label" style="display:inline-flex; align-items:center; gap:6px; font-size:12px; color:var(--text-secondary); cursor:pointer;">
             <input type="checkbox" ${a.is_extra_credit ? "checked" : ""}
-              style="accent-color:#38bdf8; width:15px; height:15px;"
+              style="accent-color:#38bdf8; width:16px; height:16px;"
               onchange="handleGpaAssignmentEdit('${escapeHtml(a.id)}', 'is_extra_credit', this.checked)" />
             <span>Bonus</span>
           </label>
@@ -9362,7 +9366,7 @@ function renderActiveGpaCourseEditor() {
             Max possible final: ${metrics.maxPossible.toFixed(1)}%
           </div>
         </div>
-        <div class="gpa-metric-tile" style="grid-column: span 2;">
+        <div class="gpa-metric-tile gpa-metric-tile-verdict">
           <div class="gpa-metric-label">Optimal Grade Engine Verdict</div>
           <div id="gpaMetricVerdictTitle" class="gpa-metric-val" style="font-size:17px;">
             ${escapeHtml(metrics.verdictTitle)}
