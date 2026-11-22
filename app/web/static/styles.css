@@ -7365,7 +7365,7 @@ a,
 
 .gpa-assignments-head {
   display: grid;
-  grid-template-columns: minmax(150px, 2.2fr) 110px minmax(150px, 1.5fr) 90px 40px;
+  grid-template-columns: minmax(150px, 2.2fr) 110px minmax(150px, 1.5fr) 85px 78px;
   gap: 10px;
   padding: 0 8px 8px 8px;
   font-size: 11.5px;
@@ -7378,7 +7378,7 @@ a,
 
 .gpa-assignment-row {
   display: grid;
-  grid-template-columns: minmax(150px, 2.2fr) 110px minmax(150px, 1.5fr) 90px 40px;
+  grid-template-columns: minmax(150px, 2.2fr) 110px minmax(150px, 1.5fr) 85px 78px;
   gap: 10px;
   align-items: center;
   padding: 9px 8px;
@@ -7386,6 +7386,66 @@ a,
   background: rgba(15, 23, 42, 0.46);
   border: 1px solid rgba(56, 189, 248, 0.14);
   margin-top: 8px;
+}
+
+.gpa-row-actions-cell {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.gpa-row-split-btn {
+  width: 34px;
+  height: 34px;
+  border-radius: 9px;
+  border: 1px solid rgba(56, 189, 248, 0.35);
+  background: rgba(14, 165, 233, 0.12);
+  color: #7dd3fc;
+  font-size: 15px;
+  font-weight: 800;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.16s ease;
+}
+
+.gpa-row-split-btn:hover {
+  background: rgba(14, 165, 233, 0.28);
+  border-color: var(--neon-blue-bright);
+  color: #ffffff;
+}
+
+.gpa-inline-split-bar {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 10px 12px;
+  margin-top: 4px;
+  border-radius: 10px;
+  background: rgba(10, 20, 42, 0.85);
+  border: 1px solid rgba(56, 189, 248, 0.35);
+}
+
+.gpa-split-bar-label {
+  font-size: 12.5px;
+  color: var(--text-ice);
+}
+
+.gpa-split-bar-controls {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.gpa-split-count-input {
+  width: 72px !important;
+  padding: 6px 9px !important;
+  text-align: center;
 }
 
 .gpa-score-cell-wrap {
@@ -7583,7 +7643,7 @@ a,
   }
 
   .gpa-assignment-row {
-    grid-template-columns: 88px 1fr auto 40px;
+    grid-template-columns: 88px 1fr auto auto;
     gap: 8px;
     padding: 11px 10px;
   }
@@ -7597,7 +7657,8 @@ a,
     min-width: 0;
   }
 
-  .gpa-row-del-btn {
+  .gpa-row-del-btn,
+  .gpa-row-split-btn {
     width: 40px;
     height: 40px;
   }
@@ -7610,7 +7671,7 @@ a,
   }
 
   .gpa-assignment-row {
-    grid-template-columns: 92px 1fr 40px;
+    grid-template-columns: 92px 1fr auto;
   }
 
   .gpa-score-cell-wrap {

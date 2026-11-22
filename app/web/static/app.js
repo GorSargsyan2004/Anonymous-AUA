@@ -9252,7 +9252,7 @@ function renderActiveGpaCourseEditor() {
             placeholder="Assignment name" maxlength="140"
             oninput="handleGpaAssignmentEdit('${escapeHtml(a.id)}', 'name', this.value)" />
           <input type="number" class="input-glass gpa-assign-weight-input" value="${Number(a.weight ?? 0)}"
-            min="0" max="200" step="0.5" placeholder="Weight %" aria-label="Weight percent"
+            min="0" max="200" step="0.01" placeholder="Weight %" aria-label="Weight percent"
             oninput="handleGpaAssignmentEdit('${escapeHtml(a.id)}', 'weight', this.value)" />
           <div class="gpa-score-cell-wrap">
             <input type="number" class="input-glass gpa-assign-score-input"
@@ -9271,8 +9271,27 @@ function renderActiveGpaCourseEditor() {
               onchange="handleGpaAssignmentEdit('${escapeHtml(a.id)}', 'is_extra_credit', this.checked)" />
             <span>Bonus</span>
           </label>
-          <button type="button" class="gpa-row-del-btn" title="Delete assignment row"
-            onclick="removeGpaAssignmentRow('${escapeHtml(a.id)}')">&times;</button>
+          <div class="gpa-row-actions-cell">
+            <button type="button" class="gpa-row-split-btn" title="Split into N equal items (e.g. Quiz 1..4)"
+              onclick="toggleGpaRowSplitInline('${escapeHtml(a.id)}')">÷</button>
+            <button type="button" class="gpa-row-del-btn" title="Delete assignment row"
+              onclick="removeGpaAssignmentRow('${escapeHtml(a.id)}')">&times;</button>
+          </div>
+          <div id="gpaSplitBar_${escapeHtml(a.id)}" class="gpa-inline-split-bar hidden" hidden>
+            <span class="gpa-split-bar-label">Split <b>${escapeHtml(a.name)}</b> (${Number(a.weight ?? 0)}%) into:</span>
+            <div class="gpa-split-bar-controls">
+              <input type="number" id="gpaSplitCount_${escapeHtml(a.id)}" class="input-glass gpa-split-count-input"
+                value="4" min="2" max="25" step="1" aria-label="Number of items to split into" />
+              <button type="button" class="btn-illuminated btn-sm"
+                onclick="confirmGpaAssignmentSplit('${escapeHtml(a.id)}')">
+                Split Items
+              </button>
+              <button type="button" class="btn-glass btn-sm"
+                onclick="toggleGpaRowSplitInline('${escapeHtml(a.id)}', false)">
+                Cancel
+              </button>
+            </div>
+          </div>
         </div>
       `;
     })
@@ -9631,6 +9650,116 @@ function removeGpaAssignmentRow(assignId) {
   renderActiveGpaCourseEditor();
   refreshOptimalMetricsInPlace(course);
   scheduleGpaCourseAutoSave(course.id);
+}
+
+function singularizeGpaItemName(rawName) {
+  let base = String(rawName || "Assignment").trim();
+  base = base.replace(/\s*\([^)]*\)\s*$/, "").trim();
+  base = base.replace(/^\d+\s+/, "").trim();
+  base = base.replace(/\s+#?\d+\s*$/, "").trim();
+  if (!base) return "Assignment";
+
+  const map = {
+    quizzes: "Quiz",
+    quiz: "Quiz",
+    homeworks: "Homework",
+    "homework assignments": "Homework",
+    homework: "Homework",
+    hws: "HW",
+    labs: "Lab",
+    laboratories: "Lab",
+    assignments: "Assignment",
+    exams: "Exam",
+    midterms: "Midterm",
+    projects: "Project",
+    papers: "Paper",
+    essays: "Essay",
+    presentations: "Presentation",
+    discussions: "Discussion",
+    reflections: "Reflection",
+    "problem sets": "Problem Set",
+    tests: "Test",
+  };
+  const low = base.toLowerCase();
+  if (map[low]) return map[low];
+  if (low.endsWith("zes") && base.length > 4) return base.slice(0, -3);
+  if (low.endsWith("ies") && base.length > 4) return base.slice(0, -3) + "y";
+  if ((low.endsWith("ses") || low.endsWith("xes") || low.endsWith("ches") || low.endsWith("shes")) && base.length > 4) {
+    return base.slice(0, -2);
+  }
+  if (low.endsWith("s") && !low.endsWith("ss") && !low.endsWith("us") && !low.endsWith("is") && base.length > 2) {
+    return base.slice(0, -1);
+  }
+  return base;
+}
+
+function splitWeightEvenlyClient(totalWeight, count) {
+  const n = Math.max(1, Math.min(25, parseInt(count, 10) || 1));
+  const total = Math.round(Math.max(0, Number(totalWeight || 0)) * 100) / 100;
+  if (n === 1) return [total];
+  const base = Math.round((total / n) * 100) / 100;
+  const weights = Array(n - 1).fill(base);
+  const last = Math.round((total - Math.round(base * (n - 1) * 100) / 100) * 100) / 100;
+  weights.push(Math.max(0, last));
+  return weights;
+}
+
+function toggleGpaRowSplitInline(assignId, forceOpen = null) {
+  const bar = document.getElementById(`gpaSplitBar_${assignId}`);
+  if (!bar) return;
+  const shouldOpen = forceOpen !== null ? Boolean(forceOpen) : bar.classList.contains("hidden");
+  bar.classList.toggle("hidden", !shouldOpen);
+  if (shouldOpen) {
+    bar.removeAttribute("hidden");
+    const inp = document.getElementById(`gpaSplitCount_${assignId}`);
+    if (inp) {
+      inp.focus();
+      inp.select();
+    }
+  } else {
+    bar.setAttribute("hidden", "");
+  }
+}
+
+function confirmGpaAssignmentSplit(assignId, explicitCount = null) {
+  const course = getActiveGpaCourse();
+  if (!course || !Array.isArray(course.assignments)) return;
+  const idx = course.assignments.findIndex((a) => a.id === assignId);
+  if (idx === -1) return;
+
+  const targetRow = course.assignments[idx];
+  const countInput = document.getElementById(`gpaSplitCount_${assignId}`);
+  const rawCount = explicitCount !== null ? explicitCount : (countInput ? countInput.value : 4);
+  const n = parseInt(rawCount, 10);
+  if (!Number.isFinite(n) || n < 2 || n > 25) {
+    showToast("Please enter a split count between 2 and 25.", true);
+    return;
+  }
+
+  const singular = singularizeGpaItemName(targetRow.name);
+  const weights = splitWeightEvenlyClient(targetRow.weight, n);
+  const ts = Date.now();
+  const newRows = weights.map((w, i) => ({
+    id: `a_${ts}_${i + 1}_${Math.random().toString(36).slice(2, 5)}`,
+    name: `${singular} ${i + 1}`,
+    weight: w,
+    score: null,
+    is_extra_credit: Boolean(targetRow.is_extra_credit),
+  }));
+
+  course.assignments.splice(idx, 1, ...newRows);
+  renderActiveGpaCourseEditor();
+  refreshOptimalMetricsInPlace(course);
+  scheduleGpaCourseAutoSave(course.id);
+  showToast(`✂️ Split "${targetRow.name}" into ${n} items (${singular} 1–${n})!`);
+}
+
+function splitGpaAssignmentRow(assignId, count = null) {
+  if (count !== null && count !== undefined) {
+    confirmGpaAssignmentSplit(assignId, count);
+    return;
+  }
+  toggleGpaRowSplitInline(assignId);
 }
 
 function normalizeActiveCourseWeights() {

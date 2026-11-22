@@ -4026,10 +4026,28 @@ async def api_ai_reset(request: web.Request) -> web.Response:
 # 8A-2. GPA Tracker & AI Syllabus Parser (/api/gpa/*)
 # ------------------------------------------------------------------------------
 
+SYLLABUS_PARSER_VERSION = 2
+
+
 class _SyllabusAssignmentItemSchema(BaseModel):
-    name: str = Field(description="Assignment or assessment component name (e.g. Midterm Exam, Homework, Final Project)")
-    weight: float = Field(description="Percentage weight toward final grade (e.g. 25.0 for 25%)")
-    is_extra_credit: bool = Field(default=False, description="True only if explicitly marked as bonus or extra credit")
+    name: str = Field(
+        description="Category or assessment component name (e.g. 'Quizzes', 'Midterm I', 'Homeworks', 'Final Exam')"
+    )
+    singular_name: Optional[str] = Field(
+        default=None,
+        description="Clean singular label when count > 1 (e.g. 'Quiz', 'Homework', 'Lab', 'Assignment')",
+    )
+    weight: float = Field(
+        description="TOTAL combined percentage weight for this component/category (e.g. 15.0 for 'Quizzes (4*3.75=15%)', 20.0 for '4 Homeworks, 5% each')"
+    )
+    count: int = Field(
+        default=1,
+        description="Exact number of individual graded items explicitly stated in the syllabus (e.g. 4 for 'Quizzes (4*3.75=15%)', 1 when single or unspecified)",
+    )
+    is_extra_credit: bool = Field(
+        default=False,
+        description="True only if explicitly marked as bonus or extra credit",
+    )
 
 
 class _SyllabusGradingScaleEntrySchema(BaseModel):
@@ -4191,6 +4209,162 @@ def _check_syllabus_parse_rate_limits(user_id: int, client_ip: str) -> Optional[
     return None
 
 
+_PLURAL_TO_SINGULAR_MAP: Dict[str, str] = {
+    "quizzes": "Quiz",
+    "quiz": "Quiz",
+    "homeworks": "Homework",
+    "homework assignments": "Homework",
+    "homework": "Homework",
+    "hws": "HW",
+    "labs": "Lab",
+    "laboratories": "Lab",
+    "laboratory exercises": "Lab",
+    "lab assignments": "Lab",
+    "assignments": "Assignment",
+    "written assignments": "Written Assignment",
+    "programming assignments": "Programming Assignment",
+    "exams": "Exam",
+    "midterms": "Midterm",
+    "midterm exams": "Midterm",
+    "projects": "Project",
+    "mini projects": "Mini Project",
+    "mini-projects": "Mini-Project",
+    "papers": "Paper",
+    "essays": "Essay",
+    "presentations": "Presentation",
+    "discussions": "Discussion",
+    "reflections": "Reflection",
+    "case studies": "Case Study",
+    "problem sets": "Problem Set",
+    "worksheets": "Worksheet",
+    "readings": "Reading",
+    "tests": "Test",
+}
+
+
+def singularize_assignment_label(name: str, singular_name: Optional[str] = None) -> str:
+    """Derive a clean singular item label (e.g. 'Quizzes (4*3.75=15%)' -> 'Quiz')."""
+    candidate = (singular_name or "").strip()
+    if candidate:
+        candidate = re.sub(r"\s*\([^)]*\)\s*$", "", candidate).strip()
+        candidate = re.sub(r"\s+#?\d+\s*$", "", candidate).strip()
+        if candidate:
+            low_cand = candidate.lower()
+            if low_cand in _PLURAL_TO_SINGULAR_MAP:
+                return _PLURAL_TO_SINGULAR_MAP[low_cand]
+            return candidate[:100]
+
+    base = (name or "Assignment").strip()
+    # Strip trailing parenthetical formulas like "(4*3.75=15%)" or "(4 x 5%)"
+    base = re.sub(r"\s*\([^)]*\)\s*$", "", base).strip()
+    # Strip leading count prefix like "4 Quizzes" or "5 Homeworks"
+    base = re.sub(r"^\d+\s+", "", base).strip(" :-–—\t")
+    if not base:
+        return "Assignment"
+
+    low = base.lower()
+    if low in _PLURAL_TO_SINGULAR_MAP:
+        return _PLURAL_TO_SINGULAR_MAP[low]
+
+    if low.endswith("zes") and len(base) > 4:
+        return base[:-3]
+    if low.endswith("ies") and len(base) > 4:
+        return base[:-3] + "y"
+    if low.endswith("ses") or low.endswith("xes") or low.endswith("ches") or low.endswith("shes"):
+        return base[:-2]
+    if low.endswith("s") and not low.endswith(("ss", "us", "is")) and len(base) > 2:
+        return base[:-1]
+    return base[:100]
+
+
+def split_weight_evenly(total_weight: float, count: int) -> List[float]:
+    """Divide total_weight across count items rounded to 2 decimals with zero rounding drift."""
+    n = max(1, min(25, int(count or 1)))
+    total = round(max(0.0, float(total_weight or 0.0)), 2)
+    if n == 1:
+        return [total]
+    base = round(total / n, 2)
+    weights = [base] * (n - 1)
+    remainder_last = round(total - round(base * (n - 1), 2), 2)
+    weights.append(max(0.0, remainder_last))
+    return weights
+
+
+def expand_multi_item_assignments(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Expand multi-item syllabus components (count > 1) into numbered rows with exact weight sums."""
+    if not items:
+        return []
+
+    # Detect whether Gemini already returned per-item weights vs total category weights when count > 1
+    raw_sum = sum(max(0.0, float(it.get("weight", 0.0) or 0.0)) for it in items if not it.get("is_extra_credit"))
+    mult_sum = sum(
+        max(0.0, float(it.get("weight", 0.0) or 0.0)) * max(1, min(25, int(it.get("count", 1) or 1)))
+        for it in items
+        if not it.get("is_extra_credit")
+    )
+    weights_are_per_item = abs(raw_sum - 100.0) > 2.0 and abs(mult_sum - 100.0) <= 1.0
+
+    expanded: List[Dict[str, Any]] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        raw_name = str(item.get("name") or "").strip()[:140]
+        if not raw_name:
+            continue
+        try:
+            weight = round(float(item.get("weight", 0.0) or 0.0), 2)
+        except (TypeError, ValueError):
+            weight = 0.0
+        if weight <= 0 or weight > 200:
+            continue
+
+        try:
+            count = int(item.get("count", 1) or 1)
+        except (TypeError, ValueError):
+            count = 1
+
+        # Also check if count==1 but name contains an explicit inline formula like "Quizzes (4*3.75=15%)" or "4 Quizzes"
+        if count <= 1:
+            m_inline = re.search(r"\(\s*(\d+)\s*[\*x×]\s*(\d+(?:\.\d+)?)", raw_name)
+            if m_inline:
+                inferred_c = int(m_inline.group(1))
+                if 1 < inferred_c <= 25:
+                    count = inferred_c
+            else:
+                m_lead = re.match(r"^(\d+)\s+([A-Za-z].*)$", raw_name)
+                if m_lead:
+                    inferred_c = int(m_lead.group(1))
+                    if 1 < inferred_c <= 25:
+                        count = inferred_c
+
+        count = max(1, min(25, count))
+        is_extra = bool(item.get("is_extra_credit", False))
+
+        if count == 1:
+            expanded.append(
+                {
+                    "name": raw_name,
+                    "weight": weight,
+                    "is_extra_credit": is_extra,
+                }
+            )
+            continue
+
+        total_cat_weight = round(weight * count, 2) if weights_are_per_item else weight
+        singular = singularize_assignment_label(raw_name, item.get("singular_name"))
+        per_weights = split_weight_evenly(total_cat_weight, count)
+        for idx, w_val in enumerate(per_weights, start=1):
+            expanded.append(
+                {
+                    "name": f"{singular} {idx}",
+                    "weight": w_val,
+                    "is_extra_credit": is_extra,
+                }
+            )
+
+    return expanded
+
+
 def _heuristic_parse_syllabus_text(text: str, filename: str) -> Dict[str, Any]:
     """Fallback deterministic parser for structured plain-text / DOCX syllabus grading tables."""
     if not text:
@@ -4302,6 +4476,7 @@ def _heuristic_parse_syllabus_text(text: str, filename: str) -> Dict[str, Any]:
         course_name = clean_stem[:120] if clean_stem else "Imported Course"
 
     return {
+        "parser_version": SYLLABUS_PARSER_VERSION,
         "has_grading_breakdown": has_breakdown,
         "course_name": course_name,
         "assignments": assignments,
@@ -4339,13 +4514,19 @@ async def parse_syllabus_with_gemini(
     prompt = (
         "You are an academic syllabus parser for the American University of Armenia (AUA). "
         "Carefully scan ALL pages of the provided syllabus document from beginning to end "
-        "(grading tables and assessment breakdowns often appear on pages 2, 3, 4, or 5) and extract the official course grading breakdown.\n\n"
+        "(grading tables, evaluation sections, and assessment descriptions often appear on pages 2, 3, 4, or 5) "
+        "and extract the official course grading breakdown.\n\n"
         "Rules:\n"
         "1. Set has_grading_breakdown=true ONLY if explicit assessment components with percentage weights "
         "(e.g., Midterm I 23%, Midterm II 27%, Quizzes (4*3.75=15%), Final Exam 35%) are present anywhere in the document.\n"
-        "2. When an item specifies an explicit count and per-item formula such as 'Quizzes (4*3.75=15%)' or '4 Quizzes (3.75% each)', "
-        "either expand it into individual items ('Quiz 1' 3.75%, 'Quiz 2' 3.75%, 'Quiz 3' 3.75%, 'Quiz 4' 3.75%) or keep it as 'Quizzes' 15.0% "
-        "so that all non-extra-credit weights sum accurately to the syllabus total (100%).\n"
+        "2. Look across the evaluation table and component descriptions for explicit item counts and formulas such as "
+        "'Quizzes (4*3.75=15%)', '5 quizzes (3% each)', or '6 homeworks (24% total)':\n"
+        "   - Always set weight to the TOTAL combined percentage weight for that category (e.g., weight=15.0 for 'Quizzes (4*3.75=15%)', "
+        "or weight=20.0 for '4 Homeworks, 5% each').\n"
+        "   - Set count to the exact number of counted items (e.g., count=4 for 'Quizzes (4*3.75=15%)') and singular_name to the clean singular label "
+        "(e.g., singular_name='Quiz', 'Homework', 'Lab', 'Assignment').\n"
+        "   - If a drop-lowest rule is stated (e.g., '5 quizzes, lowest dropped, total 16%'), set count to the number of COUNTED items (4) and record the drop rule in notes.\n"
+        "   - Do NOT invent counts if none are explicitly stated in the syllabus (use count=1).\n"
         "3. Mark is_extra_credit=true ONLY for bonus/extra-credit items beyond the base 100%.\n"
         "4. If the syllabus contains a letter grade cutoff table (e.g., A+, A, A-, B+, B, B-, C+, C, C-, D+, D, D-, F with percentage ranges), "
         "extract each letter grade and its minimum percentage cutoff into grading_scale_entries.\n"
@@ -4414,7 +4595,7 @@ async def parse_syllabus_with_gemini(
         ) from exc
 
     raw_assignments = parsed_obj.get("assignments") or []
-    clean_assignments: List[Dict[str, Any]] = []
+    pre_assignments: List[Dict[str, Any]] = []
     for item in raw_assignments[:60]:
         if not isinstance(item, dict):
             continue
@@ -4425,13 +4606,21 @@ async def parse_syllabus_with_gemini(
             wt = 0.0
         if not nm or wt <= 0 or wt > 200:
             continue
-        clean_assignments.append(
+        try:
+            cnt = int(item.get("count", 1) or 1)
+        except (TypeError, ValueError):
+            cnt = 1
+        pre_assignments.append(
             {
                 "name": nm,
+                "singular_name": item.get("singular_name"),
                 "weight": wt,
+                "count": max(1, min(25, cnt)),
                 "is_extra_credit": bool(item.get("is_extra_credit", False)),
             }
         )
+
+    clean_assignments = expand_multi_item_assignments(pre_assignments)[:80]
 
     scale_dict: Optional[Dict[str, float]] = None
     raw_scale_entries = parsed_obj.get("grading_scale_entries")
@@ -4463,6 +4652,7 @@ async def parse_syllabus_with_gemini(
     notes = (str(parsed_obj.get("notes") or "").strip()[:1000]) or None
 
     return {
+        "parser_version": SYLLABUS_PARSER_VERSION,
         "has_grading_breakdown": has_breakdown,
         "course_name": course_name,
         "assignments": clean_assignments,
@@ -4526,7 +4716,7 @@ async def api_gpa_parse_syllabus(request: web.Request) -> web.Response:
     file_hash = hashlib.sha256(raw_bytes).hexdigest()
     extracted_text, text_hash = extract_syllabus_text_and_hash(raw_bytes, ext)
 
-    # 1. Check SyllabusCache BEFORE consuming AI rate limits (only positive cache entries are returned)
+    # 1. Check SyllabusCache BEFORE consuming AI rate limits (only positive cache entries with parser_version >= 2 are returned)
     async with get_db_session() as session:
         cached = await get_syllabus_cache_by_hash(session, file_hash=file_hash, text_hash=text_hash)
         if cached is not None:
@@ -4534,8 +4724,9 @@ async def api_gpa_parse_syllabus(request: web.Request) -> web.Response:
                 parsed_payload = json.loads(cached.parsed_json or "{}")
             except Exception:
                 parsed_payload = {}
+            cached_version = int(parsed_payload.get("parser_version") or 1)
             assignments = parsed_payload.get("assignments") or []
-            if cached.has_grading_breakdown and assignments:
+            if cached.has_grading_breakdown and assignments and cached_version >= SYLLABUS_PARSER_VERSION:
                 return web.json_response(
                     {
                         "ok": True,
@@ -4583,6 +4774,7 @@ async def api_gpa_parse_syllabus(request: web.Request) -> web.Response:
 
     has_breakdown = bool(parsed_result.get("has_grading_breakdown")) and bool(parsed_result.get("assignments"))
     parsed_result["has_grading_breakdown"] = has_breakdown
+    parsed_result["parser_version"] = SYLLABUS_PARSER_VERSION
 
     if not has_breakdown:
         return web.json_response(

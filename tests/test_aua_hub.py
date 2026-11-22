@@ -3054,8 +3054,8 @@ class TestAuaHub(unittest.IsolatedAsyncioTestCase):
             self.assertIn('id="notificationsPopover"', html_body)
             self.assertIn('id="browserNotifToggle"', html_body)
             self.assertIn('onchange="handleBrowserNotifToggleChange(this)"', html_body)
-            self.assertIn("/static/styles.css?v=20261122_4", html_body)
-            self.assertIn("/static/app.js?v=20261122_4", html_body)
+            self.assertIn("/static/styles.css?v=20261122_5", html_body)
+            self.assertIn("/static/app.js?v=20261122_5", html_body)
 
             r_js = await client.get("/static/app.js")
             self.assertEqual(r_js.status, 200)
@@ -3070,8 +3070,8 @@ class TestAuaHub(unittest.IsolatedAsyncioTestCase):
             sw_body = await r_sw.text()
             self.assertIn('addEventListener("notificationclick"', sw_body)
             self.assertIn("AUA_HUB_OPEN_NOTIFICATION", sw_body)
-            self.assertIn("/static/styles.css?v=20261122_4", sw_body)
-            self.assertIn("/static/app.js?v=20261122_4", sw_body)
+            self.assertIn("/static/styles.css?v=20261122_5", sw_body)
+            self.assertIn("/static/app.js?v=20261122_5", sw_body)
 
     async def test_gpa_tracker_syllabus_cache_rate_limits_and_course_crud(self) -> None:
         """Verify GPA Tracker navbar placement, SyllabusCache hit/miss deduplication, rate limits, and user-scoped Course CRUD."""
@@ -3163,6 +3163,53 @@ class TestAuaHub(unittest.IsolatedAsyncioTestCase):
                 self.assertAlmostEqual(sum(a["weight"] for a in heur_res["assignments"]), 100.0)
                 self.assertEqual(heur_res["grading_scale"]["A"], 93.0)
                 self.assertEqual(heur_res["grading_scale"]["A-"], 90.0)
+
+                # Verify expand_multi_item_assignments exact split (15% / 4 -> 3.75 x 4) and repeating-decimal split (10% / 3 -> 3.33, 3.33, 3.34)
+                exp_exact = web_server.expand_multi_item_assignments(
+                    [
+                        {"name": "Midterm I", "weight": 23.0, "count": 1, "is_extra_credit": False},
+                        {"name": "Midterm II", "weight": 27.0, "count": 1, "is_extra_credit": False},
+                        {"name": "Quizzes", "singular_name": "Quiz", "weight": 15.0, "count": 4, "is_extra_credit": False},
+                        {"name": "Final Exam", "weight": 35.0, "count": 1, "is_extra_credit": False},
+                    ]
+                )
+                self.assertEqual(len(exp_exact), 7)
+                self.assertEqual(
+                    [(a["name"], a["weight"]) for a in exp_exact],
+                    [
+                        ("Midterm I", 23.0),
+                        ("Midterm II", 27.0),
+                        ("Quiz 1", 3.75),
+                        ("Quiz 2", 3.75),
+                        ("Quiz 3", 3.75),
+                        ("Quiz 4", 3.75),
+                        ("Final Exam", 35.0),
+                    ],
+                )
+                self.assertAlmostEqual(sum(a["weight"] for a in exp_exact), 100.0)
+
+                exp_third = web_server.expand_multi_item_assignments(
+                    [{"name": "Homeworks", "singular_name": "Homework", "weight": 10.0, "count": 3, "is_extra_credit": False}]
+                )
+                self.assertEqual([a["weight"] for a in exp_third], [3.33, 3.33, 3.34])
+                self.assertAlmostEqual(sum(a["weight"] for a in exp_third), 10.0)
+
+                # Pre-insert a stale v1 SyllabusCache row (missing parser_version=2) and verify upload invalidates & re-parses it
+                async with get_db_session() as session:
+                    await web_server.upsert_syllabus_cache(
+                        session=session,
+                        file_hash=hashlib.sha256(sample_pdf).hexdigest(),
+                        text_hash=None,
+                        original_filename="CS121 Data Structures Syllabus.docx.pdf",
+                        backup_path="syllabus_backups/stale.pdf",
+                        has_grading_breakdown=True,
+                        parsed_data={
+                            "parser_version": 1,
+                            "has_grading_breakdown": True,
+                            "course_name": "Stale v1 CS121",
+                            "assignments": [{"name": "Quizzes", "weight": 15.0, "is_extra_credit": False}],
+                        },
+                    )
 
                 mock_gemini_return = {
                     "has_grading_breakdown": True,
