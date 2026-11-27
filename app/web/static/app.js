@@ -49,6 +49,9 @@ const state = {
   selectedNeedCourse: null,
   hnOnlyMine: false,
   hnPosts: [],
+  hnPersistentInviteLink: null,
+  hnSavedNamedContactDm: "",
+  hnInviteInfoLoaded: false,
   // Feedbacks state
   fbType: "instructor",
   fbCatalogLoaded: false,
@@ -2284,7 +2287,18 @@ async function loadHaveNeedPosts() {
       ensureCoursesCatalogLoaded(),
     ]);
     state.hnPosts = data.posts || [];
+    if ("my_persistent_invite_link" in data) {
+      state.hnPersistentInviteLink = data.my_persistent_invite_link || null;
+      state.hnInviteInfoLoaded = true;
+    }
+    if (state.user && typeof data.is_bot_synced === "boolean") {
+      state.user.is_bot_synced = data.is_bot_synced;
+    }
     renderHaveNeedPosts();
+    const anonCheck = document.getElementById("hnAnonymousCheckbox");
+    if (anonCheck && anonCheck.checked) {
+      renderHaveNeedAnonInviteHelper(true);
+    }
   } catch (err) {
     if (state.hnOnlyMine && !state.user) {
       openAuthModal("login");
@@ -2292,6 +2306,218 @@ async function loadHaveNeedPosts() {
       return;
     }
     showToast(err.message, true);
+  }
+}
+
+function isBotInviteOrInboxLink(val) {
+  const clean = (val || "").trim().toLowerCase();
+  return (
+    clean.includes("t.me/aua_anonymous_bot?start=chat_") ||
+    clean.includes("t.me/aua_anonymous_bot?start=msg_")
+  );
+}
+
+async function ensureHaveNeedPersistentInviteLoaded() {
+  if (!state.user) {
+    state.hnPersistentInviteLink = null;
+    state.hnInviteInfoLoaded = false;
+    return null;
+  }
+  if (state.hnInviteInfoLoaded && state.hnPersistentInviteLink) {
+    return state.hnPersistentInviteLink;
+  }
+  try {
+    const res = await apiFetch("/api/anonymous/invite-link");
+    if (res && res.ok) {
+      state.hnPersistentInviteLink = res.persistent_invite_link || null;
+      state.hnInviteInfoLoaded = true;
+      if (state.user && typeof res.is_bot_synced === "boolean") {
+        state.user.is_bot_synced = res.is_bot_synced;
+      }
+      return state.hnPersistentInviteLink;
+    }
+  } catch { }
+  return state.hnPersistentInviteLink;
+}
+
+function fillHaveNeedContactWithInvite(inviteLink) {
+  const inp = document.getElementById("hnContactDm");
+  if (!inp || !inviteLink) return;
+  const cur = (inp.value || "").trim();
+  if (cur && !isBotInviteOrInboxLink(cur)) {
+    state.hnSavedNamedContactDm = cur;
+  }
+  inp.value = inviteLink;
+  renderHaveNeedAnonInviteHelper(true);
+}
+
+async function generateAndFillPersistentInviteLink() {
+  if (!state.user) {
+    openAuthModal("login");
+    return;
+  }
+  const btn = document.getElementById("hnGenerateInviteBtn");
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = "⏳ Generating /invite link...";
+  }
+  try {
+    const res = await apiFetch("/api/anonymous/invite-link", { method: "POST" });
+    if (res && res.ok && res.persistent_invite_link) {
+      state.hnPersistentInviteLink = res.persistent_invite_link;
+      state.hnInviteInfoLoaded = true;
+      fillHaveNeedContactWithInvite(res.persistent_invite_link);
+      showToast(
+        res.created_new
+          ? "♾️ Created & auto-filled your unexpirable /invite link!"
+          : "♾️ Loaded & auto-filled your unexpirable /invite link!"
+      );
+    }
+  } catch (err) {
+    showToast(err.message || "Could not generate /invite link.", true);
+    renderHaveNeedAnonInviteHelper(true);
+  }
+}
+
+function renderHaveNeedAnonInviteHelper(isAnon) {
+  const helper = document.getElementById("hnAnonInviteHelper");
+  const toggleLabel = document.getElementById("hnAnonToggleLabel");
+  const dmLabel = document.getElementById("hnContactDmLabel");
+  const dmHint = document.getElementById("hnContactDmHint");
+  const dmInput = document.getElementById("hnContactDm");
+
+  if (toggleLabel) {
+    toggleLabel.classList.toggle("active", Boolean(isAnon));
+  }
+  if (dmLabel) {
+    dmLabel.textContent = isAnon
+      ? "Anonymous Contact Method (/invite Link or Custom)"
+      : "Telegram DM / Contact Method";
+  }
+  if (dmInput) {
+    dmInput.placeholder = isAnon
+      ? "https://t.me/aua_anonymous_bot?start=chat_... or custom contact"
+      : "e.g. @your_username or t.me/your_username";
+  }
+  if (dmHint) {
+    dmHint.textContent = isAnon
+      ? "You can edit or replace this contact method anytime before publishing."
+      : "Students who match your swap will contact you here.";
+  }
+  if (!helper) return;
+
+  if (!isAnon) {
+    helper.classList.add("hidden");
+    helper.setAttribute("hidden", "");
+    helper.innerHTML = "";
+    return;
+  }
+
+  helper.classList.remove("hidden");
+  helper.removeAttribute("hidden");
+
+  const inviteLink = state.hnPersistentInviteLink;
+  const currentVal = (dmInput?.value || "").trim();
+  const isSynced = Boolean(state.user && (state.user.is_bot_synced || state.user.telegram_user_id));
+
+  if (inviteLink) {
+    const isUsingInvite = currentVal === inviteLink;
+    helper.innerHTML = `
+      <div class="hn-invite-banner hn-invite-banner-ready">
+        <div class="hn-invite-banner-text">
+          <span>♾️</span>
+          <div>
+            <b>${isUsingInvite ? "Auto-filled your unexpirable /invite link" : "Your unexpirable /invite link is ready"}</b>
+            <div class="hn-invite-banner-sub">
+              Students who click this link open an anonymous 1-on-1 chat with you inside <b>@aua_anonymous_bot</b>. You can freely edit the contact field above.
+            </div>
+          </div>
+        </div>
+        ${!isUsingInvite
+          ? `<button type="button" class="btn-glass btn-sm" onclick="fillHaveNeedContactWithInvite('${escapeHtml(inviteLink)}')">Paste My /invite Link</button>`
+          : ""
+        }
+      </div>
+    `;
+    return;
+  }
+
+  if (isSynced) {
+    helper.innerHTML = `
+      <div class="hn-invite-banner hn-invite-banner-action">
+        <div class="hn-invite-banner-text">
+          <span>🤖</span>
+          <div>
+            <b>Create an unexpirable <code>/invite</code> link for anonymous DMs</b>
+            <div class="hn-invite-banner-sub">
+              Your account is synced with <b>@aua_anonymous_bot</b>. Generate a reusable <code>/invite</code> link in 1 click (or type any contact info you prefer above).
+            </div>
+          </div>
+        </div>
+        <div class="hn-invite-banner-actions">
+          <button type="button" id="hnGenerateInviteBtn" class="btn-illuminated btn-sm" onclick="generateAndFillPersistentInviteLink()">
+            ⚡ Auto-Create &amp; Paste /invite Link
+          </button>
+          <a href="https://t.me/aua_anonymous_bot" target="_blank" rel="noopener noreferrer" class="btn-glass btn-sm">
+            Open Bot ↗
+          </a>
+        </div>
+      </div>
+    `;
+    return;
+  }
+
+  helper.innerHTML = `
+    <div class="hn-invite-banner hn-invite-banner-prompt">
+      <div class="hn-invite-banner-text">
+        <span>🎭</span>
+        <div>
+          <b>Suggested: Use an <code>/invite</code> link from @aua_anonymous_bot</b>
+          <div class="hn-invite-banner-sub">
+            Open <a href="https://t.me/aua_anonymous_bot" target="_blank" rel="noopener noreferrer" style="color:var(--neon-blue-bright);font-weight:700;">@aua_anonymous_bot</a>
+            and send <code>/invite</code> (choose <b>♾️ Persistent Link</b>) to get an anonymous chat link, then paste it above — or
+            <a href="#anonymous" onclick="switchView('anonymous'); setAnonSubtab('inbox'); return false;" style="color:var(--neon-blue-bright);font-weight:700;">/sync your account</a>
+            so AUA Hub auto-fills it for you!
+          </div>
+        </div>
+      </div>
+      <div class="hn-invite-banner-actions">
+        <a href="https://t.me/aua_anonymous_bot" target="_blank" rel="noopener noreferrer" class="btn-illuminated btn-sm">
+          🤖 Open @aua_anonymous_bot (/invite) ↗
+        </a>
+      </div>
+    </div>
+  `;
+}
+
+async function handleHaveNeedAnonymousToggle(checked) {
+  const isAnon = Boolean(checked);
+  const dmInput = document.getElementById("hnContactDm");
+  const curVal = (dmInput?.value || "").trim();
+
+  if (isAnon) {
+    if (curVal && !isBotInviteOrInboxLink(curVal)) {
+      state.hnSavedNamedContactDm = curVal;
+    }
+    renderHaveNeedAnonInviteHelper(true);
+    const inviteLink = await ensureHaveNeedPersistentInviteLoaded();
+    if (inviteLink && dmInput) {
+      const nowVal = (dmInput.value || "").trim();
+      if (!nowVal || nowVal === state.hnSavedNamedContactDm) {
+        dmInput.value = inviteLink;
+      }
+    } else if (dmInput && curVal && curVal === state.hnSavedNamedContactDm && curVal.startsWith("@")) {
+      // Clear personal @username when switching to anonymous mode so they don't accidentally expose it
+      dmInput.value = "";
+    }
+    renderHaveNeedAnonInviteHelper(true);
+  } else {
+    if (dmInput) {
+      if (isBotInviteOrInboxLink(curVal) || !curVal) {
+        dmInput.value = state.hnSavedNamedContactDm || "";
+      }
+    }
+    renderHaveNeedAnonInviteHelper(false);
   }
 }
 
@@ -2309,6 +2535,17 @@ function setHaveNeedFilter(onlyMine) {
 
 function formatContactLink(dm) {
   const clean = (dm || "").trim();
+  const lower = clean.toLowerCase();
+  if (
+    lower.includes("t.me/aua_anonymous_bot?start=chat_") ||
+    lower.includes("t.me/aua_anonymous_bot?start=msg_")
+  ) {
+    const url = clean.startsWith("http") ? clean : `https://${clean.replace(/^\/+/, "")}`;
+    const label = lower.includes("start=chat_")
+      ? "🎭 Anonymous Chat (/invite) ↗"
+      : "🎭 Anonymous Inbox (/link) ↗";
+    return `<a href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer" class="btn-illuminated hn-anon-bot-btn" style="padding:7px 14px; font-size:12.5px;" title="Connect anonymously via @aua_anonymous_bot">${label}</a>`;
+  }
   if (clean.startsWith("@")) {
     const handle = clean.slice(1);
     return `<a href="https://t.me/${encodeURIComponent(handle)}" target="_blank" rel="noopener noreferrer" class="btn-illuminated" style="padding:7px 14px; font-size:12.5px;">DM ${escapeHtml(clean)}</a>`;
@@ -2343,14 +2580,15 @@ function renderHaveNeedPosts() {
     .map((p) => {
       const hc = p.have_course || {};
       const nc = p.need_course || {};
+      const isAnon = Boolean(p.is_anonymous || p.author?.is_anonymous);
       const authorObj = {
-        id: p.author?.id || p.web_user_id,
-        name: p.author?.name || "AUA Student",
-        avatar_url: p.author?.avatar_url || "",
-        bio: p.author?.bio || "",
-        inbox_link: p.author?.inbox_link || "",
-        is_bot_synced: p.author?.is_bot_synced,
-        is_alumni: p.author?.is_alumni,
+        id: isAnon ? null : (p.author?.id || p.web_user_id),
+        name: isAnon ? "Anonymous Student" : (p.author?.name || "AUA Student"),
+        avatar_url: isAnon ? "" : (p.author?.avatar_url || ""),
+        bio: isAnon ? "" : (p.author?.bio || ""),
+        inbox_link: isAnon ? "" : (p.author?.inbox_link || ""),
+        is_bot_synced: isAnon ? false : p.author?.is_bot_synced,
+        is_alumni: isAnon ? false : p.author?.is_alumni,
       };
       const emailEnabled = p.notify_email !== false;
       const isReciprocalMatch =
@@ -2366,6 +2604,24 @@ function renderHaveNeedPosts() {
       const matchBannerHtml = isReciprocalMatch
         ? `<div class="hn-direct-match-banner">⚡ Direct Course Swap Match for Your Listing!</div>`
         : "";
+
+      const authorAvatarHtml = isAnon
+        ? `
+          <span class="user-avatar-circle user-avatar-md anon-mask-avatar" title="Anonymous Student">
+            <span class="user-avatar-fallback">🎭</span>
+          </span>
+        `
+        : renderAvatarCircleHtml(authorObj, "user-avatar-md", true);
+
+      const authorTitleHtml = isAnon
+        ? `
+          <div style="display:flex; align-items:center; gap:7px; flex-wrap:wrap;">
+            <span class="hn-author-name hn-author-anon">Anonymous Student</span>
+            <span class="anon-comment-anon-pill">🎭 Anonymous</span>
+            ${p.is_owner ? `<span class="anon-comment-you-tag">(Your Listing)</span>` : ""}
+          </div>
+        `
+        : `<div>${renderClickableUserNameHtml(authorObj, "hn-author-name")}</div>`;
 
       const ownerControls = p.is_owner
         ? `
@@ -2389,9 +2645,9 @@ function renderHaveNeedPosts() {
           ${matchBannerHtml}
           <div style="display:flex; align-items:center; justify-content:space-between; gap:10px; flex-wrap:wrap;">
             <div style="display:flex; align-items:center; gap:12px;">
-              ${renderAvatarCircleHtml(authorObj, "user-avatar-md", true)}
+              ${authorAvatarHtml}
               <div>
-                <div>${renderClickableUserNameHtml(authorObj, "hn-author-name")}</div>
+                ${authorTitleHtml}
                 <div style="font-size:11.5px; color:var(--text-secondary); margin-top:1px;">${formatDateTime(p.created_at)}</div>
               </div>
             </div>
@@ -2476,6 +2732,8 @@ async function submitHaveNeedForm(e) {
   const notes = document.getElementById("hnNotes").value.trim();
   const notifyCheckbox = document.getElementById("hnNotifyEmailCheckbox");
   const notify_email = notifyCheckbox ? Boolean(notifyCheckbox.checked) : true;
+  const anonCheckbox = document.getElementById("hnAnonymousCheckbox");
+  const is_anonymous = anonCheckbox ? Boolean(anonCheckbox.checked) : false;
 
   const payload = {
     have_course_id: state.selectedHaveCourse.id,
@@ -2483,6 +2741,7 @@ async function submitHaveNeedForm(e) {
     contact_dm,
     notes,
     notify_email,
+    is_anonymous,
   };
 
   try {
@@ -2527,8 +2786,14 @@ function startEditHaveNeed(postId) {
   renderSelectedCourseChip("have");
   renderSelectedCourseChip("need");
 
+  const isAnon = Boolean(post.is_anonymous || post.author?.is_anonymous);
+  const anonCheckbox = document.getElementById("hnAnonymousCheckbox");
+  if (anonCheckbox) {
+    anonCheckbox.checked = isAnon;
+  }
   document.getElementById("hnContactDm").value = post.contact_dm || "";
   document.getElementById("hnNotes").value = post.notes || "";
+  renderHaveNeedAnonInviteHelper(isAnon);
   const notifyCheckbox = document.getElementById("hnNotifyEmailCheckbox");
   if (notifyCheckbox) {
     notifyCheckbox.checked = post.notify_email !== false;
@@ -2543,10 +2808,16 @@ function resetHaveNeedForm() {
   document.getElementById("hnCancelEditBtn").style.display = "none";
   state.selectedHaveCourse = null;
   state.selectedNeedCourse = null;
+  state.hnSavedNamedContactDm = "";
   renderSelectedCourseChip("have");
   renderSelectedCourseChip("need");
+  const anonCheckbox = document.getElementById("hnAnonymousCheckbox");
+  if (anonCheckbox) {
+    anonCheckbox.checked = false;
+  }
   document.getElementById("hnContactDm").value = "";
   document.getElementById("hnNotes").value = "";
+  renderHaveNeedAnonInviteHelper(false);
   const notifyCheckbox = document.getElementById("hnNotifyEmailCheckbox");
   if (notifyCheckbox) {
     notifyCheckbox.checked = true;

@@ -18,10 +18,12 @@ from app.database.crud import (
     _ensure_utc,
     _safe_mean,
     _safe_median,
+    create_chat_invite,
     create_or_regenerate_inbox,
     get_admin_stats,
     get_or_create_user,
     get_user_active_inbox,
+    get_user_active_invites,
 )
 from app.database.models import (
     AcademicFeedback,
@@ -31,6 +33,7 @@ from app.database.models import (
     AnonymousPublicPost,
     AnonymousPublicPostReport,
     BotActivitySnapshot,
+    ChatInvite,
     Course,
     HaveNeedPost,
     InboxMessage,
@@ -1250,6 +1253,56 @@ async def search_courses(
     return list((await session.execute(stmt)).scalars().all())
 
 
+async def get_web_user_persistent_invite_link(
+    session: AsyncSession,
+    web_user: Optional[WebUser],
+    bot_username: str = "aua_anonymous_bot",
+) -> Optional[str]:
+    """Return the user's active persistent (unexpirable) /invite deep link from @aua_anonymous_bot if one exists."""
+    if not web_user or not web_user.telegram_user_id:
+        return None
+
+    stmt = (
+        select(ChatInvite)
+        .where(
+            ChatInvite.creator_id == web_user.telegram_user_id,
+            ChatInvite.is_active.is_(True),
+            ChatInvite.invite_type == "persistent",
+        )
+        .order_by(ChatInvite.created_at.desc(), ChatInvite.id.desc())
+        .limit(1)
+    )
+    invite = (await session.execute(stmt)).scalar_one_or_none()
+    if not invite:
+        return None
+    return f"https://t.me/{bot_username}?start=chat_{invite.invite_code}"
+
+
+async def get_or_create_web_user_persistent_invite_link(
+    session: AsyncSession,
+    web_user: Optional[WebUser],
+    bot_username: str = "aua_anonymous_bot",
+) -> Tuple[Optional[str], bool]:
+    """Return (persistent_invite_link, created_new) for a bot-synced WebUser."""
+    if not web_user or not web_user.telegram_user_id:
+        return None, False
+
+    existing = await get_web_user_persistent_invite_link(
+        session=session,
+        web_user=web_user,
+        bot_username=bot_username,
+    )
+    if existing:
+        return existing, False
+
+    invite = await create_chat_invite(
+        session=session,
+        creator_id=int(web_user.telegram_user_id),
+        invite_type="persistent",
+    )
+    return f"https://t.me/{bot_username}?start=chat_{invite.invite_code}", True
+
+
 async def create_have_need_post(
     session: AsyncSession,
     web_user_id: int,
@@ -1258,6 +1311,7 @@ async def create_have_need_post(
     contact_dm: str,
     notes: Optional[str] = None,
     notify_email: bool = True,
+    is_anonymous: bool = False,
 ) -> HaveNeedPost:
     """Create a new Have-Need course section exchange listing."""
     post = HaveNeedPost(
@@ -1266,6 +1320,7 @@ async def create_have_need_post(
         need_course_id=need_course_id,
         contact_dm=contact_dm.strip()[:128],
         notes=notes.strip()[:500] if notes else None,
+        is_anonymous=bool(is_anonymous),
         notify_email=bool(notify_email),
         is_active=True,
     )
@@ -1289,6 +1344,7 @@ async def list_have_need_posts(
     have_course_id: Optional[int] = None,
     need_course_id: Optional[int] = None,
     only_user_id: Optional[int] = None,
+    include_anonymous: bool = True,
     limit: int = 100,
 ) -> List[HaveNeedPost]:
     """List active Have-Need posts with eager-loaded course and user details."""
@@ -1303,6 +1359,8 @@ async def list_have_need_posts(
     )
     if only_user_id is not None:
         stmt = stmt.where(HaveNeedPost.web_user_id == only_user_id)
+    if not include_anonymous:
+        stmt = stmt.where(HaveNeedPost.is_anonymous.is_(False))
     if have_course_id is not None:
         stmt = stmt.where(HaveNeedPost.have_course_id == have_course_id)
     if need_course_id is not None:
@@ -1350,6 +1408,7 @@ async def update_have_need_post(
     contact_dm: Optional[str] = None,
     notes: Optional[str] = None,
     notify_email: Optional[bool] = None,
+    is_anonymous: Optional[bool] = None,
 ) -> Optional[HaveNeedPost]:
     """Update a user's own Have-Need listing."""
     stmt = (
@@ -1375,6 +1434,8 @@ async def update_have_need_post(
         post.notes = notes.strip()[:500] if notes.strip() else None
     if notify_email is not None:
         post.notify_email = bool(notify_email)
+    if is_anonymous is not None:
+        post.is_anonymous = bool(is_anonymous)
 
     post.updated_at = datetime.now(timezone.utc)
     await session.commit()

@@ -724,12 +724,30 @@
               <div id="needSelectedContainer"></div>
             </div>
 
+            <!-- Stay Anonymous Toggle -->
+            <label class="hn-anon-toggle" id="hnAnonToggleLabel" for="hnAnonymousCheckbox">
+              <input type="checkbox" id="hnAnonymousCheckbox" class="hn-match-checkbox"
+                onchange="handleHaveNeedAnonymousToggle(this.checked)" />
+              <div class="hn-match-toggle-text">
+                <div class="hn-match-toggle-title">
+                  <span>🎭</span> Stay Anonymous (Hide my name &amp; profile)
+                </div>
+                <div class="hn-match-toggle-sub">
+                  Post without showing your name or profile. Uses an unexpirable <code>/invite</code> link from
+                  <b>@aua_anonymous_bot</b> so students can reach you in an anonymous 1-on-1 Telegram chat.
+                </div>
+              </div>
+            </label>
+
             <!-- Contact Info (Telegram DM or other) -->
             <div style="margin-bottom: 14px;">
-              <label class="field-label" for="hnContactDm">Telegram DM / Contact Method</label>
+              <label class="field-label" id="hnContactDmLabel" for="hnContactDm">Telegram DM / Contact Method</label>
               <input type="text" id="hnContactDm" class="input-glass"
-                placeholder="e.g. @your_username or t.me/your_username" required />
-              <div class="field-hint">Students who match your swap will contact you here.</div>
+                placeholder="e.g. @your_username or t.me/your_username"
+                oninput="if(document.getElementById('hnAnonymousCheckbox')?.checked) renderHaveNeedAnonInviteHelper(true)"
+                required />
+              <div id="hnContactDmHint" class="field-hint">Students who match your swap will contact you here.</div>
+              <div id="hnAnonInviteHelper" class="hn-anon-invite-helper hidden" hidden></div>
             </div>
 
             <!-- Optional Note -->

@@ -85,6 +85,7 @@ from app.database.web_crud import (
     get_feedback_catalog,
     get_full_admin_stata_payload,
     get_message_reactions,
+    get_or_create_web_user_persistent_invite_link,
     get_reported_anon_post_ids,
     get_spam_chat_last_read_id,
     get_spam_chat_unread_count,
@@ -93,6 +94,7 @@ from app.database.web_crud import (
     get_unread_notification_count,
     get_web_user_by_email,
     get_web_user_by_id,
+    get_web_user_persistent_invite_link,
     list_academic_feedbacks,
     list_anon_post_comments,
     list_anonymous_public_posts,
@@ -914,11 +916,23 @@ def serialize_course(c: Course) -> Dict[str, Any]:
 def serialize_have_need(p: HaveNeedPost, current_user_id: Optional[int] = None) -> Dict[str, Any]:
     u = p.web_user
     is_deleted = getattr(u, "is_deleted", False) or (u and u.name == "Deleted Account")
-    return {
-        "id": p.id,
-        "web_user_id": p.web_user_id,
-        "is_owner": bool(current_user_id and p.web_user_id == current_user_id and not is_deleted),
-        "author": {
+    is_owner = bool(current_user_id and p.web_user_id == current_user_id and not is_deleted)
+    is_anon = bool(getattr(p, "is_anonymous", False))
+
+    if is_anon:
+        author_dict = {
+            "id": None,
+            "name": "Anonymous Student",
+            "bio": "",
+            "avatar_url": "",
+            "inbox_link": "",
+            "is_bot_synced": False,
+            "is_alumni": False,
+            "is_deleted": False,
+            "is_anonymous": True,
+        }
+    else:
+        author_dict = {
             "id": u.id if u else p.web_user_id,
             "name": "Deleted Account" if is_deleted else (u.name if u else "AUA Student"),
             "bio": "" if is_deleted else ((u.bio or "") if u else ""),
@@ -927,7 +941,15 @@ def serialize_have_need(p: HaveNeedPost, current_user_id: Optional[int] = None) 
             "is_bot_synced": False if is_deleted else bool(u and u.telegram_user_id is not None),
             "is_alumni": False if is_deleted else bool(u and u.email.lower().endswith("@alumni.aua.am")),
             "is_deleted": is_deleted,
-        },
+            "is_anonymous": False,
+        }
+
+    return {
+        "id": p.id,
+        "web_user_id": (p.web_user_id if is_owner else None) if is_anon else p.web_user_id,
+        "is_owner": is_owner,
+        "is_anonymous": is_anon,
+        "author": author_dict,
         "have_course": serialize_course(p.have_course) if p.have_course else None,
         "need_course": serialize_course(p.need_course) if p.need_course else None,
         "contact_dm": "" if is_deleted else p.contact_dm,
@@ -2176,6 +2198,7 @@ async def api_get_public_user_profile(request: web.Request) -> web.Response:
         hn_posts = await list_have_need_posts(
             session=session,
             only_user_id=target_user.id,
+            include_anonymous=False,
             limit=20,
         )
         from sqlalchemy.orm import selectinload
@@ -2326,11 +2349,16 @@ async def api_list_have_need(request: web.Request) -> web.Response:
         )
         current_uid = user.id if user else None
         serialized = [serialize_have_need(p, current_user_id=current_uid) for p in posts]
+        my_persistent_invite_link = (
+            await get_web_user_persistent_invite_link(session, user) if user else None
+        )
 
     return web.json_response(
         {
             "semester": sem_label or "Current Semester",
             "posts": serialized,
+            "my_persistent_invite_link": my_persistent_invite_link,
+            "is_bot_synced": bool(user and user.telegram_user_id is not None),
         }
     )
 
@@ -2359,11 +2387,16 @@ async def _process_have_need_matches(
     my_need_short = f"{nc.course_code} [Sec {nc.section}]"
     my_have_full = f"{hc.course_code} (Sec {hc.section}) — {hc.course_title}"
     my_need_full = f"{nc.course_code} (Sec {nc.section}) — {nc.course_title}"
+    post_is_anon = bool(getattr(post, "is_anonymous", False))
+    poster_display_name = "Anonymous AUA Student" if post_is_anon else user.name
 
     for m_post in matches:
         partner = m_post.web_user
         if not partner or getattr(partner, "is_deleted", False):
             continue
+
+        m_post_is_anon = bool(getattr(m_post, "is_anonymous", False))
+        partner_display_name = "Anonymous AUA Student" if m_post_is_anon else partner.name
 
         p_hc = m_post.have_course or nc
         p_nc = m_post.need_course or hc
@@ -2376,11 +2409,11 @@ async def _process_have_need_matches(
         p_notif = await create_user_notification(
             session=session,
             recipient_id=partner.id,
-            sender_id=user.id,
+            sender_id=None if post_is_anon else user.id,
             category="have_need_match",
             title=f"Swap Match: {p_have_short} ⇄ {p_need_short}",
             content=(
-                f"Reciprocal match found with {user.name}! "
+                f"Reciprocal match found with {poster_display_name}! "
                 f"They have {p_need_short} and need {p_have_short}. Contact: {post.contact_dm}"
             ),
             target_type="have_need",
@@ -2388,7 +2421,7 @@ async def _process_have_need_matches(
             extra_data={
                 "post_id": m_post.id,
                 "matched_post_id": post.id,
-                "partner_name": user.name,
+                "partner_name": poster_display_name,
                 "partner_dm": post.contact_dm,
                 "have_code": p_hc.course_code,
                 "need_code": p_nc.course_code,
@@ -2410,11 +2443,11 @@ async def _process_have_need_matches(
         my_notif = await create_user_notification(
             session=session,
             recipient_id=user.id,
-            sender_id=partner.id,
+            sender_id=None if m_post_is_anon else partner.id,
             category="have_need_match",
             title=f"Swap Match: {my_have_short} ⇄ {my_need_short}",
             content=(
-                f"Reciprocal match found with {partner.name}! "
+                f"Reciprocal match found with {partner_display_name}! "
                 f"They have {my_need_short} and need {my_have_short}. Contact: {m_post.contact_dm}"
             ),
             target_type="have_need",
@@ -2422,7 +2455,7 @@ async def _process_have_need_matches(
             extra_data={
                 "post_id": post.id,
                 "matched_post_id": m_post.id,
-                "partner_name": partner.name,
+                "partner_name": partner_display_name,
                 "partner_dm": m_post.contact_dm,
                 "have_code": hc.course_code,
                 "need_code": nc.course_code,
@@ -2446,7 +2479,7 @@ async def _process_have_need_matches(
                 send_have_need_match_email(
                     to_email=partner.email,
                     recipient_name=partner.name,
-                    partner_name=user.name,
+                    partner_name=poster_display_name,
                     partner_contact_dm=post.contact_dm,
                     partner_notes=post.notes,
                     my_have_label=p_have_full,
@@ -2459,7 +2492,7 @@ async def _process_have_need_matches(
                 send_have_need_match_email(
                     to_email=user.email,
                     recipient_name=user.name,
-                    partner_name=partner.name,
+                    partner_name=partner_display_name,
                     partner_contact_dm=m_post.contact_dm,
                     partner_notes=m_post.notes,
                     my_have_label=my_have_full,
@@ -2497,10 +2530,11 @@ async def api_create_have_need(request: web.Request) -> web.Response:
     contact_dm = (data.get("contact_dm") or "").strip()
     notes = (data.get("notes") or "").strip()
     notify_email = bool(data.get("notify_email", True))
+    is_anonymous = bool(data.get("is_anonymous", False))
 
     if not contact_dm:
         return web.json_response(
-            {"error": "Please provide your Telegram DM (@username) or contact info so students can reach you."},
+            {"error": "Please provide an /invite link, Telegram DM (@username), or contact info so students can reach you."},
             status=400,
         )
 
@@ -2522,6 +2556,7 @@ async def api_create_have_need(request: web.Request) -> web.Response:
             contact_dm=contact_dm,
             notes=notes,
             notify_email=notify_email,
+            is_anonymous=is_anonymous,
         )
 
         matches_count = await _process_have_need_matches(session=session, post=post, user=user)
@@ -2557,6 +2592,7 @@ async def api_update_have_need(request: web.Request) -> web.Response:
     contact_dm = data.get("contact_dm")
     notes = data.get("notes")
     notify_email = bool(data["notify_email"]) if "notify_email" in data else None
+    is_anonymous = bool(data["is_anonymous"]) if "is_anonymous" in data else None
 
     link_err = scan_web_text_for_malicious_links(f"{contact_dm or ''} {notes or ''}")
     if link_err:
@@ -2575,6 +2611,7 @@ async def api_update_have_need(request: web.Request) -> web.Response:
             contact_dm=contact_dm,
             notes=notes,
             notify_email=notify_email,
+            is_anonymous=is_anonymous,
         )
         if not updated:
             return web.json_response({"error": "Post not found or not owned by you."}, status=404)
@@ -2985,6 +3022,75 @@ async def api_generate_sync_code(request: web.Request) -> web.Response:
             "bot_username": "aua_anonymous_bot",
             "command": f"/sync {code}",
             "deep_link": f"https://t.me/aua_anonymous_bot?start=sync_{code}",
+        }
+    )
+
+
+@routes.get("/api/anonymous/invite-link")
+async def api_get_persistent_invite_link(request: web.Request) -> web.Response:
+    """Return the signed-in user's active persistent (unexpirable) /invite link if their account is synced."""
+    user = await get_current_web_user(request)
+    if not user:
+        return web.json_response(
+            {
+                "ok": True,
+                "authenticated": False,
+                "is_bot_synced": False,
+                "persistent_invite_link": None,
+                "inbox_link": "",
+                "bot_url": "https://t.me/aua_anonymous_bot",
+            }
+        )
+
+    async with get_db_session() as session:
+        invite_link = await get_web_user_persistent_invite_link(session, user)
+
+    return web.json_response(
+        {
+            "ok": True,
+            "authenticated": True,
+            "is_bot_synced": bool(user.telegram_user_id is not None),
+            "persistent_invite_link": invite_link,
+            "inbox_link": user.inbox_link or "",
+            "bot_url": "https://t.me/aua_anonymous_bot",
+        }
+    )
+
+
+@routes.post("/api/anonymous/invite-link")
+async def api_create_or_get_persistent_invite_link(request: web.Request) -> web.Response:
+    """Retrieve or 1-click generate an active persistent (unexpirable) /invite link for a bot-synced user."""
+    user = await get_current_web_user(request)
+    if not user:
+        return web.json_response({"error": "Please sign in to generate or load your /invite link."}, status=401)
+
+    allowed, retry = check_rate_limit("invite_link_gen", str(user.id), max_calls=12, window_sec=60)
+    if not allowed:
+        return web.json_response({"error": f"Rate limit reached. Please wait {retry}s."}, status=429)
+
+    if not user.telegram_user_id:
+        return web.json_response(
+            {
+                "error": (
+                    "Your AUA Hub account is not synced with @aua_anonymous_bot yet. "
+                    "Open @aua_anonymous_bot and send /invite (or /sync your account) first."
+                ),
+                "is_bot_synced": False,
+                "bot_url": "https://t.me/aua_anonymous_bot",
+            },
+            status=400,
+        )
+
+    async with get_db_session() as session:
+        invite_link, created_new = await get_or_create_web_user_persistent_invite_link(session, user)
+
+    return web.json_response(
+        {
+            "ok": True,
+            "is_bot_synced": True,
+            "persistent_invite_link": invite_link,
+            "created_new": created_new,
+            "bot_url": "https://t.me/aua_anonymous_bot",
         }
     )
 

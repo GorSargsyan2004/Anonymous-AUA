@@ -889,6 +889,148 @@ class TestFeedbackOverrideAndRecent(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(any("Partner #7" in t for t in texts2))
         self.assertIn("[2/2]", texts2)
 
+    async def test_anonymous_have_need_and_persistent_invite_flow(self):
+        from sqlalchemy import delete
+        from app.database.models import ChatInvite, Course, HaveNeedPost, WebUser
+        from app.database.web_crud import (
+            create_have_need_post,
+            get_or_create_web_user_persistent_invite_link,
+            get_web_user_persistent_invite_link,
+            list_have_need_posts,
+            update_have_need_post,
+        )
+        from app.web.server import serialize_have_need
+
+        async with get_db_session() as session:
+            # Clean any leftover test records
+            await session.execute(delete(HaveNeedPost).where(HaveNeedPost.contact_dm.like("%test_hn_anon%")))
+            await session.execute(delete(Course).where(Course.course_code.in_(["CS991", "CS992"])))
+            await session.execute(delete(WebUser).where(WebUser.email.in_(["hn_anon_u1@edu.aua.am", "hn_anon_u2@edu.aua.am"])))
+            await session.execute(delete(ChatInvite).where(ChatInvite.creator_id == self.user1_id))
+            await session.commit()
+
+            c1 = Course(
+                semester_label="Fall 2026",
+                school_year_code="2026",
+                semester_code="1",
+                course_code="CS991",
+                course_title="Anonymous Systems I",
+                section="A",
+                instructor="Dr. Test",
+                schedule_times="MWF 10:00am-10:50am",
+            )
+            c2 = Course(
+                semester_label="Fall 2026",
+                school_year_code="2026",
+                semester_code="1",
+                course_code="CS992",
+                course_title="Anonymous Systems II",
+                section="B",
+                instructor="Dr. Test",
+                schedule_times="TTH 12:00pm-01:15pm",
+            )
+            w1 = WebUser(
+                name="Real Student One",
+                email="hn_anon_u1@edu.aua.am",
+                telegram_user_id=self.user1_id,
+            )
+            w2 = WebUser(
+                name="Viewer Student Two",
+                email="hn_anon_u2@edu.aua.am",
+                telegram_user_id=None,
+            )
+            session.add_all([c1, c2, w1, w2])
+            await session.commit()
+            await session.refresh(c1)
+            await session.refresh(c2)
+            await session.refresh(w1)
+            await session.refresh(w2)
+
+            # 1. Initially no persistent invite exists for w1
+            initial_link = await get_web_user_persistent_invite_link(session, w1)
+            self.assertIsNone(initial_link)
+
+            # 2. Generate persistent invite link for synced user w1
+            invite_link, created_new = await get_or_create_web_user_persistent_invite_link(session, w1)
+            self.assertTrue(created_new)
+            self.assertIsNotNone(invite_link)
+            self.assertTrue(invite_link.startswith("https://t.me/aua_anonymous_bot?start=chat_"))
+
+            # Subsequent call reuses existing persistent invite link
+            invite_link_again, created_again = await get_or_create_web_user_persistent_invite_link(session, w1)
+            self.assertFalse(created_again)
+            self.assertEqual(invite_link, invite_link_again)
+
+            # Unsynced user w2 returns (None, False)
+            unsynced_link, unsynced_created = await get_or_create_web_user_persistent_invite_link(session, w2)
+            self.assertIsNone(unsynced_link)
+            self.assertFalse(unsynced_created)
+
+            # 3. Create anonymous Have-Need post with the persistent invite link
+            post = await create_have_need_post(
+                session=session,
+                web_user_id=w1.id,
+                have_course_id=c1.id,
+                need_course_id=c2.id,
+                contact_dm=invite_link,
+                notes="test_hn_anon swap",
+                notify_email=True,
+                is_anonymous=True,
+            )
+            self.assertTrue(post.is_anonymous)
+
+            # 4. Serialization for another viewer masks real author identity completely
+            as_other = serialize_have_need(post, current_user_id=w2.id)
+            self.assertTrue(as_other["is_anonymous"])
+            self.assertFalse(as_other["is_owner"])
+            self.assertIsNone(as_other["web_user_id"])
+            self.assertIsNone(as_other["author"]["id"])
+            self.assertEqual(as_other["author"]["name"], "Anonymous Student")
+            self.assertEqual(as_other["contact_dm"], invite_link)
+
+            # Serialization for owner keeps is_owner=True while still showing anonymous author state
+            as_owner = serialize_have_need(post, current_user_id=w1.id)
+            self.assertTrue(as_owner["is_anonymous"])
+            self.assertTrue(as_owner["is_owner"])
+            self.assertEqual(as_owner["web_user_id"], w1.id)
+
+            # 5. Public profile listing (include_anonymous=False) hides anonymous Have-Need posts
+            public_profile_posts = await list_have_need_posts(
+                session=session,
+                only_user_id=w1.id,
+                include_anonymous=False,
+            )
+            self.assertEqual(len([p for p in public_profile_posts if p.id == post.id]), 0)
+
+            # Owner's "My Posts" listing (include_anonymous=True) includes their own anonymous post
+            owner_mine_posts = await list_have_need_posts(
+                session=session,
+                only_user_id=w1.id,
+                include_anonymous=True,
+            )
+            self.assertEqual(len([p for p in owner_mine_posts if p.id == post.id]), 1)
+
+            # 6. Toggling anonymity off via update_have_need_post restores named visibility
+            updated = await update_have_need_post(
+                session=session,
+                post_id=post.id,
+                web_user_id=w1.id,
+                contact_dm="@real_student_one",
+                is_anonymous=False,
+            )
+            self.assertFalse(updated.is_anonymous)
+            as_named = serialize_have_need(updated, current_user_id=w2.id)
+            self.assertFalse(as_named["is_anonymous"])
+            self.assertEqual(as_named["author"]["name"], "Real Student One")
+            self.assertEqual(as_named["author"]["id"], w1.id)
+
+            # Cleanup
+            await session.execute(delete(HaveNeedPost).where(HaveNeedPost.id == post.id))
+            await session.execute(delete(Course).where(Course.id.in_([c1.id, c2.id])))
+            await session.execute(delete(WebUser).where(WebUser.id.in_([w1.id, w2.id])))
+            await session.execute(delete(ChatInvite).where(ChatInvite.creator_id == self.user1_id))
+            await session.commit()
+
 
 if __name__ == "__main__":
     unittest.main()
