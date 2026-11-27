@@ -965,20 +965,23 @@ def serialize_have_need(p: HaveNeedPost, current_user_id: Optional[int] = None) 
 def serialize_group(g: TelegramGroup, current_user_id: Optional[int] = None) -> Dict[str, Any]:
     u = g.web_user
     is_deleted = getattr(u, "is_deleted", False) or (u and u.name == "Deleted Account")
+    is_owner = bool(current_user_id and g.web_user_id == current_user_id and not is_deleted)
+    is_anon = bool(getattr(g, "is_anonymous", False))
     return {
         "id": g.id,
-        "web_user_id": g.web_user_id,
-        "is_owner": bool(current_user_id and g.web_user_id == current_user_id and not is_deleted),
+        "web_user_id": (g.web_user_id if is_owner else None) if is_anon else g.web_user_id,
+        "is_owner": is_owner,
+        "is_anonymous": is_anon,
         "name": g.name,
         "description": g.description or "",
         "invite_link": g.invite_link,
         "image_url": g.image_url or "",
-        "author_id": u.id if u else g.web_user_id,
-        "author_name": "Deleted Account" if is_deleted else (u.name if u else "AUA Student"),
-        "author_avatar": "/static/bot-logo.svg" if is_deleted else ((u.avatar_url or "") if u else ""),
-        "author_bio": "" if is_deleted else ((u.bio or "") if u else ""),
-        "author_inbox_link": "" if is_deleted else ((u.inbox_link or "") if u else ""),
-        "is_deleted": is_deleted,
+        "author_id": None if is_anon else (u.id if u else g.web_user_id),
+        "author_name": "Anonymous Student" if is_anon else ("Deleted Account" if is_deleted else (u.name if u else "AUA Student")),
+        "author_avatar": "" if is_anon else ("/static/bot-logo.svg" if is_deleted else ((u.avatar_url or "") if u else "")),
+        "author_bio": "" if (is_anon or is_deleted) else ((u.bio or "") if u else ""),
+        "author_inbox_link": "" if (is_anon or is_deleted) else ((u.inbox_link or "") if u else ""),
+        "is_deleted": False if is_anon else is_deleted,
         "created_at": g.created_at.isoformat() if g.created_at else None,
     }
 
@@ -3325,6 +3328,7 @@ async def api_create_group(request: web.Request) -> web.Response:
     invite_link = (data.get("invite_link") or "").strip()
     description = (data.get("description") or "").strip()
     image_url = (data.get("image_url") or "").strip()
+    is_anonymous = bool(data.get("is_anonymous", False))
 
     if len(name) < 2 or len(name) > 120:
         return web.json_response({"error": "Group name must be between 2 and 120 characters."}, status=400)
@@ -3356,6 +3360,7 @@ async def api_create_group(request: web.Request) -> web.Response:
             invite_link=invite_link,
             description=description,
             image_url=image_url or None,
+            is_anonymous=is_anonymous,
         )
         return web.json_response({"ok": True, "group": serialize_group(group, current_user_id=user.id)})
 
@@ -3384,6 +3389,7 @@ async def api_update_group(request: web.Request) -> web.Response:
     invite_link = (data.get("invite_link") or "").strip()
     description = (data.get("description") or "").strip()
     image_url = (data.get("image_url") or "").strip()
+    is_anonymous = bool(data.get("is_anonymous", False))
 
     if len(name) < 2 or len(name) > 120:
         return web.json_response({"error": "Group name must be between 2 and 120 characters."}, status=400)
@@ -3416,6 +3422,7 @@ async def api_update_group(request: web.Request) -> web.Response:
             invite_link=invite_link,
             description=description,
             image_url=image_url or None,
+            is_anonymous=is_anonymous,
         )
         if not group:
             return web.json_response({"error": "Group not found or not owned by you."}, status=404)

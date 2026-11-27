@@ -1557,6 +1557,7 @@ async def create_telegram_group(
     invite_link: str,
     description: Optional[str] = None,
     image_url: Optional[str] = None,
+    is_anonymous: bool = False,
 ) -> TelegramGroup:
     """Create a new Telegram group listing."""
     group = TelegramGroup(
@@ -1565,6 +1566,7 @@ async def create_telegram_group(
         invite_link=invite_link.strip()[:256],
         description=description.strip()[:600] if description else None,
         image_url=image_url.strip()[:512] if image_url else None,
+        is_anonymous=bool(is_anonymous),
     )
     session.add(group)
     await session.commit()
@@ -1620,6 +1622,7 @@ async def update_telegram_group(
     invite_link: str,
     description: Optional[str] = None,
     image_url: Optional[str] = None,
+    is_anonymous: Optional[bool] = None,
 ) -> Optional[TelegramGroup]:
     """Update an existing Telegram group owned by the specified user."""
     stmt = (
@@ -1638,6 +1641,8 @@ async def update_telegram_group(
     group.invite_link = invite_link.strip()[:256]
     group.description = description.strip()[:600] if (description and description.strip()) else None
     group.image_url = image_url.strip()[:512] if (image_url and image_url.strip()) else None
+    if is_anonymous is not None:
+        group.is_anonymous = bool(is_anonymous)
 
     await session.commit()
     await session.refresh(group)

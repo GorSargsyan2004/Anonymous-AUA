@@ -479,6 +479,11 @@ async def init_db() -> None:
         )
         await conn.execute(
             text(
+                "ALTER TABLE telegram_groups ADD COLUMN IF NOT EXISTS is_anonymous BOOLEAN NOT NULL DEFAULT false;"
+            )
+        )
+        await conn.execute(
+            text(
                 "ALTER TABLE anonymous_public_posts ADD COLUMN IF NOT EXISTS report_count INTEGER NOT NULL DEFAULT 0;"
             )
         )

@@ -24,7 +24,7 @@
   <link rel="icon" type="image/png" sizes="32x32" href="/static/favicon-32x32.png?v=20261113_1" />
   <link rel="icon" type="image/png" sizes="192x192" href="/static/favicon-192x192.png?v=20261113_1" />
   <link rel="shortcut icon" href="/favicon.ico?v=20261113_1" />
-  <link rel="stylesheet" href="/static/styles.css?v=20261127_8" />
+  <link rel="stylesheet" href="/static/styles.css?v=20261127_9" />
 </head>
 
 <body>
@@ -1468,7 +1468,6 @@
         aria-label="Close">&times;</button>
 
       <div class="group-modal-hero">
-        <div id="groupModalIconBadge" class="group-modal-icon-badge">✈️</div>
         <div>
           <h2 id="groupModalTitle" class="group-modal-title">Post a Telegram Group</h2>
           <p id="groupModalSubtitle" class="group-modal-subtitle">
@@ -1485,18 +1484,17 @@
               <span id="groupAvatarInitial">G</span>
               <img id="groupAvatarPreviewImg" src="" alt="Group preview" style="display:none;" />
             </div>
-            <span class="group-avatar-cam-badge">📷</span>
+            <span class="group-avatar-cam-badge">+</span>
             <input type="file" id="groupImageFileInput" accept="image/*" style="display:none;"
               onchange="handleGroupImageUpload(this)" />
           </label>
 
           <div class="group-identity-fields">
-            <label class="field-label" style="margin-bottom:5px;">🏷️ Group Name</label>
+            <label class="field-label" style="margin-bottom:5px;" for="groupNameInput">Group Name</label>
             <input type="text" id="groupNameInput" class="input-glass" placeholder="e.g. AUA CS Class of 2028"
               oninput="updateGroupModalPreview()" required />
             <div class="group-upload-status-row">
-              <span id="groupUploadedPreview" class="group-upload-status-text">Tap icon to add group photo
-                (optional)</span>
+              <span id="groupUploadedPreview" class="group-upload-status-text">Optional: click icon to add group photo</span>
               <button type="button" id="groupRemovePhotoBtn" class="group-remove-photo-btn hidden"
                 onclick="clearGroupUploadedPhoto()">Remove</button>
             </div>
@@ -1505,39 +1503,31 @@
         </div>
 
         <div class="group-field-block">
-          <label class="field-label">🔗 Telegram Invite Link</label>
-          <div class="group-link-input-wrap">
-            <span class="group-link-prefix">✈️</span>
-            <input type="text" id="groupLinkInput" class="input-glass group-link-input"
-              placeholder="https://t.me/+AbCdEfGhIjK or https://t.me/groupname" required />
-          </div>
+          <label class="field-label" for="groupLinkInput">Telegram Invite Link</label>
+          <input type="text" id="groupLinkInput" class="input-glass"
+            placeholder="https://t.me/+AbCdEfGhIjK or https://t.me/groupname" required />
         </div>
 
         <div class="group-field-block">
-          <div style="display:flex; align-items:center; justify-content:space-between; gap:8px; margin-bottom:6px;">
-            <label class="field-label" style="margin-bottom:0;">📝 About the Group</label>
-            <span class="group-quick-tags-hint">Quick tags:</span>
-          </div>
-          <div class="group-quick-tags" role="group" aria-label="Quick category tags">
-            <button type="button" class="group-tag-chip" onclick="appendGroupQuickTag('📚 Study Group')">📚 Study
-              Group</button>
-            <button type="button" class="group-tag-chip" onclick="appendGroupQuickTag('💻 Major / Class')">💻 Major /
-              Class</button>
-            <button type="button" class="group-tag-chip" onclick="appendGroupQuickTag('🎉 Campus Club')">🎉 Campus
-              Club</button>
-            <button type="button" class="group-tag-chip" onclick="appendGroupQuickTag('🏀 Sports &amp; Hobbies')">🏀
-              Sports &amp; Hobbies</button>
-          </div>
+          <label class="field-label" for="groupDescInput">Description (Optional)</label>
           <textarea id="groupDescInput" class="textarea-glass" rows="3"
             placeholder="What is this group about? Which students or courses is it for?"></textarea>
         </div>
+
+        <label class="group-anon-checkbox-row" for="groupAnonymousCheckbox">
+          <input type="checkbox" id="groupAnonymousCheckbox" class="hn-match-checkbox" />
+          <div class="hn-match-toggle-text">
+            <div class="hn-match-toggle-title">Post anonymously</div>
+            <div class="hn-match-toggle-sub">Hide your name and profile from this group listing.</div>
+          </div>
+        </label>
 
         <div class="group-modal-actions">
           <button type="button" class="btn-glass group-cancel-btn" onclick="closeGroupModal()">
             Cancel
           </button>
           <button type="submit" id="groupModalSubmitBtn" class="btn-illuminated group-submit-btn">
-            ✈️ Publish Group
+            Publish Group
           </button>
         </div>
       </form>
@@ -1948,7 +1938,7 @@
     </div>
   </div>
 
-  <script src="/static/app.js?v=20261127_8"></script>
+  <script src="/static/app.js?v=20261127_9"></script>
 </body>
 
 </html>

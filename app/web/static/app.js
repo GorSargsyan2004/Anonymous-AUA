@@ -3909,10 +3909,9 @@ async function loadTelegramGroups(page = 1) {
     if (groups.length === 0) {
       grid.innerHTML = `
         <div class="glass-card" style="grid-column:1/-1; text-align:center; padding:42px 20px;">
-          <div style="font-size:36px; margin-bottom:10px;">✈️</div>
           <h3 style="font-size:18px; font-weight:700;">No Telegram Groups Found</h3>
           <p style="color:var(--text-secondary); font-size:13.5px; margin-top:4px;">
-            Have a study group, major chat, or student club? Click <b>"Post Telegram Group"</b> to add it!
+            Have a study group, major chat, or student club? Click <b>"Post Telegram Group"</b> to add it.
           </p>
         </div>
       `;
@@ -3926,13 +3925,22 @@ async function loadTelegramGroups(page = 1) {
         const imgHtml = g.image_url
           ? `<img src="${escapeHtml(g.image_url)}" class="group-avatar" alt="${escapeHtml(g.name)}" />`
           : `<div class="group-avatar">${escapeHtml(initial)}</div>`;
+        const isAnon = Boolean(g.is_anonymous);
         const authorObj = {
-          id: g.author_id || g.web_user_id,
-          name: g.author_name || "AUA Student",
-          avatar_url: g.author_avatar || "",
-          bio: g.author_bio || "",
-          inbox_link: g.author_inbox_link || "",
+          id: isAnon ? null : (g.author_id || g.web_user_id),
+          name: isAnon ? "Anonymous Student" : (g.author_name || "AUA Student"),
+          avatar_url: isAnon ? "" : (g.author_avatar || ""),
+          bio: isAnon ? "" : (g.author_bio || ""),
+          inbox_link: isAnon ? "" : (g.author_inbox_link || ""),
         };
+
+        const postedByHtml = isAnon
+          ? `<span>Posted anonymously${g.is_owner ? " (Your Group)" : ""}</span>`
+          : `
+            <span>Posted by</span>
+            ${renderAvatarCircleHtml(authorObj, "user-avatar-xs", true)}
+            ${renderClickableUserNameHtml(authorObj, "group-author-name")}
+          `;
 
         return `
           <div class="glass-card group-card">
@@ -3942,9 +3950,7 @@ async function loadTelegramGroups(page = 1) {
                 <div style="flex:1;">
                   <h3 style="font-size:17px; font-weight:800; color:var(--text-white);">${escapeHtml(g.name)}</h3>
                   <div style="font-size:12px; color:var(--text-secondary); margin-top:4px; display:flex; align-items:center; gap:6px; flex-wrap:wrap;">
-                    <span>Posted by</span>
-                    ${renderAvatarCircleHtml(authorObj, "user-avatar-xs", true)}
-                    ${renderClickableUserNameHtml(authorObj, "group-author-name")}
+                    ${postedByHtml}
                   </div>
                 </div>
               </div>
@@ -3959,8 +3965,8 @@ async function loadTelegramGroups(page = 1) {
               </a>
               ${g.is_owner
             ? `
-                <button class="btn-glass" style="padding:8px 12px; font-size:12.5px;" onclick="startEditGroup(${g.id})" title="Edit Group">✏️ Edit</button>
-                <button class="btn-danger-glass" onclick="deleteGroup(${g.id})" title="Delete Group">🗑️</button>
+                <button class="btn-glass" style="padding:8px 12px; font-size:12.5px;" onclick="startEditGroup(${g.id})" title="Edit Group">Edit</button>
+                <button class="btn-danger-glass" style="padding:8px 12px; font-size:12.5px;" onclick="deleteGroup(${g.id})" title="Delete Group">Delete</button>
               `
             : ""
           }
@@ -3977,18 +3983,15 @@ async function loadTelegramGroups(page = 1) {
 }
 
 function setGroupModalMode(isEditing) {
-  const iconBadge = document.getElementById("groupModalIconBadge");
   const titleEl = document.getElementById("groupModalTitle");
   const subEl = document.getElementById("groupModalSubtitle");
   const submitBtn = document.getElementById("groupModalSubmitBtn");
 
   if (isEditing) {
-    if (iconBadge) iconBadge.textContent = "✏️";
     if (titleEl) titleEl.textContent = "Edit Telegram Group";
     if (subEl) subEl.textContent = "Update your group's name, invite link, photo, or description.";
-    if (submitBtn) submitBtn.textContent = "💾 Save Changes";
+    if (submitBtn) submitBtn.textContent = "Save Changes";
   } else {
-    if (iconBadge) iconBadge.textContent = "✈️";
     if (titleEl) titleEl.textContent = "Post a Telegram Group";
     if (subEl) subEl.textContent = "Share a study group, major chat, or campus club with the AUA community.";
     if (submitBtn) submitBtn.textContent = "Publish Group";
@@ -3999,9 +4002,11 @@ function resetGroupModalFields() {
   const nameInput = document.getElementById("groupNameInput");
   const linkInput = document.getElementById("groupLinkInput");
   const descInput = document.getElementById("groupDescInput");
+  const anonInput = document.getElementById("groupAnonymousCheckbox");
   if (nameInput) nameInput.value = "";
   if (linkInput) linkInput.value = "";
   if (descInput) descInput.value = "";
+  if (anonInput) anonInput.checked = false;
   clearGroupUploadedPhoto();
 }
 
@@ -4038,6 +4043,7 @@ function startEditGroup(groupId) {
   const nameInput = document.getElementById("groupNameInput");
   const linkInput = document.getElementById("groupLinkInput");
   const descInput = document.getElementById("groupDescInput");
+  const anonInput = document.getElementById("groupAnonymousCheckbox");
   const urlInput = document.getElementById("groupImageUrlInput");
   const previewImg = document.getElementById("groupAvatarPreviewImg");
   const initialEl = document.getElementById("groupAvatarInitial");
@@ -4047,6 +4053,7 @@ function startEditGroup(groupId) {
   if (nameInput) nameInput.value = g.name || "";
   if (linkInput) linkInput.value = g.invite_link || "";
   if (descInput) descInput.value = g.description || "";
+  if (anonInput) anonInput.checked = Boolean(g.is_anonymous);
 
   if (g.image_url) {
     if (urlInput) urlInput.value = g.image_url;
@@ -4059,7 +4066,7 @@ function startEditGroup(groupId) {
       removeBtn.classList.remove("hidden");
       removeBtn.style.display = "inline-flex";
     }
-    if (statusLabel) statusLabel.textContent = "✅ Current group photo";
+    if (statusLabel) statusLabel.textContent = "Current group photo";
   } else {
     clearGroupUploadedPhoto();
   }
@@ -4079,7 +4086,7 @@ function updateGroupModalPreview() {
   const nameVal = (document.getElementById("groupNameInput")?.value || "").trim();
   const initialEl = document.getElementById("groupAvatarInitial");
   if (initialEl) {
-    initialEl.textContent = nameVal ? getUserInitial(nameVal) : "✈️";
+    initialEl.textContent = nameVal ? getUserInitial(nameVal) : "G";
   }
 }
 
@@ -4102,7 +4109,7 @@ function clearGroupUploadedPhoto() {
     removeBtn.classList.add("hidden");
     removeBtn.style.display = "none";
   }
-  if (statusLabel) statusLabel.textContent = "Tap icon to add group photo (optional)";
+  if (statusLabel) statusLabel.textContent = "Optional: click icon to add group photo";
   updateGroupModalPreview();
 }
 
@@ -4126,7 +4133,7 @@ async function handleGroupImageUpload(inputEl) {
   const initialEl = document.getElementById("groupAvatarInitial");
   const removeBtn = document.getElementById("groupRemovePhotoBtn");
 
-  if (preview) preview.textContent = "⏳ Uploading photo...";
+  if (preview) preview.textContent = "Uploading photo...";
   try {
     const fd = new FormData();
     fd.append("file", file);
@@ -4141,7 +4148,7 @@ async function handleGroupImageUpload(inputEl) {
       removeBtn.classList.remove("hidden");
       removeBtn.style.display = "inline-flex";
     }
-    if (preview) preview.textContent = "✅ Group photo ready";
+    if (preview) preview.textContent = "Group photo ready";
   } catch (err) {
     if (preview) preview.textContent = "Upload failed";
     showToast(err.message, true);
@@ -4154,28 +4161,29 @@ async function submitNewGroup(e) {
   const invite_link = document.getElementById("groupLinkInput").value.trim();
   const description = document.getElementById("groupDescInput").value.trim();
   const image_url = document.getElementById("groupImageUrlInput").value.trim();
+  const is_anonymous = Boolean(document.getElementById("groupAnonymousCheckbox")?.checked);
   const editingId = state.editingGroupId;
 
   try {
     if (editingId) {
       await apiFetch(`/api/groups/${editingId}`, {
         method: "PUT",
-        body: JSON.stringify({ name, invite_link, description, image_url }),
+        body: JSON.stringify({ name, invite_link, description, image_url, is_anonymous }),
       });
       state.editingGroupId = null;
       closeGroupModal();
       resetGroupModalFields();
       setGroupModalMode(false);
-      showToast("Telegram group updated! ✨");
+      showToast("Telegram group updated.");
       loadTelegramGroups(state.groupsPage || 1);
     } else {
       await apiFetch("/api/groups", {
         method: "POST",
-        body: JSON.stringify({ name, invite_link, description, image_url }),
+        body: JSON.stringify({ name, invite_link, description, image_url, is_anonymous }),
       });
       closeGroupModal();
       resetGroupModalFields();
-      showToast("Telegram group published! ✈️");
+      showToast("Telegram group published.");
       loadTelegramGroups(1);
     }
   } catch (err) {

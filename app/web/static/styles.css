@@ -4374,7 +4374,26 @@ a,
 }
 
 .group-field-block {
+  margin-bottom: 14px;
+}
+
+.group-anon-checkbox-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 11px;
+  padding: 12px 14px;
   margin-bottom: 16px;
+  border-radius: 12px;
+  background: rgba(15, 23, 42, 0.58);
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  cursor: pointer;
+  user-select: none;
+  transition: border-color 0.18s ease, background 0.18s ease;
+}
+
+.group-anon-checkbox-row:hover {
+  border-color: rgba(56, 189, 248, 0.45);
+  background: rgba(15, 23, 42, 0.78);
 }
 
 .group-link-input-wrap {

@@ -767,6 +767,9 @@ class TelegramGroup(Base):
     description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     invite_link: Mapped[str] = mapped_column(String(256), nullable=False)
     image_url: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
+    is_anonymous: Mapped[bool] = mapped_column(
+        Boolean, default=False, nullable=False, server_default=text("false")
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
