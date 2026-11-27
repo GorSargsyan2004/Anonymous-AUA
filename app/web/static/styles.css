@@ -835,20 +835,30 @@ a,
 .home-contact-pill {
   display: flex;
   flex-direction: column;
-  gap: 6px;
-  padding: 16px 26px;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  gap: 7px;
+  padding: 20px 34px;
   border-radius: 18px;
-  font-size: 13.8px;
+  font-size: 14.2px;
   color: var(--text-ice);
-  max-width: 780px;
+  max-width: 1020px;
   width: 100%;
-  border: 1px solid rgba(56, 189, 248, 0.28);
-  background: rgba(10, 19, 38, 0.78);
+  border: 1px solid rgba(56, 189, 248, 0.26);
+  background: linear-gradient(135deg, rgba(12, 22, 44, 0.84), rgba(8, 14, 28, 0.88));
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.35), inset 0 1px 0 rgba(255, 255, 255, 0.06);
+}
+
+.home-contact-headline {
+  color: var(--text-white);
+  line-height: 1.5;
 }
 
 .home-contact-subline {
-  font-size: 12.5px;
+  font-size: 13px;
   color: var(--text-secondary);
+  line-height: 1.45;
 }
 
 .home-contact-pill a {
