@@ -9569,9 +9569,217 @@ async function importGpaCalcFromTrackedCourses() {
    Sub-View 2: Authenticated Course Tracker & Optimal Grade Engine
    -------------------------------------------------------------------------- */
 
+function isGpaFinalCategory(name, category = "") {
+  const combined = `${name || ""} ${category || ""}`.trim().toLowerCase();
+  if (!combined) return false;
+  return /\bfinal\b/.test(combined);
+}
+
+function inferGpaAssignmentCategory(name, explicitCategory = "") {
+  const cand = String(explicitCategory || "").trim();
+  if (cand) {
+    const lowC = cand.toLowerCase();
+    if (/\bfinal\b/.test(lowC)) return "Final Exam";
+    if (lowC.includes("quiz")) return "Quizzes";
+    if (lowC.includes("homework") || lowC === "hw" || lowC === "hws" || lowC.includes("problem set")) return "Homeworks";
+    if (lowC.includes("midterm")) return "Midterms";
+    if (lowC.includes("lab")) return "Labs";
+    return cand.slice(0, 80);
+  }
+
+  const raw = String(name || "Assignments").trim();
+  const low = raw.toLowerCase();
+  if (/\bfinal\b/.test(low)) return "Final Exam";
+  if (low.includes("quiz")) return "Quizzes";
+  if (low.includes("homework") || /\bhws?\b/.test(low) || low.includes("problem set")) return "Homeworks";
+  if (low.includes("midterm")) return "Midterms";
+  if (/\blabs?\b/.test(low) || low.includes("laboratory")) return "Labs";
+  if (low.includes("project")) return "Projects";
+  if (low.includes("paper") || low.includes("essay")) return "Papers & Essays";
+  if (low.includes("presentation")) return "Presentations";
+  if (low.includes("attendance") || low.includes("participation")) return "Participation";
+
+  let stripped = raw.replace(/\s*\([^)]*\)\s*$/, "").trim();
+  stripped = stripped.replace(/\s+(?:#?\d+|[IVX]{1,4})\s*$/i, "").trim();
+  if (!stripped) return "Assignments";
+  if (stripped.toLowerCase() === "assignment") return "Assignments";
+  if (stripped.toLowerCase() === "exam" || stripped.toLowerCase() === "test") return "Exams";
+  return stripped.slice(0, 80);
+}
+
+function computeCourseCategoryDropState(course) {
+  const assignments = Array.isArray(course?.assignments) ? course.assignments : [];
+  const categoryOrder = [];
+  const categoriesMap = {};
+
+  for (const a of assignments) {
+    const cat = inferGpaAssignmentCategory(a.name, a.category);
+    a.category = cat;
+    if (!categoriesMap[cat]) {
+      categoriesMap[cat] = {
+        name: cat,
+        items: [],
+        isFinal: false,
+        totalBaseWeight: 0,
+        dropLowestCount: 0,
+        maxDropsAllowed: 0,
+        activeCount: 0,
+        droppedCount: 0,
+      };
+      categoryOrder.push(cat);
+    }
+    categoriesMap[cat].items.push(a);
+  }
+
+  const droppedById = new Set();
+  const autoDroppedById = new Set();
+  const manualDroppedById = new Set();
+  const effectiveWeightById = {};
+  const categoryByAssignId = {};
+
+  for (const catName of categoryOrder) {
+    const group = categoriesMap[catName];
+    const items = group.items;
+    group.isFinal = items.some((a) => isGpaFinalCategory(a.name, catName));
+    group.totalBaseWeight =
+      Math.round(
+        items.reduce((acc, a) => acc + Math.max(0, Number(a.weight || 0)), 0) * 100
+      ) / 100;
+
+    group.maxDropsAllowed = group.isFinal || items.length <= 1 ? 0 : items.length - 1;
+    const rawDropRule = Math.max(
+      0,
+      ...items.map((a) => parseInt(a.category_drop_lowest ?? a.drop_lowest ?? 0, 10) || 0)
+    );
+    group.dropLowestCount =
+      group.isFinal || items.length <= 1
+        ? 0
+        : Math.max(0, Math.min(group.maxDropsAllowed, rawDropRule));
+
+    for (const a of items) {
+      a.category_drop_lowest = group.dropLowestCount;
+      categoryByAssignId[a.id] = catName;
+      if (group.isFinal || items.length <= 1) {
+        a.is_dropped = false;
+        a.drop_mode = null;
+      }
+    }
+
+    if (!group.isFinal && items.length > 1) {
+      // 1. Collect explicit manual drops (capped at items.length - 1 so at least 1 item stays active)
+      for (const a of items) {
+        if (Boolean(a.is_dropped) && manualDroppedById.size < items.length - 1) {
+          const currentCatManualCount = items.filter((x) => manualDroppedById.has(x.id)).length;
+          if (currentCatManualCount < items.length - 1) {
+            droppedById.add(a.id);
+            manualDroppedById.add(a.id);
+          } else {
+            a.is_dropped = false;
+          }
+        }
+      }
+
+      const catManualDroppedCount = items.filter((x) => manualDroppedById.has(x.id)).length;
+      const neededAuto = Math.max(0, group.dropLowestCount - catManualDroppedCount);
+
+      // 2. Automatic lowest-K drops among graded items in this category
+      if (neededAuto > 0) {
+        const nonManualItems = items.filter((a) => !manualDroppedById.has(a.id));
+        const gradedNonManual = nonManualItems.filter((a) => {
+          const hasScore = a.score !== null && a.score !== undefined && String(a.score).trim() !== "";
+          return hasScore && Number.isFinite(Number(a.score));
+        });
+        const ungradedNonManual = nonManualItems.filter((a) => {
+          const hasScore = a.score !== null && a.score !== undefined && String(a.score).trim() !== "";
+          return !hasScore;
+        });
+
+        const autoCandidates = gradedNonManual
+          .map((a, idx) => ({ item: a, score: Number(a.score), idx }))
+          .filter((x) => x.item.drop_mode !== "manual");
+
+        // Keep at least 1 graded item active when ungraded items remain (so early-semester standing isn't zeroed),
+        // and always keep at least 1 item active in the category overall.
+        const maxAutoCap =
+          ungradedNonManual.length > 0
+            ? Math.min(neededAuto, Math.max(0, gradedNonManual.length - 1))
+            : Math.min(neededAuto, Math.max(0, nonManualItems.length - 1));
+
+        autoCandidates.sort((a, b) => {
+          if (a.score !== b.score) return a.score - b.score;
+          return b.idx - a.idx;
+        });
+
+        for (let i = 0; i < Math.min(maxAutoCap, autoCandidates.length); i++) {
+          const pickedId = autoCandidates[i].item.id;
+          droppedById.add(pickedId);
+          autoDroppedById.add(pickedId);
+        }
+      }
+    }
+
+    // 3. Normalize weights strictly within this category
+    const activeItems = items.filter((a) => !droppedById.has(a.id));
+    group.activeCount = activeItems.length;
+    group.droppedCount = items.length - activeItems.length;
+
+    for (const a of items) {
+      if (droppedById.has(a.id)) {
+        effectiveWeightById[a.id] = 0.0;
+      }
+    }
+
+    if (activeItems.length === 1) {
+      effectiveWeightById[activeItems[0].id] = group.totalBaseWeight;
+    } else if (activeItems.length > 1) {
+      const activeBaseSum = activeItems.reduce(
+        (acc, a) => acc + Math.max(0, Number(a.weight || 0)),
+        0
+      );
+      if (activeBaseSum > 0) {
+        let running = 0;
+        for (let i = 0; i < activeItems.length; i++) {
+          const item = activeItems[i];
+          if (i === activeItems.length - 1) {
+            effectiveWeightById[item.id] = Math.max(
+              0,
+              Math.round((group.totalBaseWeight - running) * 100) / 100
+            );
+          } else {
+            const share =
+              Math.round(
+                group.totalBaseWeight *
+                  (Math.max(0, Number(item.weight || 0)) / activeBaseSum) *
+                  100
+              ) / 100;
+            effectiveWeightById[item.id] = share;
+            running = Math.round((running + share) * 100) / 100;
+          }
+        }
+      } else {
+        const evenWeights = splitWeightEvenlyClient(group.totalBaseWeight, activeItems.length);
+        activeItems.forEach((item, idx) => {
+          effectiveWeightById[item.id] = evenWeights[idx];
+        });
+      }
+    }
+  }
+
+  return {
+    categoryOrder,
+    categoriesMap,
+    droppedById,
+    autoDroppedById,
+    manualDroppedById,
+    effectiveWeightById,
+    categoryByAssignId,
+  };
+}
+
 function computeCourseOptimalMetrics(course) {
   const assignments = Array.isArray(course?.assignments) ? course.assignments : [];
   const target = Number(course?.target_percent ?? 90);
+  const dropState = computeCourseCategoryDropState(course);
 
   let baseWeightSum = 0;
   let earned = 0;
@@ -9579,25 +9787,34 @@ function computeCourseOptimalMetrics(course) {
   let remainingWeight = 0;
 
   for (const a of assignments) {
-    const w = Math.max(0, Number(a.weight || 0));
+    const nominalW = Math.max(0, Number(a.weight || 0));
     const isExtra = Boolean(a.is_extra_credit);
     if (!isExtra) {
-      baseWeightSum += w;
+      baseWeightSum += nominalW;
     }
 
+    if (dropState.droppedById.has(a.id)) {
+      continue;
+    }
+
+    const effW = Math.max(0, Number(dropState.effectiveWeightById[a.id] ?? nominalW));
     const hasScore = a.score !== null && a.score !== undefined && String(a.score).trim() !== "";
     if (hasScore) {
       const s = Number(a.score);
       if (Number.isFinite(s)) {
-        earned += (s * w) / 100.0;
+        earned += (s * effW) / 100.0;
         if (!isExtra) {
-          gradedWeight += w;
+          gradedWeight += effW;
         }
       }
     } else if (!isExtra) {
-      remainingWeight += w;
+      remainingWeight += effW;
     }
   }
+
+  baseWeightSum = Math.round(baseWeightSum * 100) / 100;
+  gradedWeight = Math.round(gradedWeight * 100) / 100;
+  remainingWeight = Math.round(remainingWeight * 100) / 100;
 
   const weightMismatch = Math.abs(baseWeightSum - 100.0) > 0.05;
   const maxPossible = earned + remainingWeight;
@@ -9661,6 +9878,7 @@ function computeCourseOptimalMetrics(course) {
     verdictTitle,
     verdictSub,
     target,
+    dropState,
   };
 }
 
@@ -9861,8 +10079,11 @@ async function uploadAndCreateCourseFromSyllabus(file) {
         assignments: syl.assignments.map((a, idx) => ({
           id: `a_${idx + 1}`,
           name: a.name,
+          category: inferGpaAssignmentCategory(a.name, a.category),
           weight: Number(a.weight || 0),
           score: null,
+          is_dropped: Boolean(a.is_dropped),
+          category_drop_lowest: Number(a.category_drop_lowest ?? a.drop_lowest ?? 0) || 0,
           is_extra_credit: Boolean(a.is_extra_credit),
         })),
         notes: syl.notes || "",
@@ -9893,9 +10114,12 @@ async function uploadAndCreateCourseFromSyllabus(file) {
 
 function _defaultStarterAssignments() {
   return [
-    { id: "a_1", name: "Homework & Quizzes", weight: 25, score: null, is_extra_credit: false },
-    { id: "a_2", name: "Midterm Exam", weight: 35, score: null, is_extra_credit: false },
-    { id: "a_3", name: "Final Exam / Project", weight: 40, score: null, is_extra_credit: false },
+    { id: "a_1", name: "Quiz 1", category: "Quizzes", weight: 7.5, score: null, is_dropped: false, category_drop_lowest: 0, is_extra_credit: false },
+    { id: "a_2", name: "Quiz 2", category: "Quizzes", weight: 7.5, score: null, is_dropped: false, category_drop_lowest: 0, is_extra_credit: false },
+    { id: "a_3", name: "Homework 1", category: "Homeworks", weight: 7.5, score: null, is_dropped: false, category_drop_lowest: 0, is_extra_credit: false },
+    { id: "a_4", name: "Homework 2", category: "Homeworks", weight: 7.5, score: null, is_dropped: false, category_drop_lowest: 0, is_extra_credit: false },
+    { id: "a_5", name: "Midterm Exam", category: "Midterms", weight: 30, score: null, is_dropped: false, category_drop_lowest: 0, is_extra_credit: false },
+    { id: "a_6", name: "Final Exam", category: "Final Exam", weight: 40, score: null, is_dropped: false, category_drop_lowest: 0, is_extra_credit: false },
   ];
 }
 
@@ -9954,7 +10178,14 @@ function createManualGpaCourseFromError() {
   createManualGpaCourse(state.gpaLastFailedFilename || "Manual Course");
 }
 
-function _buildBlankScoreHintInfo(metrics, isExtraCredit) {
+function _buildBlankScoreHintInfo(metrics, isExtraCredit, isDropped = false) {
+  if (isDropped) {
+    return {
+      placeholder: "Dropped (0% weight)",
+      badgeText: "Dropped",
+      badgeClass: "hint-dropped",
+    };
+  }
   if (isExtraCredit) {
     return {
       placeholder: "Bonus % (optional)",
@@ -9987,6 +10218,111 @@ function _buildBlankScoreHintInfo(metrics, isExtraCredit) {
   };
 }
 
+function buildGpaAssignmentRowHtml(a, group, dropState, metrics) {
+  const isDropped = dropState.droppedById.has(a.id);
+  const isAutoDropped = dropState.autoDroppedById.has(a.id);
+  const effWeight = Number(dropState.effectiveWeightById[a.id] ?? a.weight ?? 0);
+  const baseWeight = Number(a.weight ?? 0);
+  const weightChanged = !isDropped && Math.abs(effWeight - baseWeight) > 0.01;
+  const hasScore = a.score !== null && a.score !== undefined && String(a.score).trim() !== "";
+  const scoreVal = hasScore ? Number(a.score) : "";
+  const hint = _buildBlankScoreHintInfo(metrics, Boolean(a.is_extra_credit), isDropped);
+  const showHintBadge = (!hasScore || isDropped) && hint.badgeText;
+
+  let weightMetaHtml = "";
+  if (isDropped) {
+    weightMetaHtml = `<span id="gpaEffWeightBadge_${escapeHtml(a.id)}" class="gpa-eff-weight-pill is-zero" title="Excluded from "${escapeHtml(group.name)}" — its ${baseWeight}% share is normalized across the remaining items in ${escapeHtml(group.name)}">→ 0%</span>`;
+  } else if (weightChanged) {
+    weightMetaHtml = `<span id="gpaEffWeightBadge_${escapeHtml(a.id)}" class="gpa-eff-weight-pill is-boosted" title="Normalized from ${baseWeight}% to ${effWeight.toFixed(2)}% within ${escapeHtml(group.name)}">→ ${effWeight.toFixed(2)}%</span>`;
+  } else {
+    weightMetaHtml = `<span id="gpaEffWeightBadge_${escapeHtml(a.id)}" class="gpa-eff-weight-pill hidden"></span>`;
+  }
+
+  let dropCellHtml = "";
+  if (group.isFinal) {
+    dropCellHtml = `
+      <span class="gpa-drop-locked-pill" title="Final exams cannot be dropped">
+        🔒 Final
+      </span>
+    `;
+  } else if (group.items.length <= 1) {
+    dropCellHtml = `
+      <span class="gpa-drop-locked-pill" title="Click ÷ Split or + Item in this category to add items before dropping">
+        1 item
+      </span>
+    `;
+  } else {
+    const dropLabelText = isDropped ? (isAutoDropped ? "Auto" : "Dropped") : "Drop";
+    const dropTitle = isDropped
+      ? isAutoDropped
+        ? `Auto-dropped as one of the lowest scores in ${group.name}. Uncheck to keep this score.`
+        : `Manually dropped — weight normalized across remaining items in ${group.name}.`
+      : `Drop this item and normalize its ${baseWeight}% weight across remaining ${group.name}`;
+    dropCellHtml = `
+      <label id="gpaDropLabel_${escapeHtml(a.id)}" class="gpa-assign-drop-label${isDropped ? " is-dropped" : ""}" title="${escapeHtml(dropTitle)}">
+        <input type="checkbox" id="gpaDropCheck_${escapeHtml(a.id)}" ${isDropped ? "checked" : ""}
+          onchange="handleGpaAssignmentDropToggle('${escapeHtml(a.id)}', this.checked)" />
+        <span id="gpaDropText_${escapeHtml(a.id)}">${escapeHtml(dropLabelText)}</span>
+      </label>
+    `;
+  }
+
+  return `
+    <div class="gpa-assignment-row${isDropped ? " is-dropped-row" : ""}" id="gpaAssignRow_${escapeHtml(a.id)}" data-assign-id="${escapeHtml(a.id)}">
+      <input type="text" class="input-glass gpa-assign-name-input" value="${escapeHtml(a.name)}"
+        placeholder="Assignment name" maxlength="140"
+        oninput="handleGpaAssignmentEdit('${escapeHtml(a.id)}', 'name', this.value)" />
+      <div class="gpa-weight-cell-wrap">
+        <input type="number" class="input-glass gpa-assign-weight-input" value="${baseWeight}"
+          min="0" max="200" step="0.01" placeholder="Weight %" aria-label="Base weight percent"
+          oninput="handleGpaAssignmentEdit('${escapeHtml(a.id)}', 'weight', this.value)" />
+        ${weightMetaHtml}
+      </div>
+      <div class="gpa-score-cell-wrap">
+        <input type="number" class="input-glass gpa-assign-score-input"
+          data-score-for="${escapeHtml(a.id)}"
+          value="${scoreVal}" min="0" max="200" step="0.1"
+          placeholder="${escapeHtml(hint.placeholder)}" aria-label="Earned score percent"
+          oninput="handleGpaAssignmentEdit('${escapeHtml(a.id)}', 'score', this.value)" />
+        <span id="gpaHintBadge_${escapeHtml(a.id)}"
+          class="gpa-req-hint-badge ${hint.badgeClass}${showHintBadge ? "" : " hidden"}">
+          ${escapeHtml(hint.badgeText)}
+        </span>
+      </div>
+      <div class="gpa-drop-cell-wrap">
+        ${dropCellHtml}
+      </div>
+      <div class="gpa-row-actions-cell">
+        <button type="button" class="gpa-row-split-btn" title="Split into N equal items in this category (e.g. Quiz 1..4)"
+          onclick="toggleGpaRowSplitInline('${escapeHtml(a.id)}')">÷</button>
+        <button type="button" class="gpa-row-del-btn" title="Delete assignment row"
+          onclick="removeGpaAssignmentRow('${escapeHtml(a.id)}')">&times;</button>
+      </div>
+      <div id="gpaSplitBar_${escapeHtml(a.id)}" class="gpa-inline-split-bar hidden" hidden>
+        <span class="gpa-split-bar-label">Split <b>${escapeHtml(a.name)}</b> (${baseWeight}%) into category items:</span>
+        <div class="gpa-split-bar-controls">
+          <label style="font-size:11.5px; color:var(--text-secondary);">Items:</label>
+          <input type="number" id="gpaSplitCount_${escapeHtml(a.id)}" class="input-glass gpa-split-count-input"
+            value="4" min="2" max="25" step="1" aria-label="Number of items to split into" />
+          ${!group.isFinal ? `
+            <label style="font-size:11.5px; color:var(--text-secondary);">Drops:</label>
+            <input type="number" id="gpaSplitDrops_${escapeHtml(a.id)}" class="input-glass gpa-split-count-input"
+              value="${group.dropLowestCount || 0}" min="0" max="24" step="1" aria-label="Number of lowest items to drop" />
+          ` : ""}
+          <button type="button" class="btn-illuminated btn-sm"
+            onclick="confirmGpaAssignmentSplit('${escapeHtml(a.id)}')">
+            Split Items
+          </button>
+          <button type="button" class="btn-glass btn-sm"
+            onclick="toggleGpaRowSplitInline('${escapeHtml(a.id)}', false)">
+            Cancel
+          </button>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
 function renderActiveGpaCourseEditor() {
   const container = document.getElementById("gpaActiveCourseEditor");
   if (!container) return;
@@ -9999,6 +10335,7 @@ function renderActiveGpaCourseEditor() {
   }
 
   const metrics = computeCourseOptimalMetrics(course);
+  const dropState = metrics.dropState;
   const scale = Object.assign({}, AUA_DEFAULT_PERCENT_SCALE, course.grading_scale || {});
   const currentTargetLetter = percentToLetterFromScale(course.target_percent, scale);
 
@@ -10024,58 +10361,79 @@ function renderActiveGpaCourseEditor() {
     })
     .join("");
 
-  const assignmentsHtml = (course.assignments || [])
-    .map((a) => {
-      const hasScore = a.score !== null && a.score !== undefined && String(a.score).trim() !== "";
-      const scoreVal = hasScore ? Number(a.score) : "";
-      const hint = _buildBlankScoreHintInfo(metrics, Boolean(a.is_extra_credit));
-      const showHintBadge = !hasScore && hint.badgeText;
+  const categoriesHtml = dropState.categoryOrder
+    .map((catName) => {
+      const group = dropState.categoriesMap[catName];
+      const safeCatAttr = encodeJsAttr(catName);
+      const catIcon = group.isFinal ? "🎓" : "📁";
+
+      let dropPolicyRightHtml = "";
+      if (group.isFinal) {
+        dropPolicyRightHtml = `
+          <span class="gpa-cat-policy-pill is-locked" title="Final exams and final assessments cannot be dropped">
+            🔒 Final Assessment (No drops)
+          </span>
+        `;
+      } else if (group.items.length <= 1) {
+        dropPolicyRightHtml = `
+          <span class="gpa-cat-policy-pill">
+            1 item &bull; Split (÷) or + Item to enable drops
+          </span>
+        `;
+      } else {
+        const dropOptions = [];
+        for (let k = 0; k <= group.maxDropsAllowed; k++) {
+          const sel = k === group.dropLowestCount ? " selected" : "";
+          const lbl =
+            k === 0
+              ? "0 drops (All count)"
+              : k === 1
+                ? `1 drop (Lowest 1 of ${group.items.length})`
+                : `${k} drops (Lowest ${k} of ${group.items.length})`;
+          dropOptions.push(`<option value="${k}"${sel}>${lbl}</option>`);
+        }
+
+        const activeSummary =
+          group.droppedCount > 0
+            ? `<span class="gpa-cat-active-summary" id="gpaCatSummary_${safeCatAttr}">🗑️ ${group.droppedCount} dropped &bull; ${group.activeCount} active (${(group.totalBaseWeight / Math.max(1, group.activeCount)).toFixed(2)}% each)</span>`
+            : group.dropLowestCount > 0
+              ? `<span class="gpa-cat-active-summary" id="gpaCatSummary_${safeCatAttr}">Auto-drops lowest ${group.dropLowestCount} as scores are entered</span>`
+              : `<span class="gpa-cat-active-summary" id="gpaCatSummary_${safeCatAttr}">${group.items.length} items</span>`;
+
+        dropPolicyRightHtml = `
+          ${activeSummary}
+          <label class="gpa-cat-drop-select-wrap" title="How many lowest scores in ${escapeHtml(catName)} are automatically dropped">
+            <span>🗑️ Drops:</span>
+            <select class="input-glass gpa-cat-drop-select"
+              onchange="handleGpaCategoryDropCountChange(decodeURIComponent('${safeCatAttr}'), this.value)">
+              ${dropOptions.join("")}
+            </select>
+          </label>
+        `;
+      }
+
+      const rowsHtml = group.items
+        .map((a) => buildGpaAssignmentRowHtml(a, group, dropState, metrics))
+        .join("");
 
       return `
-        <div class="gpa-assignment-row" data-assign-id="${escapeHtml(a.id)}">
-          <input type="text" class="input-glass gpa-assign-name-input" value="${escapeHtml(a.name)}"
-            placeholder="Assignment name" maxlength="140"
-            oninput="handleGpaAssignmentEdit('${escapeHtml(a.id)}', 'name', this.value)" />
-          <input type="number" class="input-glass gpa-assign-weight-input" value="${Number(a.weight ?? 0)}"
-            min="0" max="200" step="0.01" placeholder="Weight %" aria-label="Weight percent"
-            oninput="handleGpaAssignmentEdit('${escapeHtml(a.id)}', 'weight', this.value)" />
-          <div class="gpa-score-cell-wrap">
-            <input type="number" class="input-glass gpa-assign-score-input"
-              data-score-for="${escapeHtml(a.id)}"
-              value="${scoreVal}" min="0" max="200" step="0.1"
-              placeholder="${escapeHtml(hint.placeholder)}" aria-label="Earned score percent"
-              oninput="handleGpaAssignmentEdit('${escapeHtml(a.id)}', 'score', this.value)" />
-            <span id="gpaHintBadge_${escapeHtml(a.id)}"
-              class="gpa-req-hint-badge ${hint.badgeClass}${showHintBadge ? "" : " hidden"}">
-              ${escapeHtml(hint.badgeText)}
-            </span>
-          </div>
-          <label class="gpa-assign-bonus-label" style="display:inline-flex; align-items:center; gap:6px; font-size:12px; color:var(--text-secondary); cursor:pointer;">
-            <input type="checkbox" ${a.is_extra_credit ? "checked" : ""}
-              style="accent-color:#38bdf8; width:16px; height:16px;"
-              onchange="handleGpaAssignmentEdit('${escapeHtml(a.id)}', 'is_extra_credit', this.checked)" />
-            <span>Bonus</span>
-          </label>
-          <div class="gpa-row-actions-cell">
-            <button type="button" class="gpa-row-split-btn" title="Split into N equal items (e.g. Quiz 1..4)"
-              onclick="toggleGpaRowSplitInline('${escapeHtml(a.id)}')">÷</button>
-            <button type="button" class="gpa-row-del-btn" title="Delete assignment row"
-              onclick="removeGpaAssignmentRow('${escapeHtml(a.id)}')">&times;</button>
-          </div>
-          <div id="gpaSplitBar_${escapeHtml(a.id)}" class="gpa-inline-split-bar hidden" hidden>
-            <span class="gpa-split-bar-label">Split <b>${escapeHtml(a.name)}</b> (${Number(a.weight ?? 0)}%) into:</span>
-            <div class="gpa-split-bar-controls">
-              <input type="number" id="gpaSplitCount_${escapeHtml(a.id)}" class="input-glass gpa-split-count-input"
-                value="4" min="2" max="25" step="1" aria-label="Number of items to split into" />
-              <button type="button" class="btn-illuminated btn-sm"
-                onclick="confirmGpaAssignmentSplit('${escapeHtml(a.id)}')">
-                Split Items
-              </button>
-              <button type="button" class="btn-glass btn-sm"
-                onclick="toggleGpaRowSplitInline('${escapeHtml(a.id)}', false)">
-                Cancel
+        <div class="gpa-category-block" data-category-name="${escapeHtml(catName)}">
+          <div class="gpa-category-header">
+            <div class="gpa-category-header-left">
+              <span class="gpa-category-title">${catIcon} ${escapeHtml(catName)}</span>
+              <span class="gpa-category-weight-badge">${group.totalBaseWeight.toFixed(1)}% total</span>
+              <button type="button" class="gpa-cat-add-item-btn"
+                title="Add another item to ${escapeHtml(catName)} and re-balance category weights"
+                onclick="addGpaItemToCategory(decodeURIComponent('${safeCatAttr}'))">
+                + Item
               </button>
             </div>
+            <div class="gpa-category-header-right">
+              ${dropPolicyRightHtml}
+            </div>
+          </div>
+          <div class="gpa-category-rows">
+            ${rowsHtml}
           </div>
         </div>
       `;
@@ -10144,7 +10502,7 @@ function renderActiveGpaCourseEditor() {
       <!-- Non-100% Weight Warning & 1-Click Normalize Banner -->
       <div id="gpaWeightWarningBanner" class="gpa-weight-warning-bar${metrics.weightMismatch ? "" : " hidden"}" role="alert">
         <div>
-          ⚠️ <strong>Weight Sum Notice:</strong> Non-extra-credit weights currently sum to
+          ⚠️ <strong>Weight Sum Notice:</strong> Total category weights currently sum to
           <strong id="gpaWeightSumValue">${metrics.baseWeightSum.toFixed(1)}%</strong> (expected <code>100%</code>).
         </div>
         <button type="button" class="btn-illuminated btn-sm" onclick="normalizeActiveCourseWeights()">
@@ -10186,20 +10544,49 @@ function renderActiveGpaCourseEditor() {
         <span>Assignment / Component</span>
         <span>Weight (%)</span>
         <span>Earned Score (%) &bull; Optimal Hint</span>
-        <span>Extra Cr.</span>
+        <span>Dropped</span>
         <span></span>
       </div>
 
       <div id="gpaAssignmentsListContainer">
-        ${assignmentsHtml}
+        ${categoriesHtml}
+      </div>
+
+      <!-- Inline New Category Creator Drawer -->
+      <div id="gpaNewCategoryBar" class="gpa-inline-split-bar hidden" hidden style="margin-top:12px;">
+        <span class="gpa-split-bar-label">📁 <b>Add Category Group</b> (e.g. Quizzes, Homeworks, Labs, Midterms):</span>
+        <div class="gpa-split-bar-controls" style="flex-wrap:wrap;">
+          <input type="text" id="gpaNewCatName" class="input-glass" style="width:140px; padding:6px 10px;"
+            placeholder="e.g. Quizzes" value="Quizzes" />
+          <label style="font-size:11.5px; color:var(--text-secondary);">Total %:</label>
+          <input type="number" id="gpaNewCatWeight" class="input-glass gpa-split-count-input"
+            value="15" min="1" max="100" step="0.5" />
+          <label style="font-size:11.5px; color:var(--text-secondary);">Items:</label>
+          <input type="number" id="gpaNewCatCount" class="input-glass gpa-split-count-input"
+            value="4" min="1" max="25" step="1" />
+          <label style="font-size:11.5px; color:var(--text-secondary);">Drops:</label>
+          <input type="number" id="gpaNewCatDrops" class="input-glass gpa-split-count-input"
+            value="1" min="0" max="24" step="1" />
+          <button type="button" class="btn-illuminated btn-sm" onclick="confirmAddGpaCategoryGroup()">
+            Create Category
+          </button>
+          <button type="button" class="btn-glass btn-sm" onclick="toggleAddGpaCategoryBar(false)">
+            Cancel
+          </button>
+        </div>
       </div>
 
       <div style="margin-top:14px; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px;">
-        <button type="button" class="btn-illuminated btn-sm" onclick="addGpaAssignmentRow()">
-          + Add Assignment
-        </button>
+        <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+          <button type="button" class="btn-illuminated btn-sm" onclick="addGpaAssignmentRow()">
+            + Add Assignment
+          </button>
+          <button type="button" class="btn-glass btn-sm" onclick="toggleAddGpaCategoryBar()">
+            📁 + Add Category with Drops
+          </button>
+        </div>
         <span style="font-size:12px; color:var(--text-secondary);">
-          Leave <b>Earned Score</b> blank for ungraded items to see the exact score needed.
+          When an item is <b>Dropped</b>, its weight normalizes strictly within its category (Final Exam cannot be dropped).
         </span>
       </div>
 
@@ -10218,6 +10605,7 @@ function renderActiveGpaCourseEditor() {
 function refreshOptimalMetricsInPlace(course) {
   if (!course) return;
   const metrics = computeCourseOptimalMetrics(course);
+  const dropState = metrics.dropState;
 
   // 1. Update node tab status pill & name
   const nodeTab = document.getElementById(`gpaNodeTab_${course.id}`);
@@ -10257,17 +10645,71 @@ function refreshOptimalMetricsInPlace(course) {
   if (vTitle) vTitle.textContent = metrics.verdictTitle;
   if (vSub) vSub.textContent = metrics.verdictSub;
 
-  // 4. Update blank score placeholders & hint badges without losing focus
+  // 4. Update category headers live
+  for (const catName of dropState.categoryOrder) {
+    const group = dropState.categoriesMap[catName];
+    const safeCatAttr = encodeJsAttr(catName);
+    const sumEl = document.getElementById(`gpaCatSummary_${safeCatAttr}`);
+    if (sumEl) {
+      if (group.droppedCount > 0) {
+        sumEl.textContent = `🗑️ ${group.droppedCount} dropped • ${group.activeCount} active (${(group.totalBaseWeight / Math.max(1, group.activeCount)).toFixed(2)}% each)`;
+      } else if (group.dropLowestCount > 0) {
+        sumEl.textContent = `Auto-drops lowest ${group.dropLowestCount} as scores are entered`;
+      } else {
+        sumEl.textContent = `${group.items.length} items`;
+      }
+    }
+  }
+
+  // 5. Update blank score placeholders, hint badges, normalized weights & auto-drop checkboxes without losing focus
   for (const a of course.assignments || []) {
+    const isDropped = dropState.droppedById.has(a.id);
+    const isAutoDropped = dropState.autoDroppedById.has(a.id);
+    const effWeight = Number(dropState.effectiveWeightById[a.id] ?? a.weight ?? 0);
+    const baseWeight = Number(a.weight ?? 0);
+    const weightChanged = !isDropped && Math.abs(effWeight - baseWeight) > 0.01;
     const hasScore = a.score !== null && a.score !== undefined && String(a.score).trim() !== "";
-    const hint = _buildBlankScoreHintInfo(metrics, Boolean(a.is_extra_credit));
+    const hint = _buildBlankScoreHintInfo(metrics, Boolean(a.is_extra_credit), isDropped);
+
+    const rowEl = document.getElementById(`gpaAssignRow_${a.id}`);
+    if (rowEl) {
+      rowEl.classList.toggle("is-dropped-row", isDropped);
+    }
+
+    const effBadge = document.getElementById(`gpaEffWeightBadge_${a.id}`);
+    if (effBadge) {
+      if (isDropped) {
+        effBadge.className = "gpa-eff-weight-pill is-zero";
+        effBadge.textContent = "→ 0%";
+      } else if (weightChanged) {
+        effBadge.className = "gpa-eff-weight-pill is-boosted";
+        effBadge.textContent = `→ ${effWeight.toFixed(2)}%`;
+      } else {
+        effBadge.className = "gpa-eff-weight-pill hidden";
+        effBadge.textContent = "";
+      }
+    }
+
+    const dropCheck = document.getElementById(`gpaDropCheck_${a.id}`);
+    if (dropCheck) {
+      dropCheck.checked = isDropped;
+    }
+    const dropLbl = document.getElementById(`gpaDropLabel_${a.id}`);
+    if (dropLbl) {
+      dropLbl.classList.toggle("is-dropped", isDropped);
+    }
+    const dropTxt = document.getElementById(`gpaDropText_${a.id}`);
+    if (dropTxt) {
+      dropTxt.textContent = isDropped ? (isAutoDropped ? "Auto" : "Dropped") : "Drop";
+    }
+
     const inputEl = document.querySelector(`.gpa-assign-score-input[data-score-for="${CSS.escape(a.id)}"]`);
     if (inputEl) {
       inputEl.placeholder = hint.placeholder;
     }
     const badgeEl = document.getElementById(`gpaHintBadge_${a.id}`);
     if (badgeEl) {
-      if (!hasScore && hint.badgeText) {
+      if ((!hasScore || isDropped) && hint.badgeText) {
         badgeEl.className = `gpa-req-hint-badge ${hint.badgeClass}`;
         badgeEl.textContent = hint.badgeText;
       } else {
@@ -10393,6 +10835,12 @@ function handleGpaAssignmentEdit(assignId, field, rawVal) {
 
   if (field === "name") {
     item.name = String(rawVal || "").slice(0, 140);
+    if (isGpaFinalCategory(item.name, item.category)) {
+      item.category = "Final Exam";
+      item.is_dropped = false;
+      item.drop_mode = null;
+      item.category_drop_lowest = 0;
+    }
   } else if (field === "weight") {
     const w = parseFloat(rawVal);
     item.weight = Number.isFinite(w) ? Math.max(0, Math.min(200, w)) : 0;
@@ -10411,6 +10859,180 @@ function handleGpaAssignmentEdit(assignId, field, rawVal) {
   scheduleGpaCourseAutoSave(course.id);
 }
 
+function handleGpaAssignmentDropToggle(assignId, checked) {
+  const course = getActiveGpaCourse();
+  if (!course || !Array.isArray(course.assignments)) return;
+  const item = course.assignments.find((a) => a.id === assignId);
+  if (!item) return;
+
+  const dropState = computeCourseCategoryDropState(course);
+  const catName = dropState.categoryByAssignId[assignId] || inferGpaAssignmentCategory(item.name, item.category);
+  const group = dropState.categoriesMap[catName];
+
+  if (!group || group.isFinal) {
+    showToast("🔒 Final Exam / Final assessments cannot be dropped.", true);
+    renderActiveGpaCourseEditor();
+    return;
+  }
+
+  if (group.items.length <= 1) {
+    showToast(`Split "${item.name}" (÷) or add another item to "${catName}" before dropping.`, true);
+    renderActiveGpaCourseEditor();
+    return;
+  }
+
+  if (checked) {
+    // Verify at least 1 other item in this category will remain active
+    const otherActive = group.items.filter((x) => x.id !== assignId && !dropState.droppedById.has(x.id));
+    if (otherActive.length === 0) {
+      const checkEl = document.getElementById(`gpaDropCheck_${assignId}`);
+      if (checkEl) checkEl.checked = false;
+      showToast(`At least 1 item in "${catName}" must remain active so its ${group.totalBaseWeight.toFixed(1)}% weight can be normalized.`, true);
+      return;
+    }
+    item.is_dropped = true;
+    item.drop_mode = "manual";
+  } else {
+    item.is_dropped = false;
+    item.drop_mode = "manual";
+  }
+
+  renderActiveGpaCourseEditor();
+  refreshOptimalMetricsInPlace(course);
+  scheduleGpaCourseAutoSave(course.id);
+}
+
+function handleGpaCategoryDropCountChange(catName, rawCount) {
+  const course = getActiveGpaCourse();
+  if (!course || !Array.isArray(course.assignments)) return;
+  const dropState = computeCourseCategoryDropState(course);
+  const group = dropState.categoriesMap[catName];
+  if (!group || group.isFinal || group.items.length <= 1) return;
+
+  const k = Math.max(0, Math.min(group.maxDropsAllowed, parseInt(rawCount, 10) || 0));
+  for (const a of group.items) {
+    a.category_drop_lowest = k;
+    if (k === 0) {
+      a.is_dropped = false;
+      a.drop_mode = null;
+    } else if (a.drop_mode === "manual" && !a.is_dropped) {
+      // Reset manual un-drop lock so the new auto-drop count can evaluate all graded items in this category
+      a.drop_mode = null;
+    }
+  }
+
+  renderActiveGpaCourseEditor();
+  refreshOptimalMetricsInPlace(course);
+  scheduleGpaCourseAutoSave(course.id);
+  showToast(
+    k > 0
+      ? `🗑️ "${catName}": lowest ${k} item(s) will be dropped and normalized across ${catName}!`
+      : `"${catName}": all ${group.items.length} items now count.`
+  );
+}
+
+function addGpaItemToCategory(catName) {
+  const course = getActiveGpaCourse();
+  if (!course || !Array.isArray(course.assignments)) return;
+  const dropState = computeCourseCategoryDropState(course);
+  const group = dropState.categoriesMap[catName];
+  if (!group) return;
+  if (group.items.length >= 25) {
+    showToast(`Maximum of 25 items reached for "${catName}".`, true);
+    return;
+  }
+
+  const newCount = group.items.length + 1;
+  const singular = singularizeGpaItemName(catName);
+  const evenWeights = splitWeightEvenlyClient(group.totalBaseWeight, newCount);
+
+  group.items.forEach((a, i) => {
+    a.weight = evenWeights[i];
+  });
+
+  const lastCatItem = group.items[group.items.length - 1];
+  const insertAfterIdx = course.assignments.findIndex((a) => a.id === lastCatItem.id);
+  const newItem = {
+    id: `a_${Date.now()}_${Math.random().toString(36).slice(2, 5)}`,
+    name: `${singular} ${newCount}`,
+    category: catName,
+    weight: evenWeights[newCount - 1],
+    score: null,
+    is_dropped: false,
+    drop_mode: null,
+    category_drop_lowest: group.isFinal ? 0 : group.dropLowestCount,
+    is_extra_credit: false,
+  };
+
+  if (insertAfterIdx !== -1) {
+    course.assignments.splice(insertAfterIdx + 1, 0, newItem);
+  } else {
+    course.assignments.push(newItem);
+  }
+
+  renderActiveGpaCourseEditor();
+  refreshOptimalMetricsInPlace(course);
+  scheduleGpaCourseAutoSave(course.id);
+  showToast(`Added "${newItem.name}" to ${catName} (${group.totalBaseWeight.toFixed(1)}% split across ${newCount} items).`);
+}
+
+function toggleAddGpaCategoryBar(forceOpen = null) {
+  const bar = document.getElementById("gpaNewCategoryBar");
+  if (!bar) return;
+  const shouldOpen = forceOpen !== null ? Boolean(forceOpen) : bar.classList.contains("hidden");
+  bar.classList.toggle("hidden", !shouldOpen);
+  if (shouldOpen) {
+    bar.removeAttribute("hidden");
+    const nameInp = document.getElementById("gpaNewCatName");
+    if (nameInp) {
+      nameInp.focus();
+      nameInp.select();
+    }
+  } else {
+    bar.setAttribute("hidden", "");
+  }
+}
+
+function confirmAddGpaCategoryGroup() {
+  const course = getActiveGpaCourse();
+  if (!course) return;
+  if (!Array.isArray(course.assignments)) course.assignments = [];
+
+  const rawName = (document.getElementById("gpaNewCatName")?.value || "Quizzes").trim();
+  const catName = inferGpaAssignmentCategory(rawName, rawName);
+  const totalWeight = Math.max(0.5, Math.min(100, parseFloat(document.getElementById("gpaNewCatWeight")?.value) || 15));
+  const count = Math.max(1, Math.min(25, parseInt(document.getElementById("gpaNewCatCount")?.value, 10) || 4));
+  const isFinal = isGpaFinalCategory(catName, catName);
+  const rawDrops = parseInt(document.getElementById("gpaNewCatDrops")?.value, 10) || 0;
+  const drops = isFinal || count <= 1 ? 0 : Math.max(0, Math.min(count - 1, rawDrops));
+
+  const singular = singularizeGpaItemName(catName);
+  const weights = splitWeightEvenlyClient(totalWeight, count);
+  const ts = Date.now();
+
+  for (let i = 0; i < count; i++) {
+    course.assignments.push({
+      id: `a_${ts}_${i + 1}_${Math.random().toString(36).slice(2, 5)}`,
+      name: count === 1 ? catName : `${singular} ${i + 1}`,
+      category: catName,
+      weight: weights[i],
+      score: null,
+      is_dropped: false,
+      drop_mode: null,
+      category_drop_lowest: drops,
+      is_extra_credit: false,
+    });
+  }
+
+  toggleAddGpaCategoryBar(false);
+  renderActiveGpaCourseEditor();
+  refreshOptimalMetricsInPlace(course);
+  scheduleGpaCourseAutoSave(course.id);
+  showToast(
+    `📁 Added "${catName}" (${totalWeight}% across ${count} item${count > 1 ? "s" : ""}${drops > 0 ? `, ${drops} drop(s)` : ""})!`
+  );
+}
+
 function addGpaAssignmentRow() {
   const course = getActiveGpaCourse();
   if (!course) return;
@@ -10419,8 +11041,11 @@ function addGpaAssignmentRow() {
   course.assignments.push({
     id: `a_${Date.now()}_${Math.random().toString(36).slice(2, 5)}`,
     name: `Assignment ${nextIdx}`,
+    category: "Assignments",
     weight: 10,
     score: null,
+    is_dropped: false,
+    category_drop_lowest: 0,
     is_extra_credit: false,
   });
   renderActiveGpaCourseEditor();
@@ -10514,6 +11139,7 @@ function confirmGpaAssignmentSplit(assignId, explicitCount = null) {
 
   const targetRow = course.assignments[idx];
   const countInput = document.getElementById(`gpaSplitCount_${assignId}`);
+  const dropsInput = document.getElementById(`gpaSplitDrops_${assignId}`);
   const rawCount = explicitCount !== null ? explicitCount : (countInput ? countInput.value : 4);
   const n = parseInt(rawCount, 10);
   if (!Number.isFinite(n) || n < 2 || n > 25) {
@@ -10521,14 +11147,23 @@ function confirmGpaAssignmentSplit(assignId, explicitCount = null) {
     return;
   }
 
+  const catName = inferGpaAssignmentCategory(targetRow.name, targetRow.category);
+  const isFinal = isGpaFinalCategory(targetRow.name, catName);
+  const rawDrops = dropsInput ? parseInt(dropsInput.value, 10) || 0 : (Number(targetRow.category_drop_lowest) || 0);
+  const dropLowest = isFinal ? 0 : Math.max(0, Math.min(n - 1, rawDrops));
+
   const singular = singularizeGpaItemName(targetRow.name);
   const weights = splitWeightEvenlyClient(targetRow.weight, n);
   const ts = Date.now();
   const newRows = weights.map((w, i) => ({
     id: `a_${ts}_${i + 1}_${Math.random().toString(36).slice(2, 5)}`,
     name: `${singular} ${i + 1}`,
+    category: catName,
     weight: w,
     score: null,
+    is_dropped: false,
+    drop_mode: null,
+    category_drop_lowest: dropLowest,
     is_extra_credit: Boolean(targetRow.is_extra_credit),
   }));
 
@@ -10536,7 +11171,9 @@ function confirmGpaAssignmentSplit(assignId, explicitCount = null) {
   renderActiveGpaCourseEditor();
   refreshOptimalMetricsInPlace(course);
   scheduleGpaCourseAutoSave(course.id);
-  showToast(`✂️ Split "${targetRow.name}" into ${n} items (${singular} 1–${n})!`);
+  showToast(
+    `✂️ Split "${targetRow.name}" into ${n} items in ${catName}${dropLowest > 0 ? ` (${dropLowest} lowest dropped)` : ""}!`
+  );
 }
 
 function splitGpaAssignmentRow(assignId, count = null) {

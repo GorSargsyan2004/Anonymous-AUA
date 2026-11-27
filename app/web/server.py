@@ -108,6 +108,8 @@ from app.database.web_crud import (
     mark_spam_chat_read,
     normalize_assignments_list,
     normalize_grading_scale,
+    infer_assignment_category,
+    is_final_assignment_or_category,
     record_web_analytics_event,
     record_web_email_dispatch,
     report_anonymous_public_post,
@@ -4382,23 +4384,31 @@ async def api_ai_reset(request: web.Request) -> web.Response:
 # 8A-2. GPA Tracker & AI Syllabus Parser (/api/gpa/*)
 # ------------------------------------------------------------------------------
 
-SYLLABUS_PARSER_VERSION = 2
+SYLLABUS_PARSER_VERSION = 3
 
 
 class _SyllabusAssignmentItemSchema(BaseModel):
     name: str = Field(
         description="Category or assessment component name (e.g. 'Quizzes', 'Midterm I', 'Homeworks', 'Final Exam')"
     )
+    category: Optional[str] = Field(
+        default=None,
+        description="Clean category group name (e.g. 'Quizzes', 'Homeworks', 'Midterms', 'Labs', 'Projects', 'Final Exam')",
+    )
     singular_name: Optional[str] = Field(
         default=None,
-        description="Clean singular label when count > 1 (e.g. 'Quiz', 'Homework', 'Lab', 'Assignment')",
+        description="Clean singular label when count > 1 (e.g. 'Quiz', 'Homework', 'Lab', 'Midterm', 'Assignment')",
     )
     weight: float = Field(
         description="TOTAL combined percentage weight for this component/category (e.g. 15.0 for 'Quizzes (4*3.75=15%)', 20.0 for '4 Homeworks, 5% each')"
     )
     count: int = Field(
         default=1,
-        description="Exact number of individual graded items explicitly stated in the syllabus (e.g. 4 for 'Quizzes (4*3.75=15%)', 1 when single or unspecified)",
+        description="TOTAL number of individual items administered in this category, INCLUDING any dropped items (e.g. 5 for '5 quizzes, lowest 1 dropped', 4 for 'Quizzes (4*3.75=15%)', 1 when single)",
+    )
+    drop_lowest: int = Field(
+        default=0,
+        description="Number of lowest-scoring items dropped in this category according to the syllabus (e.g. 1 for 'lowest quiz dropped', 2 for 'two lowest homeworks dropped', 0 if none; always 0 for Final Exam)",
     )
     is_extra_credit: bool = Field(
         default=False,
@@ -4695,12 +4705,39 @@ def expand_multi_item_assignments(items: List[Dict[str, Any]]) -> List[Dict[str,
 
         count = max(1, min(25, count))
         is_extra = bool(item.get("is_extra_credit", False))
+        category = infer_assignment_category(raw_name, item.get("category"))
+        is_final = is_final_assignment_or_category(raw_name, category)
+
+        try:
+            drop_lowest = int(item.get("drop_lowest", item.get("category_drop_lowest", 0)) or 0)
+        except (TypeError, ValueError):
+            drop_lowest = 0
+
+        # Also detect inline drop phrasing in raw_name if drop_lowest wasn't explicitly set
+        if drop_lowest <= 0 and not is_final:
+            m_drop = re.search(
+                r"(?:drop(?:ping|s|ped)?\s+(?:the\s+)?(?:lowest\s+)?(\d+|one|two|three)|lowest\s+(\d+|one|two|three)\s+(?:[a-z]+\s+)?(?:is\s+|are\s+)?drop(?:ped)?|lowest\s+(?:[a-z]+\s+)?(?:is\s+)?drop(?:ped)?)",
+                raw_name,
+                flags=re.IGNORECASE,
+            )
+            if m_drop:
+                word_map = {"one": 1, "two": 2, "three": 3}
+                tok = (m_drop.group(1) or m_drop.group(2) or "1").lower()
+                drop_lowest = word_map.get(tok, int(tok) if tok.isdigit() else 1)
+
+        if is_final or count <= 1:
+            drop_lowest = 0
+        else:
+            drop_lowest = max(0, min(count - 1, drop_lowest))
 
         if count == 1:
             expanded.append(
                 {
                     "name": raw_name,
+                    "category": category,
                     "weight": weight,
+                    "category_drop_lowest": 0,
+                    "is_dropped": False,
                     "is_extra_credit": is_extra,
                 }
             )
@@ -4713,7 +4750,10 @@ def expand_multi_item_assignments(items: List[Dict[str, Any]]) -> List[Dict[str,
             expanded.append(
                 {
                     "name": f"{singular} {idx}",
+                    "category": category,
                     "weight": w_val,
+                    "category_drop_lowest": drop_lowest,
+                    "is_dropped": False,
                     "is_extra_credit": is_extra,
                 }
             )
@@ -4816,11 +4856,38 @@ def _heuristic_parse_syllabus_text(text: str, filename: str) -> Dict[str, Any]:
             pass
 
     notes_list: List[str] = []
+    detected_cat_drops: Dict[str, int] = {}
+    word_num_map = {"one": 1, "two": 2, "three": 3, "1": 1, "2": 2, "3": 3}
     for ln in lines:
         low = ln.lower()
-        if any(k in low for k in ("drop lowest", "lowest quiz", "extra credit", "late policy", "curve")):
+        if any(k in low for k in ("drop", "lowest", "extra credit", "late policy", "curve")):
             if len(ln) <= 180:
                 notes_list.append(ln)
+            if "drop" in low or "lowest" in low:
+                m_cnt = re.search(r"\b(one|two|three|[123])\s+lowest\b|\blowest\s+(one|two|three|[123])\b|\bdrop\s+(?:the\s+)?(?:lowest\s+)?(one|two|three|[123])\b", low)
+                d_num = 1
+                if m_cnt:
+                    tok = (m_cnt.group(1) or m_cnt.group(2) or m_cnt.group(3) or "1").lower()
+                    d_num = word_num_map.get(tok, 1)
+                if "quiz" in low:
+                    detected_cat_drops["Quizzes"] = max(detected_cat_drops.get("Quizzes", 0), d_num)
+                elif "homework" in low or "hw" in low or "problem set" in low:
+                    detected_cat_drops["Homeworks"] = max(detected_cat_drops.get("Homeworks", 0), d_num)
+                elif "lab" in low:
+                    detected_cat_drops["Labs"] = max(detected_cat_drops.get("Labs", 0), d_num)
+                elif "midterm" in low:
+                    detected_cat_drops["Midterms"] = max(detected_cat_drops.get("Midterms", 0), d_num)
+
+    for a in assignments:
+        cat = infer_assignment_category(a.get("name") or "", a.get("category"))
+        a["category"] = cat
+        a["is_dropped"] = False
+        if not is_final_assignment_or_category(a.get("name") or "", cat):
+            a["category_drop_lowest"] = detected_cat_drops.get(cat, int(a.get("category_drop_lowest", 0) or 0))
+        else:
+            a["category_drop_lowest"] = 0
+
+    assignments = normalize_assignments_list(assignments)
     notes = " | ".join(notes_list[:3]) if notes_list else None
 
     has_breakdown = len(assignments) >= 1
@@ -4875,14 +4942,17 @@ async def parse_syllabus_with_gemini(
         "Rules:\n"
         "1. Set has_grading_breakdown=true ONLY if explicit assessment components with percentage weights "
         "(e.g., Midterm I 23%, Midterm II 27%, Quizzes (4*3.75=15%), Final Exam 35%) are present anywhere in the document.\n"
-        "2. Look across the evaluation table and component descriptions for explicit item counts and formulas such as "
-        "'Quizzes (4*3.75=15%)', '5 quizzes (3% each)', or '6 homeworks (24% total)':\n"
+        "2. Look across the evaluation table and component descriptions for explicit item counts, categories, and drop-lowest policies such as "
+        "'Quizzes (4*3.75=15%)', '5 quizzes (3% each)', '6 homeworks (24% total, lowest 2 dropped)', or '4 quizzes (lowest dropped, 15%)':\n"
+        "   - Set category to the clean plural category group name (e.g., 'Quizzes', 'Homeworks', 'Midterms', 'Labs', 'Projects', 'Final Exam').\n"
         "   - Always set weight to the TOTAL combined percentage weight for that category (e.g., weight=15.0 for 'Quizzes (4*3.75=15%)', "
         "or weight=20.0 for '4 Homeworks, 5% each').\n"
-        "   - Set count to the exact number of counted items (e.g., count=4 for 'Quizzes (4*3.75=15%)') and singular_name to the clean singular label "
-        "(e.g., singular_name='Quiz', 'Homework', 'Lab', 'Assignment').\n"
-        "   - If a drop-lowest rule is stated (e.g., '5 quizzes, lowest dropped, total 16%'), set count to the number of COUNTED items (4) and record the drop rule in notes.\n"
-        "   - Do NOT invent counts if none are explicitly stated in the syllabus (use count=1).\n"
+        "   - Set count to the TOTAL number of individual items administered in that category, INCLUDING any dropped items "
+        "(e.g., if the syllabus says '5 quizzes, lowest 1 dropped, total 16%', set count=5, drop_lowest=1, and weight=16.0; "
+        "if it says '4 quizzes (2 lowest dropped)', set count=4 and drop_lowest=2).\n"
+        "   - Set singular_name to the clean singular label (e.g., singular_name='Quiz', 'Homework', 'Lab', 'Midterm', 'Assignment').\n"
+        "   - Set drop_lowest to the exact number of dropped items in that category (0 if none; Final Exam can NEVER be dropped so drop_lowest=0).\n"
+        "   - Do NOT invent counts if none are explicitly stated in the syllabus (use count=1 and drop_lowest=0).\n"
         "3. Mark is_extra_credit=true ONLY for bonus/extra-credit items beyond the base 100%.\n"
         "4. If the syllabus contains a letter grade cutoff table (e.g., A+, A, A-, B+, B, B-, C+, C, C-, D+, D, D-, F with percentage ranges), "
         "extract each letter grade and its minimum percentage cutoff into grading_scale_entries.\n"
@@ -4966,12 +5036,18 @@ async def parse_syllabus_with_gemini(
             cnt = int(item.get("count", 1) or 1)
         except (TypeError, ValueError):
             cnt = 1
+        try:
+            drp = int(item.get("drop_lowest", 0) or 0)
+        except (TypeError, ValueError):
+            drp = 0
         pre_assignments.append(
             {
                 "name": nm,
+                "category": item.get("category"),
                 "singular_name": item.get("singular_name"),
                 "weight": wt,
                 "count": max(1, min(25, cnt)),
+                "drop_lowest": max(0, min(24, drp)),
                 "is_extra_credit": bool(item.get("is_extra_credit", False)),
             }
         )

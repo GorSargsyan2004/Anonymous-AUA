@@ -3055,8 +3055,66 @@ def normalize_grading_scale(raw_scale: Any) -> Dict[str, float]:
     return scale
 
 
+def is_final_assignment_or_category(name: str, category: str = "") -> bool:
+    """Return True if an assignment or category represents a Final Exam / Final Assessment (cannot be dropped)."""
+    combined = f"{name or ''} {category or ''}".strip().lower()
+    if not combined:
+        return False
+    return bool(re.search(r"\bfinal\b", combined))
+
+
+def infer_assignment_category(name: str, explicit_category: Optional[str] = None) -> str:
+    """Infer a clean category group name (e.g. 'Quizzes', 'Homeworks', 'Midterms', 'Final Exam') from an assignment name."""
+    cand = (explicit_category or "").strip()
+    if cand:
+        low_c = cand.lower()
+        if "final" in low_c:
+            return "Final Exam"
+        if "quiz" in low_c:
+            return "Quizzes"
+        if "homework" in low_c or low_c in ("hw", "hws") or "problem set" in low_c:
+            return "Homeworks"
+        if "midterm" in low_c:
+            return "Midterms"
+        if "lab" in low_c:
+            return "Labs"
+        return cand[:80]
+
+    raw = (name or "Assignments").strip()
+    low = raw.lower()
+    if re.search(r"\bfinal\b", low):
+        return "Final Exam"
+    if "quiz" in low:
+        return "Quizzes"
+    if "homework" in low or re.search(r"\bhws?\b", low) or "problem set" in low:
+        return "Homeworks"
+    if "midterm" in low:
+        return "Midterms"
+    if re.search(r"\blabs?\b", low) or "laboratory" in low:
+        return "Labs"
+    if "project" in low:
+        return "Projects"
+    if "paper" in low or "essay" in low:
+        return "Papers & Essays"
+    if "presentation" in low:
+        return "Presentations"
+    if "attendance" in low or "participation" in low:
+        return "Participation"
+
+    # Strip trailing numbering like "Assignment 1" or "Exam II"
+    stripped = re.sub(r"\s*\([^)]*\)\s*$", "", raw).strip()
+    stripped = re.sub(r"\s+(?:#?\d+|[IVX]{1,4})\s*$", "", stripped, flags=re.IGNORECASE).strip()
+    if not stripped:
+        return "Assignments"
+    if stripped.lower() == "assignment":
+        return "Assignments"
+    if stripped.lower() == "exam" or stripped.lower() == "test":
+        return "Exams"
+    return stripped[:80]
+
+
 def normalize_assignments_list(raw_assignments: Any) -> List[Dict[str, Any]]:
-    """Validate and normalize a course's assignments list."""
+    """Validate and normalize a course's assignments list with category and drop rules."""
     if isinstance(raw_assignments, str):
         try:
             raw_assignments = json.loads(raw_assignments)
@@ -3079,6 +3137,9 @@ def normalize_assignments_list(raw_assignments: Any) -> List[Dict[str, Any]]:
         if not name:
             name = f"Assignment {idx}"
 
+        category = infer_assignment_category(name, item.get("category"))
+        is_final = is_final_assignment_or_category(name, category)
+
         try:
             weight = round(float(item.get("weight", 0.0) or 0.0), 2)
         except (TypeError, ValueError):
@@ -3095,16 +3156,63 @@ def normalize_assignments_list(raw_assignments: Any) -> List[Dict[str, Any]]:
             except (TypeError, ValueError):
                 score = None
 
+        raw_drop_lowest = item.get("category_drop_lowest", item.get("drop_lowest", 0))
+        try:
+            category_drop_lowest = max(0, min(24, int(raw_drop_lowest or 0)))
+        except (TypeError, ValueError):
+            category_drop_lowest = 0
+        if is_final:
+            category_drop_lowest = 0
+
+        is_dropped = False if is_final else bool(item.get("is_dropped", False))
+        raw_drop_mode = str(item.get("drop_mode") or "").strip().lower()
+        drop_mode = raw_drop_mode if raw_drop_mode in ("manual", "auto") else None
+        if is_final:
+            drop_mode = None
+
         is_extra = bool(item.get("is_extra_credit", False))
         normalized.append(
             {
                 "id": raw_id,
                 "name": name,
+                "category": category,
                 "weight": weight,
                 "score": score,
+                "is_dropped": is_dropped,
+                "drop_mode": drop_mode,
+                "category_drop_lowest": category_drop_lowest,
                 "is_extra_credit": is_extra,
             }
         )
+
+    # Ensure category_drop_lowest is consistent across all items sharing a category and < category item count
+    cat_counts: Dict[str, int] = Counter(a["category"] for a in normalized)
+    cat_drops: Dict[str, int] = {}
+    for a in normalized:
+        cat = a["category"]
+        cat_drops[cat] = max(cat_drops.get(cat, 0), int(a.get("category_drop_lowest", 0) or 0))
+
+    for a in normalized:
+        cat = a["category"]
+        cnt = cat_counts.get(cat, 1)
+        is_final = is_final_assignment_or_category(a["name"], cat)
+        if is_final or cnt <= 1:
+            a["category_drop_lowest"] = 0
+            a["is_dropped"] = False
+            a["drop_mode"] = None
+        else:
+            a["category_drop_lowest"] = max(0, min(cnt - 1, cat_drops.get(cat, 0)))
+
+    # Guard: never allow all items in a multi-item category to be simultaneously marked is_dropped
+    by_cat: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
+    for a in normalized:
+        by_cat[a["category"]].append(a)
+    for cat, items_in_cat in by_cat.items():
+        dropped_in_cat = [x for x in items_in_cat if x.get("is_dropped")]
+        if len(items_in_cat) > 0 and len(dropped_in_cat) >= len(items_in_cat):
+            # Un-drop the last item so at least 1 item remains active in the category
+            dropped_in_cat[-1]["is_dropped"] = False
+
     return normalized
 
 

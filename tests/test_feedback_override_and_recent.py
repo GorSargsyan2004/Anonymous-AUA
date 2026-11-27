@@ -1031,6 +1031,101 @@ class TestFeedbackOverrideAndRecent(unittest.IsolatedAsyncioTestCase):
             await session.execute(delete(ChatInvite).where(ChatInvite.creator_id == self.user1_id))
             await session.commit()
 
+    async def test_gpa_category_scoped_drops_and_syllabus_expansion(self):
+        from app.database.web_crud import (
+            infer_assignment_category,
+            is_final_assignment_or_category,
+            normalize_assignments_list,
+        )
+        from app.web.server import (
+            _heuristic_parse_syllabus_text,
+            expand_multi_item_assignments,
+        )
+
+        # 1. Multi-item syllabus expansion with category & drop_lowest
+        raw_items = [
+            {
+                "name": "Quizzes (4*3.75=15%)",
+                "category": "Quizzes",
+                "singular_name": "Quiz",
+                "weight": 15.0,
+                "count": 4,
+                "drop_lowest": 2,
+            },
+            {
+                "name": "Homeworks",
+                "category": "Homeworks",
+                "singular_name": "Homework",
+                "weight": 20.0,
+                "count": 4,
+                "drop_lowest": 1,
+            },
+            {
+                "name": "Midterm Exam",
+                "category": "Midterms",
+                "weight": 30.0,
+                "count": 1,
+                "drop_lowest": 0,
+            },
+            {
+                "name": "Final Exam",
+                "category": "Final Exam",
+                "weight": 35.0,
+                "count": 2,
+                "drop_lowest": 1,  # Must be forced to 0 because Final Exam cannot be dropped
+            },
+        ]
+        expanded = expand_multi_item_assignments(raw_items)
+        quizzes = [a for a in expanded if a["category"] == "Quizzes"]
+        homeworks = [a for a in expanded if a["category"] == "Homeworks"]
+        finals = [a for a in expanded if a["category"] == "Final Exam"]
+
+        self.assertEqual(len(quizzes), 4)
+        self.assertTrue(all(a["weight"] == 3.75 for a in quizzes))
+        self.assertTrue(all(a["category_drop_lowest"] == 2 for a in quizzes))
+
+        self.assertEqual(len(homeworks), 4)
+        self.assertTrue(all(a["weight"] == 5.0 for a in homeworks))
+        self.assertTrue(all(a["category_drop_lowest"] == 1 for a in homeworks))
+
+        # Final Exam must always have category_drop_lowest == 0
+        self.assertTrue(all(a["category_drop_lowest"] == 0 for a in finals))
+        self.assertTrue(is_final_assignment_or_category("Final Exam", "Final Exam"))
+
+        # 2. normalize_assignments_list enforces final non-droppability and prevents dropping all items in a category
+        dirty_list = [
+            {"id": "q1", "name": "Quiz 1", "category": "Quizzes", "weight": 5.0, "is_dropped": True, "category_drop_lowest": 2},
+            {"id": "q2", "name": "Quiz 2", "category": "Quizzes", "weight": 5.0, "is_dropped": True, "category_drop_lowest": 2},
+            {"id": "q3", "name": "Quiz 3", "category": "Quizzes", "weight": 5.0, "is_dropped": True, "category_drop_lowest": 2},
+            {"id": "fn", "name": "Final Exam", "category": "Final Exam", "weight": 35.0, "is_dropped": True, "category_drop_lowest": 1},
+        ]
+        norm = normalize_assignments_list(dirty_list)
+        norm_quizzes = [a for a in norm if a["category"] == "Quizzes"]
+        norm_final = [a for a in norm if a["category"] == "Final Exam"][0]
+
+        # At least 1 quiz must remain active (not dropped) so the category weight can normalize
+        self.assertEqual(sum(1 for a in norm_quizzes if a["is_dropped"]), 2)
+        self.assertEqual(sum(1 for a in norm_quizzes if not a["is_dropped"]), 1)
+
+        # Final exam cannot be dropped
+        self.assertFalse(norm_final["is_dropped"])
+        self.assertEqual(norm_final["category_drop_lowest"], 0)
+
+        # 3. Heuristic syllabus parser extracts drop rules from syllabus notes
+        sample_txt = (
+            "CS 121 - Data Structures\n"
+            "Quizzes (4*3.75=15%)\n"
+            "Midterm I 25%\n"
+            "Midterm II 25%\n"
+            "Final Exam 35%\n"
+            "Policy: The lowest 2 quizzes are dropped.\n"
+        )
+        parsed = _heuristic_parse_syllabus_text(sample_txt, "CS121.txt")
+        h_quizzes = [a for a in parsed["assignments"] if a["category"] == "Quizzes"]
+        self.assertEqual(len(h_quizzes), 4)
+        self.assertTrue(all(a["category_drop_lowest"] == 2 for a in h_quizzes))
+        self.assertEqual(infer_assignment_category("Homework 3"), "Homeworks")
+
 
 if __name__ == "__main__":
     unittest.main()
