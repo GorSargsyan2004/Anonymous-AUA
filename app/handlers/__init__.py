@@ -4,6 +4,7 @@ from aiogram import Dispatcher
 
 from app.handlers.admin import router as admin_router
 from app.handlers.feedback import router as feedback_router
+from app.handlers.group_chats import router as group_chats_router
 from app.handlers.inbox import router as inbox_router
 from app.handlers.invites import router as invites_router
 from app.handlers.matchmaking import router as matchmaking_router
@@ -22,8 +23,9 @@ def register_handlers(dp: Dispatcher) -> None:
     4. invites_router (handles /invite direct chat links)
     5. verification_router (handles /verify email confirmation flow)
     6. web_bridge_router (handles /post and /sync for AUA Hub website)
-    7. feedback_router (handles ratings and report reason input)
-    8. matchmaking_router (handles /search, /stop, /next, and anonymous message relay fallback)
+    7. group_chats_router (handles /groups, /rooms, /leave, /members, group creation & reporting)
+    8. feedback_router (handles ratings and report reason input)
+    9. matchmaking_router (handles /search, /stop, /next, and anonymous message relay fallback)
     """
     dp.include_router(admin_router)
     dp.include_router(start_router)
@@ -31,6 +33,7 @@ def register_handlers(dp: Dispatcher) -> None:
     dp.include_router(invites_router)
     dp.include_router(verification_router)
     dp.include_router(web_bridge_router)
+    dp.include_router(group_chats_router)
     dp.include_router(feedback_router)
     dp.include_router(matchmaking_router)
 

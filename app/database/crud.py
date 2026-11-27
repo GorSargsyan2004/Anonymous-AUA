@@ -17,6 +17,13 @@ from app.database.models import (
     ChatMessageMap,
     ChatSession,
     Feedback,
+    GroupChat,
+    GroupChatBan,
+    GroupChatMember,
+    GroupChatMessage,
+    GroupModerationLog,
+    GROUP_CHAT_MAX_CAPACITY,
+    GROUP_CHAT_MIN_CAPACITY,
     InboxBlock,
     InboxMessage,
     ReconnectRequest,
@@ -2942,6 +2949,701 @@ async def update_reconnect_request_status(
     res = await session.execute(stmt)
     await session.commit()
     return bool((res.rowcount or 0) > 0)
+
+
+# ==============================================================================
+# Telegram Anonymous Group Chats CRUD Operations
+# ==============================================================================
+
+GROUP_MESSAGE_ROLLING_WINDOW = 100
+GROUP_CREATE_COOLDOWN_SECONDS = 600  # 10 minutes
+
+
+def is_user_eligible_for_group(user: User, group: GroupChat) -> Tuple[bool, str]:
+    """Check if a user satisfies a group's gender, orientation, and verification limitations."""
+    if getattr(user, "is_banned", False):
+        return False, "You are banned from using Anonymous AUA."
+    if group.verified_only and not getattr(user, "is_verified", False):
+        return False, "This group is restricted to verified AUA students (@edu.aua.am) only. Use /verify first!"
+    if group.allowed_gender:
+        user_sex = (user.sex or "").strip().lower()
+        if user_sex != group.allowed_gender.strip().lower():
+            return False, f"This group is restricted to {group.allowed_gender.capitalize()} users only."
+    if group.allowed_orientation:
+        user_orient = (user.orientation or "").strip().lower()
+        if user_orient != group.allowed_orientation.strip().lower():
+            return False, f"This group is restricted to {group.allowed_orientation.capitalize()} users only."
+    return True, ""
+
+
+def validate_creator_anti_lurker(
+    user: User,
+    allowed_gender: Optional[str],
+    allowed_orientation: Optional[str],
+    verified_only: bool,
+) -> Tuple[bool, str]:
+    """Enforce Anti-Lurker Rule: creator can ONLY enable restrictions that their own profile satisfies."""
+    if verified_only and not getattr(user, "is_verified", False):
+        return (
+            False,
+            "Anti-Lurker Rule: You cannot restrict a group to Verified users only while your own profile is unverified.",
+        )
+    if allowed_gender:
+        user_sex = (user.sex or "").strip().lower()
+        if user_sex != allowed_gender.strip().lower():
+            return (
+                False,
+                f"Anti-Lurker Rule: You cannot restrict a group to {allowed_gender.capitalize()} only because your profile sex is {(user.sex or 'unset').capitalize()}.",
+            )
+    if allowed_orientation:
+        user_orient = (user.orientation or "").strip().lower()
+        if user_orient != allowed_orientation.strip().lower():
+            return (
+                False,
+                f"Anti-Lurker Rule: You cannot restrict a group to {allowed_orientation.capitalize()} only because your profile orientation is {(user.orientation or 'unset').capitalize()}.",
+            )
+    return True, ""
+
+
+async def get_user_active_group_member(
+    session: AsyncSession,
+    user_id: int,
+) -> Optional[Tuple[GroupChatMember, GroupChat]]:
+    """Return the user's active (GroupChatMember, GroupChat) if currently in an active group chat."""
+    stmt = (
+        select(GroupChatMember, GroupChat)
+        .join(GroupChat, GroupChat.id == GroupChatMember.group_id)
+        .where(
+            GroupChatMember.user_id == user_id,
+            GroupChatMember.is_active.is_(True),
+            GroupChat.is_active.is_(True),
+        )
+        .limit(1)
+    )
+    res = await session.execute(stmt)
+    row = res.first()
+    if not row:
+        return None
+    return row[0], row[1]
+
+
+async def get_active_created_group_by_user(
+    session: AsyncSession,
+    creator_id: int,
+) -> Optional[GroupChat]:
+    """Return any currently active GroupChat created by creator_id."""
+    stmt = (
+        select(GroupChat)
+        .where(GroupChat.creator_id == creator_id, GroupChat.is_active.is_(True))
+        .limit(1)
+    )
+    res = await session.execute(stmt)
+    return res.scalar_one_or_none()
+
+
+async def get_group_creation_cooldown_remaining(
+    session: AsyncSession,
+    creator_id: int,
+    cooldown_seconds: int = GROUP_CREATE_COOLDOWN_SECONDS,
+) -> int:
+    """Return remaining cooldown seconds before creator_id can create a new group chat."""
+    stmt = (
+        select(GroupChat.created_at)
+        .where(GroupChat.creator_id == creator_id)
+        .order_by(GroupChat.created_at.desc(), GroupChat.id.desc())
+        .limit(1)
+    )
+    res = await session.execute(stmt)
+    last_created = res.scalar_one_or_none()
+    if not last_created:
+        return 0
+    now = datetime.now(timezone.utc)
+    created_utc = last_created if last_created.tzinfo else last_created.replace(tzinfo=timezone.utc)
+    elapsed = (now - created_utc).total_seconds()
+    if elapsed < cooldown_seconds:
+        return max(1, int(cooldown_seconds - elapsed))
+    return 0
+
+
+async def get_group_chat_by_id(
+    session: AsyncSession,
+    group_id: int,
+    for_update: bool = False,
+) -> Optional[GroupChat]:
+    """Fetch a GroupChat by ID, optionally acquiring a row-level lock."""
+    stmt = select(GroupChat).where(GroupChat.id == group_id)
+    if for_update:
+        stmt = stmt.with_for_update()
+    res = await session.execute(stmt)
+    return res.scalar_one_or_none()
+
+
+async def count_active_group_members(
+    session: AsyncSession,
+    group_id: int,
+) -> int:
+    """Return the count of active members in a group chat."""
+    stmt = select(func.count(GroupChatMember.id)).where(
+        GroupChatMember.group_id == group_id,
+        GroupChatMember.is_active.is_(True),
+    )
+    res = await session.execute(stmt)
+    return int(res.scalar() or 0)
+
+
+async def get_active_group_members(
+    session: AsyncSession,
+    group_id: int,
+) -> List[GroupChatMember]:
+    """Return all currently active GroupChatMember records for a group ordered by joined_at."""
+    stmt = (
+        select(GroupChatMember)
+        .where(
+            GroupChatMember.group_id == group_id,
+            GroupChatMember.is_active.is_(True),
+        )
+        .order_by(GroupChatMember.joined_at.asc(), GroupChatMember.id.asc())
+    )
+    res = await session.execute(stmt)
+    return list(res.scalars().all())
+
+
+async def get_group_member_record(
+    session: AsyncSession,
+    group_id: int,
+    user_id: int,
+) -> Optional[GroupChatMember]:
+    """Return a user's GroupChatMember record (active or former/sticky) for a group."""
+    stmt = select(GroupChatMember).where(
+        GroupChatMember.group_id == group_id,
+        GroupChatMember.user_id == user_id,
+    )
+    res = await session.execute(stmt)
+    return res.scalar_one_or_none()
+
+
+async def is_user_banned_from_group(
+    session: AsyncSession,
+    group_id: int,
+    user_id: int,
+) -> bool:
+    """Return True if user_id is in group_chat_bans for group_id."""
+    stmt = select(func.count(GroupChatBan.id)).where(
+        GroupChatBan.group_id == group_id,
+        GroupChatBan.user_id == user_id,
+    )
+    res = await session.execute(stmt)
+    return bool((res.scalar() or 0) > 0)
+
+
+async def is_nickname_taken_in_group(
+    session: AsyncSession,
+    group_id: int,
+    nickname: str,
+    exclude_user_id: Optional[int] = None,
+) -> bool:
+    """Check if nickname_lower is already used by any current or past member in this group."""
+    nick_lower = nickname.strip().lower()
+    stmt = select(func.count(GroupChatMember.id)).where(
+        GroupChatMember.group_id == group_id,
+        GroupChatMember.nickname_lower == nick_lower,
+    )
+    if exclude_user_id is not None:
+        stmt = stmt.where(GroupChatMember.user_id != exclude_user_id)
+    res = await session.execute(stmt)
+    return bool((res.scalar() or 0) > 0)
+
+
+async def get_all_taken_nicknames_in_group(
+    session: AsyncSession,
+    group_id: int,
+) -> set[str]:
+    """Return set of all taken lowercase nicknames (active and past) in group_id."""
+    stmt = select(GroupChatMember.nickname_lower).where(
+        GroupChatMember.group_id == group_id
+    )
+    res = await session.execute(stmt)
+    return {row[0] for row in res.all() if row[0]}
+
+
+async def list_eligible_active_groups(
+    session: AsyncSession,
+    user: User,
+    page: int = 1,
+    page_size: int = 5,
+) -> Tuple[List[Tuple[GroupChat, int]], int, int]:
+    """List active groups that the user is eligible to join, ordered by active member count desc, last_activity_at desc.
+
+    Hides groups where the user fails allowed_gender, allowed_orientation, verified_only, or appears in group_chat_bans.
+    Returns:
+        (items: List[(GroupChat, active_member_count)], total_count: int, total_pages: int)
+    """
+    user_sex = (user.sex or "").strip().lower() or None
+    user_orient = (user.orientation or "").strip().lower() or None
+    is_verif = bool(getattr(user, "is_verified", False))
+
+    # Subquery for active member count per group
+    member_count_subq = (
+        select(
+            GroupChatMember.group_id.label("g_id"),
+            func.count(GroupChatMember.id).label("active_count"),
+        )
+        .where(GroupChatMember.is_active.is_(True))
+        .group_by(GroupChatMember.group_id)
+        .subquery()
+    )
+
+    # Subquery for groups where user is banned
+    banned_group_ids_subq = (
+        select(GroupChatBan.group_id)
+        .where(GroupChatBan.user_id == user.id)
+    )
+
+    conditions = [
+        GroupChat.is_active.is_(True),
+        ~GroupChat.id.in_(banned_group_ids_subq),
+    ]
+
+    if not is_verif:
+        conditions.append(GroupChat.verified_only.is_(False))
+
+    if user_sex:
+        conditions.append(
+            or_(GroupChat.allowed_gender.is_(None), func.lower(GroupChat.allowed_gender) == user_sex)
+        )
+    else:
+        conditions.append(GroupChat.allowed_gender.is_(None))
+
+    if user_orient:
+        conditions.append(
+            or_(GroupChat.allowed_orientation.is_(None), func.lower(GroupChat.allowed_orientation) == user_orient)
+        )
+    else:
+        conditions.append(GroupChat.allowed_orientation.is_(None))
+
+    active_cnt_col = func.coalesce(member_count_subq.c.active_count, 0)
+
+    base_stmt = (
+        select(GroupChat, active_cnt_col.label("active_count"))
+        .outerjoin(member_count_subq, GroupChat.id == member_count_subq.c.g_id)
+        .where(and_(*conditions))
+        .order_by(desc(active_cnt_col), desc(GroupChat.last_activity_at), desc(GroupChat.id))
+    )
+
+    res = await session.execute(base_stmt)
+    all_rows = [(row[0], int(row[1] or 0)) for row in res.all()]
+    total_count = len(all_rows)
+    total_pages = max(1, (total_count + page_size - 1) // page_size)
+    safe_page = max(1, min(page, total_pages))
+    start_idx = (safe_page - 1) * page_size
+    end_idx = start_idx + page_size
+    return all_rows[start_idx:end_idx], total_count, total_pages
+
+
+async def create_group_chat_with_creator(
+    session: AsyncSession,
+    creator: User,
+    name: str,
+    description: Optional[str],
+    max_participants: int,
+    allowed_gender: Optional[str],
+    allowed_orientation: Optional[str],
+    verified_only: bool,
+    creator_nickname: str,
+) -> Tuple[Optional[GroupChat], Optional[GroupChatMember], str]:
+    """Atomically validate anti-lurker, exclusivity, cooldown, and capacity, then create GroupChat + GroupChatMember."""
+    if not (GROUP_CHAT_MIN_CAPACITY <= max_participants <= GROUP_CHAT_MAX_CAPACITY):
+        return None, None, f"Max participants must be between {GROUP_CHAT_MIN_CAPACITY} and {GROUP_CHAT_MAX_CAPACITY}."
+
+    ok, err = validate_creator_anti_lurker(creator, allowed_gender, allowed_orientation, verified_only)
+    if not ok:
+        return None, None, err
+
+    if creator.current_partner_id is not None or creator.is_searching:
+        return None, None, "You cannot create a group while in a 1-on-1 chat or search queue. Send /stop first."
+
+    existing_membership = await get_user_active_group_member(session, creator.id)
+    if existing_membership is not None:
+        return None, None, "You are already in an active group chat. Send /leave first."
+
+    active_created = await get_active_created_group_by_user(session, creator.id)
+    if active_created is not None:
+        return None, None, f"You already have an active created group ({active_created.name}). Only 1 active created group per user is allowed."
+
+    now = datetime.now(timezone.utc)
+    clean_name = name.strip()
+    clean_desc = description.strip() if description and description.strip() else None
+    clean_nick = creator_nickname.strip()
+
+    group = GroupChat(
+        creator_id=creator.id,
+        name=clean_name,
+        description=clean_desc,
+        max_participants=max_participants,
+        allowed_gender=allowed_gender.strip().lower() if allowed_gender else None,
+        allowed_orientation=allowed_orientation.strip().lower() if allowed_orientation else None,
+        verified_only=bool(verified_only),
+        is_active=True,
+        last_activity_at=now,
+        created_at=now,
+    )
+    session.add(group)
+    await session.flush()
+
+    member = GroupChatMember(
+        group_id=group.id,
+        user_id=creator.id,
+        nickname=clean_nick,
+        nickname_lower=clean_nick.lower(),
+        is_active=True,
+        joined_at=now,
+        left_at=None,
+    )
+    session.add(member)
+    await session.commit()
+    await session.refresh(group)
+    await session.refresh(member)
+    return group, member, ""
+
+
+async def join_group_chat_atomic(
+    session: AsyncSession,
+    user: User,
+    group_id: int,
+    requested_nickname: Optional[str] = None,
+) -> Tuple[Optional[GroupChat], Optional[GroupChatMember], int, str]:
+    """Atomically validate eligibility, capacity, and exclusivity, and join or restore sticky nickname.
+
+    Returns:
+        (group, member, current_active_count, error_message)
+    """
+    if getattr(user, "is_banned", False):
+        return None, None, 0, "You are banned from using Anonymous AUA."
+
+    if user.current_partner_id is not None or user.is_searching:
+        return None, None, 0, "You are currently in a 1-on-1 chat or search queue. Send /stop first before joining a group."
+
+    existing_active = await get_user_active_group_member(session, user.id)
+    if existing_active is not None:
+        active_member, active_group = existing_active
+        if active_group.id == group_id:
+            cnt = await count_active_group_members(session, group_id)
+            return active_group, active_member, cnt, "already_in_this_group"
+        return None, None, 0, f"You are already in another group chat ({active_group.name}). Send /leave first."
+
+    group = await get_group_chat_by_id(session, group_id, for_update=True)
+    if not group or not group.is_active:
+        return None, None, 0, "This group chat is no longer active."
+
+    if await is_user_banned_from_group(session, group_id, user.id):
+        return None, None, 0, "You cannot join this group chat because you were removed from it."
+
+    eligible, reason = is_user_eligible_for_group(user, group)
+    if not eligible:
+        return None, None, 0, reason
+
+    current_count = await count_active_group_members(session, group_id)
+    if current_count >= group.max_participants:
+        return None, None, current_count, "Group Full! This group has reached its maximum participant capacity."
+
+    now = datetime.now(timezone.utc)
+    past_member = await get_group_member_record(session, group_id, user.id)
+    if past_member is not None:
+        # Sticky nickname restoration!
+        past_member.is_active = True
+        past_member.left_at = None
+        group.last_activity_at = now
+        await session.commit()
+        await session.refresh(past_member)
+        await session.refresh(group)
+        return group, past_member, current_count + 1, ""
+
+    if not requested_nickname or not requested_nickname.strip():
+        return group, None, current_count, "needs_nickname"
+
+    clean_nick = requested_nickname.strip()
+    if await is_nickname_taken_in_group(session, group_id, clean_nick, exclude_user_id=user.id):
+        return group, None, current_count, "That nickname is already taken in this group (including by past members). Please choose another."
+
+    member = GroupChatMember(
+        group_id=group_id,
+        user_id=user.id,
+        nickname=clean_nick,
+        nickname_lower=clean_nick.lower(),
+        is_active=True,
+        joined_at=now,
+        left_at=None,
+    )
+    session.add(member)
+    group.last_activity_at = now
+    await session.commit()
+    await session.refresh(member)
+    await session.refresh(group)
+    return group, member, current_count + 1, ""
+
+
+async def leave_group_chat(
+    session: AsyncSession,
+    user_id: int,
+    group_id: Optional[int] = None,
+) -> Optional[Tuple[GroupChat, GroupChatMember, int, bool]]:
+    """Mark a user's active group membership as inactive (preserving sticky nickname).
+
+    If remaining active members == 0, marks GroupChat.is_active = False.
+    Returns:
+        (group, member, remaining_count, group_closed) or None if not in an active group.
+    """
+    if group_id is not None:
+        stmt = (
+            select(GroupChatMember, GroupChat)
+            .join(GroupChat, GroupChat.id == GroupChatMember.group_id)
+            .where(
+                GroupChatMember.group_id == group_id,
+                GroupChatMember.user_id == user_id,
+                GroupChatMember.is_active.is_(True),
+            )
+            .limit(1)
+        )
+        res = await session.execute(stmt)
+        row = res.first()
+        if not row:
+            return None
+        member, group = row[0], row[1]
+    else:
+        found = await get_user_active_group_member(session, user_id)
+        if not found:
+            return None
+        member, group = found
+
+    now = datetime.now(timezone.utc)
+    member.is_active = False
+    member.left_at = now
+    await session.flush()
+
+    remaining = await count_active_group_members(session, group.id)
+    group_closed = False
+    if remaining <= 0:
+        group.is_active = False
+        group_closed = True
+
+    await session.commit()
+    await session.refresh(group)
+    await session.refresh(member)
+    return group, member, remaining, group_closed
+
+
+async def ban_and_kick_user_from_group(
+    session: AsyncSession,
+    group_id: int,
+    user_id: int,
+    reason: str,
+) -> Tuple[Optional[str], bool]:
+    """Remove user from group if active, and insert GroupChatBan so they cannot rejoin.
+
+    Returns:
+        (nickname_if_found, was_active)
+    """
+    now = datetime.now(timezone.utc)
+    member = await get_group_member_record(session, group_id, user_id)
+    was_active = False
+    nickname = member.nickname if member else None
+    if member and member.is_active:
+        member.is_active = False
+        member.left_at = now
+        was_active = True
+
+    existing_ban = await session.execute(
+        select(GroupChatBan).where(
+            GroupChatBan.group_id == group_id,
+            GroupChatBan.user_id == user_id,
+        )
+    )
+    ban_obj = existing_ban.scalar_one_or_none()
+    if ban_obj is None:
+        ban_obj = GroupChatBan(
+            group_id=group_id,
+            user_id=user_id,
+            reason=reason,
+            created_at=now,
+        )
+        session.add(ban_obj)
+    else:
+        ban_obj.reason = reason
+
+    await session.flush()
+    remaining = await count_active_group_members(session, group_id)
+    if remaining <= 0:
+        grp = await get_group_chat_by_id(session, group_id)
+        if grp:
+            grp.is_active = False
+
+    await session.commit()
+    return nickname, was_active
+
+
+async def record_group_chat_message(
+    session: AsyncSession,
+    group_id: int,
+    sender_user_id: int,
+    sender_nickname: str,
+    msg_type: str = "text",
+    text_content: Optional[str] = None,
+    telegram_file_id: Optional[str] = None,
+    rolling_limit: int = GROUP_MESSAGE_ROLLING_WINDOW,
+) -> GroupChatMessage:
+    """Record a message in group_chat_messages, update group last_activity_at, and prune to latest 100 rows."""
+    now = datetime.now(timezone.utc)
+    msg = GroupChatMessage(
+        group_id=group_id,
+        sender_user_id=sender_user_id,
+        sender_nickname=sender_nickname,
+        msg_type=msg_type,
+        text_content=text_content,
+        telegram_file_id=telegram_file_id,
+        created_at=now,
+    )
+    session.add(msg)
+
+    await session.execute(
+        update(GroupChat)
+        .where(GroupChat.id == group_id)
+        .values(last_activity_at=now)
+    )
+    await session.flush()
+
+    # Prune older messages beyond rolling_limit (100) for this group
+    keep_ids_subq = (
+        select(GroupChatMessage.id)
+        .where(GroupChatMessage.group_id == group_id)
+        .order_by(GroupChatMessage.id.desc())
+        .limit(rolling_limit)
+    )
+    await session.execute(
+        delete(GroupChatMessage).where(
+            GroupChatMessage.group_id == group_id,
+            ~GroupChatMessage.id.in_(keep_ids_subq),
+        )
+    )
+    await session.commit()
+    await session.refresh(msg)
+    return msg
+
+
+async def get_recent_group_messages(
+    session: AsyncSession,
+    group_id: int,
+    limit: int = GROUP_MESSAGE_ROLLING_WINDOW,
+) -> List[GroupChatMessage]:
+    """Fetch up to the latest `limit` (100) messages for a group in chronological order."""
+    stmt = (
+        select(GroupChatMessage)
+        .where(GroupChatMessage.group_id == group_id)
+        .order_by(GroupChatMessage.id.desc())
+        .limit(limit)
+    )
+    res = await session.execute(stmt)
+    msgs = list(res.scalars().all())
+    msgs.reverse()
+    return msgs
+
+
+async def get_reportable_group_participants(
+    session: AsyncSession,
+    group_id: int,
+    reporter_user_id: int,
+) -> List[Dict[str, Any]]:
+    """Return list of reportable participants in a group:
+    - All currently active members (excluding reporter)
+    - Plus anyone who sent a message in the last 100 messages and recently left, labeled with is_active=False.
+    """
+    active_members = await get_active_group_members(session, group_id)
+    participants_by_uid: Dict[int, Dict[str, Any]] = {}
+
+    for m in active_members:
+        if m.user_id == reporter_user_id:
+            continue
+        participants_by_uid[m.user_id] = {
+            "user_id": m.user_id,
+            "nickname": m.nickname,
+            "is_active": True,
+        }
+
+    recent_msgs = await get_recent_group_messages(session, group_id, limit=GROUP_MESSAGE_ROLLING_WINDOW)
+    for msg in recent_msgs:
+        uid = msg.sender_user_id
+        if uid == reporter_user_id:
+            continue
+        if uid not in participants_by_uid:
+            member_rec = await get_group_member_record(session, group_id, uid)
+            nick = member_rec.nickname if member_rec else msg.sender_nickname
+            is_act = bool(member_rec.is_active) if member_rec else False
+            participants_by_uid[uid] = {
+                "user_id": uid,
+                "nickname": nick,
+                "is_active": is_act,
+            }
+
+    return list(participants_by_uid.values())
+
+
+async def create_group_moderation_log(
+    session: AsyncSession,
+    group_id: int,
+    reporter_user_id: Optional[int],
+    reported_user_id: Optional[int],
+    ai_summary: str,
+    actions_json: str,
+) -> GroupModerationLog:
+    """Persist a multi-party AI moderation judgment in group_moderation_logs."""
+    log_entry = GroupModerationLog(
+        group_id=group_id,
+        reporter_user_id=reporter_user_id,
+        reported_user_id=reported_user_id,
+        ai_summary=ai_summary,
+        actions_json=actions_json,
+    )
+    session.add(log_entry)
+    await session.commit()
+    await session.refresh(log_entry)
+    return log_entry
+
+
+async def get_inactive_group_chats_for_closure(
+    session: AsyncSession,
+    inactivity_seconds: int = 10800,  # 3 hours
+) -> List[GroupChat]:
+    """Return active group chats whose last_activity_at is older than inactivity_seconds (3 hours)."""
+    cutoff = datetime.now(timezone.utc) - timedelta(seconds=inactivity_seconds)
+    stmt = select(GroupChat).where(
+        GroupChat.is_active.is_(True),
+        GroupChat.last_activity_at <= cutoff,
+    )
+    res = await session.execute(stmt)
+    return list(res.scalars().all())
+
+
+async def close_group_chat_by_id(
+    session: AsyncSession,
+    group_id: int,
+) -> List[int]:
+    """Close a group chat and mark all remaining active members as inactive. Returns list of notified user IDs."""
+    now = datetime.now(timezone.utc)
+    active_members = await get_active_group_members(session, group_id)
+    member_user_ids = [m.user_id for m in active_members]
+
+    await session.execute(
+        update(GroupChatMember)
+        .where(GroupChatMember.group_id == group_id, GroupChatMember.is_active.is_(True))
+        .values(is_active=False, left_at=now)
+    )
+    await session.execute(
+        update(GroupChat)
+        .where(GroupChat.id == group_id)
+        .values(is_active=False)
+    )
+    await session.commit()
+    return member_user_ids
+
 
 
 

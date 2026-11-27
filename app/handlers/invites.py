@@ -17,6 +17,7 @@ from app.database.crud import (
     deactivate_chat_invite,
     get_chat_invite_by_code,
     get_or_create_user,
+    get_user_active_group_member,
     get_user_active_invites,
 )
 from app.database.models import ChatSession, User, UserBlock
@@ -270,12 +271,22 @@ async def handle_invite_deeplink(
             await message.answer("⚠️ You cannot connect with this user.", parse_mode="HTML")
             return
 
-        # 5. Check if guest is already in a chat
+        # 5. Check if guest is already in a chat or group chat
         if guest.current_partner_id is not None:
             await state.clear()
             await message.answer(
                 "💬 <b>You are already in an active chat!</b>\n\n"
                 "Please end your current chat with /stop before connecting to a new invitation link.",
+                parse_mode="HTML",
+            )
+            return
+
+        guest_group = await get_user_active_group_member(session, guest_id)
+        if guest_group is not None:
+            await state.clear()
+            await message.answer(
+                "👥 <b>You are currently in an active group chat!</b>\n\n"
+                "Please leave your group chat with /leave before connecting to a 1-on-1 invitation link.",
                 parse_mode="HTML",
             )
             return
@@ -290,8 +301,9 @@ async def handle_invite_deeplink(
             await message.answer("⚠️ The host account is currently unavailable.", parse_mode="HTML")
             return
 
-        if creator.current_partner_id is not None:
-            # Creator is busy in another chat session
+        creator_group = await get_user_active_group_member(session, creator.id)
+        if creator.current_partner_id is not None or creator_group is not None:
+            # Creator is busy in another chat session or group chat
             await state.clear()
             await message.answer(
                 "⏳ <b>Host is currently in another chat</b>\n"

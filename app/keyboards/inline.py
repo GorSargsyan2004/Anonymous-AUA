@@ -93,12 +93,13 @@ def get_search_mode_keyboard(
         suffix = " ✓" if norm == key else ""
         builder.button(text=f"{label}{suffix}", callback_data=f"search_mode:{key}")
 
+    builder.button(text="👥 Group chats", callback_data="search_open_groups")
     builder.button(text="🛠️ Edit /preferences", callback_data="search_open_prefs")
     if is_currently_searching:
         builder.button(text="🛑 Cancel Search", callback_data="search_stop_queue")
-        builder.adjust(1, 1, 1, 1, 2)
+        builder.adjust(1, 1, 1, 1, 1, 2)
     else:
-        builder.adjust(1, 1, 1, 1, 1)
+        builder.adjust(1, 1, 1, 1, 1, 1)
     return builder.as_markup()
 
 
@@ -607,6 +608,226 @@ def get_verification_reminder_keyboard() -> InlineKeyboardMarkup:
     builder.button(text="🚫 Never show this again", callback_data="verif_remind_never")
     builder.adjust(1, 2)
     return builder.as_markup()
+
+
+# ==============================================================================
+# Telegram Anonymous Group Chats Keyboards
+# ==============================================================================
+
+def get_group_browser_keyboard(
+    groups_with_counts: Sequence[tuple],
+    page: int = 1,
+    total_pages: int = 1,
+) -> InlineKeyboardMarkup:
+    """Return paginated group chat list keyboard (max 5 groups/page).
+
+    - Each group button displays ONLY the group name and participant count vs max:
+      Example: 'Late Night CS Talk (4/10)'
+    - Pagination row directly beneath list: [<] [page/total_pages] [>]
+    - Action row below pagination: [+ Create Group] and [🔄 Refresh]
+    - If no eligible active groups exist, show clean empty state with [+ Create Group] (and [🔄 Refresh]).
+    """
+    builder = InlineKeyboardBuilder()
+    adjust_pattern: List[int] = []
+
+    safe_total_pages = max(1, total_pages)
+    safe_page = max(1, min(page, safe_total_pages))
+
+    for group, active_count in groups_with_counts[:5]:
+        btn_label = f"{group.name} ({active_count}/{group.max_participants})"
+        builder.button(
+            text=btn_label,
+            callback_data=f"grp_view:{group.id}:{safe_page}",
+        )
+        adjust_pattern.append(1)
+
+    if len(groups_with_counts) > 0:
+        prev_cb = f"grp_page:{safe_page - 1}" if safe_page > 1 else "grp_noop"
+        next_cb = f"grp_page:{safe_page + 1}" if safe_page < safe_total_pages else "grp_noop"
+        builder.button(text="<", callback_data=prev_cb)
+        builder.button(text=f"{safe_page}/{safe_total_pages}", callback_data="grp_noop")
+        builder.button(text=">", callback_data=next_cb)
+        adjust_pattern.append(3)
+
+        builder.button(text="+ Create Group", callback_data="grp_create_start")
+        builder.button(text="🔄 Refresh", callback_data=f"grp_refresh:{safe_page}")
+        adjust_pattern.append(2)
+    else:
+        builder.button(text="+ Create Group", callback_data="grp_create_start")
+        builder.button(text="🔄 Refresh", callback_data="grp_refresh:1")
+        adjust_pattern.append(2)
+
+    builder.adjust(*adjust_pattern)
+    return builder.as_markup()
+
+
+def get_group_details_keyboard(
+    group_id: int,
+    current_count: int,
+    max_participants: int,
+    back_page: int = 1,
+) -> InlineKeyboardMarkup:
+    """Return keyboard for group details view with [Join Group] (or [Group Full]) and [« Back]."""
+    builder = InlineKeyboardBuilder()
+    if current_count >= max_participants:
+        builder.button(text="Group Full", callback_data="grp_full_noop")
+    else:
+        builder.button(text="Join Group", callback_data=f"grp_join:{group_id}:{back_page}")
+
+    builder.button(text="« Back", callback_data=f"grp_page:{back_page}")
+    builder.adjust(1, 1)
+    return builder.as_markup()
+
+
+def get_group_cancel_keyboard() -> InlineKeyboardMarkup:
+    """Return simple [Cancel] keyboard for group creation steps."""
+    builder = InlineKeyboardBuilder()
+    builder.button(text="Cancel", callback_data="grp_create_cancel")
+    builder.adjust(1)
+    return builder.as_markup()
+
+
+def get_group_description_step_keyboard() -> InlineKeyboardMarkup:
+    """Return [Skip] and [Cancel] keyboard for optional group description step."""
+    builder = InlineKeyboardBuilder()
+    builder.button(text="Skip", callback_data="grp_desc_skip")
+    builder.button(text="Cancel", callback_data="grp_create_cancel")
+    builder.adjust(2)
+    return builder.as_markup()
+
+
+def get_group_capacity_step_keyboard() -> InlineKeyboardMarkup:
+    """Return quick-select capacity buttons (5, 8, 10, 15) + [Cancel]."""
+    builder = InlineKeyboardBuilder()
+    for cap in (5, 8, 10, 15):
+        builder.button(text=str(cap), callback_data=f"grp_cap:{cap}")
+    builder.button(text="Cancel", callback_data="grp_create_cancel")
+    builder.adjust(4, 1)
+    return builder.as_markup()
+
+
+def get_group_limitations_keyboard(
+    creator_sex: Optional[str],
+    creator_orientation: Optional[str],
+    creator_is_verified: bool,
+    allowed_gender: Optional[str] = None,
+    allowed_orientation: Optional[str] = None,
+    verified_only: bool = False,
+) -> InlineKeyboardMarkup:
+    """Return toggleable limitations keyboard enforcing the Anti-Lurker Rule in UI options.
+
+    Creators can ONLY enable restrictions that their own profile currently satisfies.
+    """
+    builder = InlineKeyboardBuilder()
+    adjust_pattern: List[int] = []
+
+    c_sex = (creator_sex or "").strip().lower()
+    if c_sex:
+        is_gender_restricted = (allowed_gender or "").strip().lower() == c_sex
+        gender_label = (
+            f"✅ Gender: {c_sex.capitalize()} only"
+            if is_gender_restricted
+            else f"⬜ Gender: Any (Tap for {c_sex.capitalize()} only)"
+        )
+        builder.button(text=gender_label, callback_data=f"grp_lim_gender:{c_sex}")
+        adjust_pattern.append(1)
+
+    c_orient = (creator_orientation or "").strip().lower()
+    if c_orient:
+        is_orient_restricted = (allowed_orientation or "").strip().lower() == c_orient
+        orient_label = (
+            f"✅ Orientation: {c_orient.capitalize()} only"
+            if is_orient_restricted
+            else f"⬜ Orientation: Any (Tap for {c_orient.capitalize()} only)"
+        )
+        builder.button(text=orient_label, callback_data=f"grp_lim_orient:{c_orient}")
+        adjust_pattern.append(1)
+
+    if creator_is_verified:
+        verif_label = (
+            "✅ Only Verified Users (@edu.aua.am)"
+            if verified_only
+            else "⬜ Only Verified Users: Off"
+        )
+        builder.button(text=verif_label, callback_data="grp_lim_verified:toggle")
+        adjust_pattern.append(1)
+    else:
+        builder.button(
+            text="🔒 Only Verified Users (Requires /verify)",
+            callback_data="grp_lim_verified:locked",
+        )
+        adjust_pattern.append(1)
+
+    builder.button(text="Continue →", callback_data="grp_lims_continue")
+    builder.button(text="Cancel", callback_data="grp_create_cancel")
+    adjust_pattern.append(2)
+
+    builder.adjust(*adjust_pattern)
+    return builder.as_markup()
+
+
+def get_group_nickname_keyboard(
+    random_nickname: str,
+    cancel_callback: str = "grp_create_cancel",
+) -> InlineKeyboardMarkup:
+    """Return nickname picker keyboard with pre-generated random nickname and [Cancel]."""
+    builder = InlineKeyboardBuilder()
+    builder.button(
+        text=f"🎲 Use Random Nickname (e.g., {random_nickname})",
+        callback_data=f"grp_nick_random:{random_nickname}",
+    )
+    builder.button(text="Cancel", callback_data=cancel_callback)
+    builder.adjust(1, 1)
+    return builder.as_markup()
+
+
+def get_group_report_targets_keyboard(
+    participants: Sequence[dict],
+    group_id: int,
+) -> InlineKeyboardMarkup:
+    """Return inline keyboard of reportable active + recently-left group members."""
+    builder = InlineKeyboardBuilder()
+    adjust_pattern: List[int] = []
+
+    for p in participants:
+        uid = p["user_id"]
+        nick = p["nickname"]
+        is_act = p.get("is_active", True)
+        label = f"🎭 {nick}" if is_act else f"🚪 {nick} (left)"
+        builder.button(
+            text=label,
+            callback_data=f"grp_rep_target:{group_id}:{uid}",
+        )
+        adjust_pattern.append(1)
+
+    builder.button(text="Cancel", callback_data="grp_rep_cancel")
+    adjust_pattern.append(1)
+    builder.adjust(*adjust_pattern)
+    return builder.as_markup()
+
+
+def get_group_report_reasons_keyboard(
+    group_id: int,
+    target_user_id: int,
+) -> InlineKeyboardMarkup:
+    """Return quick reason buttons for group chat moderation reporting."""
+    builder = InlineKeyboardBuilder()
+    reasons = [
+        ("harassment", "⚠️ Harassment"),
+        ("hate_speech", "🚫 Hate Speech"),
+        ("spam_scam", "📢 Spam/Scam"),
+        ("nsfw_illegal", "🔞 NSFW/Illegal"),
+        ("other", "📝 Other"),
+    ]
+    for key, label in reasons:
+        builder.button(
+            text=label,
+            callback_data=f"grp_rep_reason:{group_id}:{target_user_id}:{key}",
+        )
+    builder.button(text="Cancel", callback_data="grp_rep_cancel")
+    builder.adjust(2, 2, 1, 1)
+    return builder.as_markup()
+
 
 
 

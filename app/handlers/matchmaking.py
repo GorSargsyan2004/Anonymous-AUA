@@ -27,6 +27,7 @@ from app.database.crud import (
     get_or_create_user,
     get_recent_sessions_for_user,
     get_user,
+    get_user_active_group_member,
     pause_chat_session,
     reset_chat_session_inactivity_warning,
     set_user_bot_blocked,
@@ -311,6 +312,17 @@ async def perform_search(
             )
             return
 
+        # Strict Exclusivity: block 1-on-1 search matching while in an active group chat
+        active_group_res = await get_user_active_group_member(session, user_id=user_id)
+        if active_group_res is not None:
+            _, active_grp = active_group_res
+            await message.answer(
+                f"👥 <b>You are currently in an active group chat ({html.escape(active_grp.name)})!</b>\n\n"
+                "Please send /leave (or /stop) to exit your group chat before starting a 1-on-1 search.",
+                parse_mode="HTML",
+            )
+            return
+
         # Check if already searching
         if user.is_searching and not allow_requeue:
             await message.answer(
@@ -381,9 +393,24 @@ async def perform_search(
 
 @router.message(Command("report"))
 async def handle_report_command(message: Message, bot: Bot, state: FSMContext) -> None:
-    """Handle /report command during an active chat or to select a recent partner to report."""
+    """Handle /report command during an active chat, active group chat, or to select a recent partner to report."""
     user_id = message.from_user.id
     async with get_db_session() as session:
+        # 0. Check if user is in an active group chat first
+        active_group_res = await get_user_active_group_member(session, user_id=user_id)
+        if active_group_res is not None:
+            from app.handlers.group_chats import open_group_report_menu
+
+            _, active_grp = active_group_res
+            await open_group_report_menu(
+                session=session,
+                user_id=user_id,
+                group=active_grp,
+                message=message,
+                state=state,
+            )
+            return
+
         user = await get_or_create_user(session, user_id=user_id)
         partner_id = user.current_partner_id
         active_chat = await get_active_session_by_user_id(session, user_id=user_id) if partner_id else None
@@ -545,6 +572,16 @@ async def handle_search(message: Message, bot: Bot, state: FSMContext) -> None:
             )
             return
 
+        active_group_res = await get_user_active_group_member(session, user_id=user_id)
+        if active_group_res is not None:
+            _, active_grp = active_group_res
+            await message.answer(
+                f"👥 <b>You are currently in an active group chat ({html.escape(active_grp.name)})!</b>\n\n"
+                "Please send /leave (or /stop) to exit your group chat before searching.",
+                parse_mode="HTML",
+            )
+            return
+
         current_mode = getattr(user, "search_mode", None) or SEARCH_MODE_PREFERENCES
         is_currently_searching = bool(user.is_searching)
         _, romance_sexes, romance_orients = resolve_search_mode_preferences(user, "romance")
@@ -682,6 +719,12 @@ async def handle_stop(message: Message, bot: Bot, state: FSMContext) -> None:
                 "Send /search whenever you are ready to find a partner! ×͜×",
                 parse_mode="HTML",
             )
+            return
+
+        # 2b. If user is in an active group chat, /stop acts as /leave
+        from app.handlers.group_chats import execute_leave_group_for_user
+
+        if await execute_leave_group_for_user(bot, session, user_id, message):
             return
 
     # 3. Neither in chat nor searching
@@ -877,6 +920,16 @@ async def relay_anonymous_message(message: Message, bot: Bot, state: FSMContext)
 
     user_id = message.from_user.id
     media_group_id = getattr(message, "media_group_id", None)
+
+    # Check if user is an active group chat member; route exclusively through group relay engine
+    async with get_db_session() as grp_session:
+        active_group_res = await get_user_active_group_member(grp_session, user_id=user_id)
+        if active_group_res is not None:
+            from app.services.group_chat_service import relay_group_message
+
+            sender_member, group = active_group_res
+            await relay_group_message(bot, grp_session, group, sender_member, message)
+            return
 
     # Anti-flood check (bypass check if message is part of an already-registering media group)
     if not media_batcher.is_collecting(media_group_id):

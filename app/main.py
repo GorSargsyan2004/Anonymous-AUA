@@ -41,6 +41,7 @@ async def setup_bot_commands(bot: Bot) -> None:
     commands = [
         BotCommand(command="start", description="Start bot / Profile setup"),
         BotCommand(command="search", description="Search for an anonymous partner"),
+        BotCommand(command="groups", description="Browse or create anonymous group chats 👥"),
         BotCommand(command="link", description="Receive anonymous messages & Q&A 🎭"),
         BotCommand(command="post", description="Publish anonymous post to AUA Hub 🌐"),
         BotCommand(command="sync", description="Sync inbox & account with AUA Hub 🔄"),

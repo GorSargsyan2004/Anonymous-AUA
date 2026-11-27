@@ -24,6 +24,7 @@ from app.database.session import get_db_session
 from app.keyboards.inline import get_feedback_keyboard, get_inactivity_warning_keyboard
 from app.services.one_time_media import one_time_media_manager
 from app.services.reply_manager import reply_manager
+from app.services.group_chat_service import check_and_close_inactive_group_chats
 
 logger = logging.getLogger(__name__)
 
@@ -175,6 +176,12 @@ async def check_and_process_inactivity(bot: Bot) -> None:
                 logger.info("Closed 24h expired paused session %s (users: %s, %s)", sess_id, u1_id, u2_id)
             except Exception as e:
                 logger.error("Error expiring paused session %s: %s", chat_sess.id, e)
+
+        # 4. Process Step 4: Automatically close group chats with no messages for 3 hours
+        try:
+            await check_and_close_inactive_group_chats(bot, session)
+        except Exception as e:
+            logger.error("Error checking inactive group chats: %s", e)
 
 
 async def inactivity_monitor_worker(bot: Bot) -> None:

@@ -1143,6 +1143,179 @@ class UserCourse(Base):
     syllabus_cache = relationship("SyllabusCache", foreign_keys=[syllabus_cache_id])
 
 
+# ==============================================================================
+# Telegram Anonymous Group Chats Models
+# ==============================================================================
+
+GROUP_CHAT_MIN_CAPACITY = 3
+GROUP_CHAT_MAX_CAPACITY = 15
+
+
+class GroupChat(Base):
+    """Represents a user-created digital anonymous group chat inside the Telegram bot."""
+    __tablename__ = "group_chats"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    creator_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    name: Mapped[str] = mapped_column(String(40), nullable=False)
+    description: Mapped[Optional[str]] = mapped_column(String(200), nullable=True)
+    max_participants: Mapped[int] = mapped_column(
+        Integer, default=10, nullable=False, server_default=text("10")
+    )
+    allowed_gender: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)
+    allowed_orientation: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)
+    verified_only: Mapped[bool] = mapped_column(
+        Boolean, default=False, nullable=False, server_default=text("false")
+    )
+    is_active: Mapped[bool] = mapped_column(
+        Boolean, default=True, nullable=False, server_default=text("true"), index=True
+    )
+    last_activity_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False, index=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    members = relationship("GroupChatMember", back_populates="group", cascade="all, delete-orphan")
+    bans = relationship("GroupChatBan", back_populates="group", cascade="all, delete-orphan")
+    messages = relationship("GroupChatMessage", back_populates="group", cascade="all, delete-orphan")
+    moderation_logs = relationship("GroupModerationLog", back_populates="group", cascade="all, delete-orphan")
+
+    def __init__(self, **kwargs):
+        kwargs.setdefault("max_participants", 10)
+        kwargs.setdefault("verified_only", False)
+        kwargs.setdefault("is_active", True)
+        super().__init__(**kwargs)
+
+    def __repr__(self) -> str:
+        return f"<GroupChat id={self.id} name={self.name!r} active={self.is_active}>"
+
+
+class GroupChatMember(Base):
+    """Represents a member (active or former) in a digital anonymous group chat with a sticky nickname."""
+    __tablename__ = "group_chat_members"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    group_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("group_chats.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    user_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    nickname: Mapped[str] = mapped_column(String(24), nullable=False)
+    nickname_lower: Mapped[str] = mapped_column(String(24), nullable=False)
+    is_active: Mapped[bool] = mapped_column(
+        Boolean, default=True, nullable=False, server_default=text("true"), index=True
+    )
+    joined_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    left_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+    group = relationship("GroupChat", back_populates="members")
+
+    __table_args__ = (
+        UniqueConstraint("group_id", "user_id", name="uq_group_chat_member_user"),
+        UniqueConstraint("group_id", "nickname_lower", name="uq_group_chat_member_nickname_lower"),
+    )
+
+    def __init__(self, **kwargs):
+        if "nickname" in kwargs and "nickname_lower" not in kwargs and kwargs["nickname"]:
+            kwargs["nickname_lower"] = str(kwargs["nickname"]).strip().lower()
+        kwargs.setdefault("is_active", True)
+        super().__init__(**kwargs)
+
+    def __repr__(self) -> str:
+        return f"<GroupChatMember group={self.group_id} user={self.user_id} nick={self.nickname!r} active={self.is_active}>"
+
+
+class GroupChatBan(Base):
+    """Represents a user banned from a specific digital anonymous group chat."""
+    __tablename__ = "group_chat_bans"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    group_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("group_chats.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    user_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    reason: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    group = relationship("GroupChat", back_populates="bans")
+
+    __table_args__ = (
+        UniqueConstraint("group_id", "user_id", name="uq_group_chat_ban_user"),
+    )
+
+    def __repr__(self) -> str:
+        return f"<GroupChatBan group={self.group_id} user={self.user_id}>"
+
+
+class GroupChatMessage(Base):
+    """Stores a rolling window (latest 100 messages per group) for multi-party AI moderation."""
+    __tablename__ = "group_chat_messages"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    group_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("group_chats.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    sender_user_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    sender_nickname: Mapped[str] = mapped_column(String(24), nullable=False)
+    msg_type: Mapped[str] = mapped_column(
+        String(24), default="text", nullable=False, server_default=text("'text'")
+    )
+    text_content: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    telegram_file_id: Mapped[Optional[str]] = mapped_column(String(256), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False, index=True
+    )
+
+    group = relationship("GroupChat", back_populates="messages")
+
+    def __repr__(self) -> str:
+        return f"<GroupChatMessage id={self.id} group={self.group_id} sender={self.sender_nickname!r} type={self.msg_type}>"
+
+
+class GroupModerationLog(Base):
+    """Audit log of multi-party AI moderation judgments on a group chat."""
+    __tablename__ = "group_moderation_logs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    group_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("group_chats.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    reporter_user_id: Mapped[Optional[int]] = mapped_column(
+        BigInteger, ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    reported_user_id: Mapped[Optional[int]] = mapped_column(
+        BigInteger, ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    ai_summary: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    actions_json: Mapped[str] = mapped_column(
+        Text, default="[]", nullable=False, server_default=text("'[]'")
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False, index=True
+    )
+
+    group = relationship("GroupChat", back_populates="moderation_logs")
+
+    def __repr__(self) -> str:
+        return f"<GroupModerationLog id={self.id} group={self.group_id}>"
+
+
+
 
 
 
