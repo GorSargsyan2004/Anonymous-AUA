@@ -10728,16 +10728,31 @@ function renderActiveGpaCourseEditor() {
         </span>
       </div>
 
-      <!-- Course Notes / Drop-Lowest Policy -->
-      <div style="margin-top:16px;">
-        <label class="field-label" for="gpaActiveCourseNotes">Syllabus Notes / Special Policies (e.g. Drop-Lowest Quiz)</label>
-        <input type="text" id="gpaActiveCourseNotes" class="input-glass" maxlength="1000"
-          placeholder="e.g. Lowest quiz is dropped; minimum 60% on final exam required to pass"
-          value="${escapeHtml(course.notes || "")}"
-          oninput="handleGpaCourseMetaEdit('notes', this.value)" />
+      <!-- Course Notes / Special Policies (auto-growing, easy to read) -->
+      <div class="gpa-notes-card">
+        <div class="gpa-notes-head">
+          <label class="gpa-notes-title" for="gpaActiveCourseNotes">
+            <span class="gpa-notes-icon">📝</span>
+            <span>Syllabus Notes &amp; Policies</span>
+          </label>
+          <span id="gpaNotesCounter" class="gpa-notes-counter">${(course.notes || "").length} / 1000</span>
+        </div>
+        <textarea id="gpaActiveCourseNotes" class="textarea-glass gpa-notes-textarea" maxlength="1000" rows="3"
+          placeholder="e.g. Lowest quiz is dropped; make-up exams only with medical evidence; minimum 60% on final to pass"
+          oninput="handleGpaCourseMetaEdit('notes', this.value); autosizeGpaNotes(this)">${escapeHtml(course.notes || "")}</textarea>
+        <div class="gpa-notes-hint">Auto-extracted from your syllabus. Edit freely — saved automatically.</div>
       </div>
     </div>
   `;
+  autosizeGpaNotes(document.getElementById("gpaActiveCourseNotes"));
+}
+
+function autosizeGpaNotes(el) {
+  if (!el) return;
+  el.style.height = "auto";
+  el.style.height = `${Math.min(el.scrollHeight + 2, 360)}px`;
+  const counter = document.getElementById("gpaNotesCounter");
+  if (counter) counter.textContent = `${el.value.length} / 1000`;
 }
 
 function refreshOptimalMetricsInPlace(course) {
