@@ -1,5 +1,5 @@
 /* AUA Hub Service Worker (PWA Support & Offline Shell Cache) */
-const CACHE_NAME = "aua-hub-shell-v56";
+const CACHE_NAME = "aua-hub-shell-v57";
 const SHELL_ASSETS = [
   "/",
   "/static/styles.css?v=20261127_14",
