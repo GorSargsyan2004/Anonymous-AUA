@@ -30,7 +30,9 @@ from app.database.models import (
     AIUsageLog,
     AnonymousInbox,
     AnonymousPostComment,
+    AnonymousPostCommentReaction,
     AnonymousPublicPost,
+    AnonymousPublicPostReaction,
     AnonymousPublicPostReport,
     BotActivitySnapshot,
     ChatInvite,
@@ -852,11 +854,193 @@ async def get_anon_post_comment_counts(
     return {int(pid): int(cnt) for pid, cnt in rows}
 
 
+async def get_anon_post_reactions_map(
+    session: AsyncSession,
+    post_ids: List[int],
+    current_user_id: Optional[int] = None,
+) -> Dict[int, List[Dict[str, Any]]]:
+    """Return privacy-safe aggregated reactions for each post_id in `post_ids`.
+
+    NEVER exposes user IDs, names, or avatars—only `emoji`, `count`, and `reacted_by_me`.
+    """
+    if not post_ids:
+        return {}
+    stmt = (
+        select(AnonymousPublicPostReaction)
+        .where(AnonymousPublicPostReaction.post_id.in_(post_ids))
+        .order_by(AnonymousPublicPostReaction.id.asc())
+    )
+    rows = list((await session.execute(stmt)).scalars().all())
+    grouped_by_post: Dict[int, Dict[str, Dict[str, Any]]] = {}
+    for r in rows:
+        pid = int(r.post_id)
+        if pid not in grouped_by_post:
+            grouped_by_post[pid] = {}
+        by_emoji = grouped_by_post[pid]
+        if r.emoji not in by_emoji:
+            by_emoji[r.emoji] = {
+                "emoji": r.emoji,
+                "count": 0,
+                "reacted_by_me": False,
+            }
+        by_emoji[r.emoji]["count"] += 1
+        if current_user_id is not None and int(r.web_user_id) == int(current_user_id):
+            by_emoji[r.emoji]["reacted_by_me"] = True
+
+    return {pid: list(emo_map.values()) for pid, emo_map in grouped_by_post.items()}
+
+
+async def toggle_anon_post_reaction(
+    session: AsyncSession,
+    post_id: int,
+    web_user_id: int,
+    emoji: str,
+) -> Tuple[bool, Optional[str], List[Dict[str, Any]]]:
+    """Toggle or update an anonymous emoji reaction on an AnonymousPublicPost.
+
+    Returns (post_found, active_emoji_or_none, privacy_safe_reactions_list).
+    """
+    post = (
+        await session.execute(
+            select(AnonymousPublicPost).where(
+                and_(
+                    AnonymousPublicPost.id == post_id,
+                    AnonymousPublicPost.is_hidden.is_(False),
+                )
+            )
+        )
+    ).scalar_one_or_none()
+    if not post:
+        return False, None, []
+
+    stmt = select(AnonymousPublicPostReaction).where(
+        and_(
+            AnonymousPublicPostReaction.post_id == post_id,
+            AnonymousPublicPostReaction.web_user_id == web_user_id,
+        )
+    )
+    existing = (await session.execute(stmt)).scalar_one_or_none()
+
+    active_emoji: Optional[str] = None
+    if existing:
+        if existing.emoji == emoji:
+            await session.delete(existing)
+            active_emoji = None
+        else:
+            existing.emoji = emoji
+            active_emoji = emoji
+    else:
+        session.add(
+            AnonymousPublicPostReaction(
+                post_id=post_id,
+                web_user_id=web_user_id,
+                emoji=emoji,
+            )
+        )
+        active_emoji = emoji
+
+    await session.commit()
+    reactions_map = await get_anon_post_reactions_map(session, [post_id], current_user_id=web_user_id)
+    return True, active_emoji, reactions_map.get(post_id, [])
+
+
+async def get_anon_comment_reactions_map(
+    session: AsyncSession,
+    comment_ids: List[int],
+    current_user_id: Optional[int] = None,
+) -> Dict[int, List[Dict[str, Any]]]:
+    """Return privacy-safe aggregated reactions for each comment_id in `comment_ids`.
+
+    NEVER exposes user IDs, names, or avatars—only `emoji`, `count`, and `reacted_by_me`.
+    """
+    if not comment_ids:
+        return {}
+    stmt = (
+        select(AnonymousPostCommentReaction)
+        .where(AnonymousPostCommentReaction.comment_id.in_(comment_ids))
+        .order_by(AnonymousPostCommentReaction.id.asc())
+    )
+    rows = list((await session.execute(stmt)).scalars().all())
+    grouped_by_cid: Dict[int, Dict[str, Dict[str, Any]]] = {}
+    for r in rows:
+        cid = int(r.comment_id)
+        if cid not in grouped_by_cid:
+            grouped_by_cid[cid] = {}
+        by_emoji = grouped_by_cid[cid]
+        if r.emoji not in by_emoji:
+            by_emoji[r.emoji] = {
+                "emoji": r.emoji,
+                "count": 0,
+                "reacted_by_me": False,
+            }
+        by_emoji[r.emoji]["count"] += 1
+        if current_user_id is not None and int(r.web_user_id) == int(current_user_id):
+            by_emoji[r.emoji]["reacted_by_me"] = True
+
+    return {cid: list(emo_map.values()) for cid, emo_map in grouped_by_cid.items()}
+
+
+async def toggle_anon_comment_reaction(
+    session: AsyncSession,
+    post_id: int,
+    comment_id: int,
+    web_user_id: int,
+    emoji: str,
+) -> Tuple[bool, Optional[str], List[Dict[str, Any]]]:
+    """Toggle or update an anonymous emoji reaction on an AnonymousPostComment.
+
+    Returns (comment_found, active_emoji_or_none, privacy_safe_reactions_list).
+    """
+    comment = (
+        await session.execute(
+            select(AnonymousPostComment).where(
+                and_(
+                    AnonymousPostComment.id == comment_id,
+                    AnonymousPostComment.post_id == post_id,
+                )
+            )
+        )
+    ).scalar_one_or_none()
+    if not comment:
+        return False, None, []
+
+    stmt = select(AnonymousPostCommentReaction).where(
+        and_(
+            AnonymousPostCommentReaction.comment_id == comment_id,
+            AnonymousPostCommentReaction.web_user_id == web_user_id,
+        )
+    )
+    existing = (await session.execute(stmt)).scalar_one_or_none()
+
+    active_emoji: Optional[str] = None
+    if existing:
+        if existing.emoji == emoji:
+            await session.delete(existing)
+            active_emoji = None
+        else:
+            existing.emoji = emoji
+            active_emoji = emoji
+    else:
+        session.add(
+            AnonymousPostCommentReaction(
+                comment_id=comment_id,
+                web_user_id=web_user_id,
+                emoji=emoji,
+            )
+        )
+        active_emoji = emoji
+
+    await session.commit()
+    reactions_map = await get_anon_comment_reactions_map(session, [comment_id], current_user_id=web_user_id)
+    return True, active_emoji, reactions_map.get(comment_id, [])
+
+
 def _serialize_anon_post_comments_thread(
     post: AnonymousPublicPost,
     comments: List[AnonymousPostComment],
     current_user_id: Optional[int] = None,
     is_admin: bool = False,
+    reactions_by_comment: Optional[Dict[int, List[Dict[str, Any]]]] = None,
 ) -> List[Dict[str, Any]]:
     """Serialize a chronological list of comments for a post with deterministic per-post Anon #N / Author (OP) aliases."""
     anon_alias_by_uid: Dict[int, str] = {}
@@ -936,6 +1120,7 @@ def _serialize_anon_post_comments_thread(
                 "is_mine": is_mine,
                 "can_delete": can_delete,
                 "reply_to": reply_preview,
+                "reactions": (reactions_by_comment or {}).get(c.id, []),
                 "created_at": c.created_at.isoformat() if c.created_at else None,
             }
         )
@@ -970,11 +1155,18 @@ async def list_anon_post_comments(
         .limit(300)
     )
     rows = list((await session.execute(stmt)).scalars().all())
+    comment_ids = [c.id for c in rows]
+    reactions_by_comment = await get_anon_comment_reactions_map(
+        session=session,
+        comment_ids=comment_ids,
+        current_user_id=current_user_id,
+    )
     return post, _serialize_anon_post_comments_thread(
         post=post,
         comments=rows,
         current_user_id=current_user_id,
         is_admin=is_admin,
+        reactions_by_comment=reactions_by_comment,
     )
 
 

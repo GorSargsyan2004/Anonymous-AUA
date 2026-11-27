@@ -81,7 +81,9 @@ from app.database.web_crud import (
     find_reciprocal_have_need_matches,
     generate_web_sync_code,
     get_active_semester_label,
+    get_anon_comment_reactions_map,
     get_anon_post_comment_counts,
+    get_anon_post_reactions_map,
     get_feedback_catalog,
     get_full_admin_stata_payload,
     get_message_reactions,
@@ -117,6 +119,8 @@ from app.database.web_crud import (
     search_courses,
     serialize_user_course,
     serialize_user_notification,
+    toggle_anon_comment_reaction,
+    toggle_anon_post_reaction,
     toggle_spam_chat_reaction,
     update_have_need_post,
     update_telegram_group,
@@ -2735,6 +2739,11 @@ async def api_list_anonymous_posts(request: web.Request) -> web.Response:
         post_ids = [p.id for p in posts]
         reported_ids = await get_reported_anon_post_ids(session, reporter_key, post_ids)
         comment_counts = await get_anon_post_comment_counts(session, post_ids)
+        reactions_by_post = await get_anon_post_reactions_map(
+            session,
+            post_ids,
+            current_user_id=user.id if user else None,
+        )
 
     total_pages = max(1, (total + per_page - 1) // per_page)
     return web.json_response(
@@ -2746,6 +2755,7 @@ async def api_list_anonymous_posts(request: web.Request) -> web.Response:
                     "report_count": int(p.report_count or 0),
                     "reported_by_me": p.id in reported_ids,
                     "comment_count": int(comment_counts.get(p.id, 0)),
+                    "reactions": reactions_by_post.get(p.id, []),
                     "created_at": p.created_at.isoformat() if p.created_at else None,
                 }
                 for p in posts
@@ -3065,6 +3075,120 @@ async def api_delete_anon_post_comment(request: web.Request) -> web.Response:
             "post_id": post_id,
             "deleted_id": comment_id,
             "comment_count": remaining,
+        }
+    )
+
+
+@routes.post("/api/anonymous/posts/{post_id:\\d+}/react")
+async def api_react_anonymous_post(request: web.Request) -> web.Response:
+    """Toggle an anonymous emoji reaction on an AnonymousPublicPost (zero reactor identities exposed)."""
+    user = await get_current_web_user(request)
+    if not user:
+        return web.json_response({"error": "Please sign in to react to anonymous posts."}, status=401)
+
+    try:
+        post_id = int(request.match_info["post_id"])
+    except (KeyError, ValueError):
+        return web.json_response({"error": "Invalid post ID."}, status=400)
+
+    try:
+        data = await request.json()
+        if not isinstance(data, dict):
+            return web.json_response({"error": "Invalid JSON body."}, status=400)
+    except Exception:
+        return web.json_response({"error": "Invalid JSON body."}, status=400)
+
+    emoji = (data.get("emoji") or "").strip()
+    if emoji not in ALLOWED_REACTIONS:
+        return web.json_response({"error": "Unsupported reaction emoji."}, status=400)
+
+    async with get_db_session() as session:
+        found, active_emoji, reactions_list = await toggle_anon_post_reaction(
+            session=session,
+            post_id=post_id,
+            web_user_id=user.id,
+            emoji=emoji,
+        )
+        if not found:
+            return web.json_response({"error": "Anonymous post not found."}, status=404)
+
+    public_ws_reactions = [
+        {"emoji": r["emoji"], "count": r["count"]}
+        for r in reactions_list
+    ]
+    await broadcast_ws_event(
+        {
+            "type": "anon_post_reaction",
+            "post_id": post_id,
+            "reactions": public_ws_reactions,
+        }
+    )
+
+    return web.json_response(
+        {
+            "ok": True,
+            "post_id": post_id,
+            "active_emoji": active_emoji,
+            "reactions": reactions_list,
+        }
+    )
+
+
+@routes.post("/api/anonymous/posts/{post_id:\\d+}/comments/{comment_id:\\d+}/react")
+async def api_react_anon_post_comment(request: web.Request) -> web.Response:
+    """Toggle an anonymous emoji reaction on an AnonymousPostComment (zero reactor identities exposed)."""
+    user = await get_current_web_user(request)
+    if not user:
+        return web.json_response({"error": "Please sign in to react to comments."}, status=401)
+
+    try:
+        post_id = int(request.match_info["post_id"])
+        comment_id = int(request.match_info["comment_id"])
+    except (KeyError, ValueError):
+        return web.json_response({"error": "Invalid post or comment ID."}, status=400)
+
+    try:
+        data = await request.json()
+        if not isinstance(data, dict):
+            return web.json_response({"error": "Invalid JSON body."}, status=400)
+    except Exception:
+        return web.json_response({"error": "Invalid JSON body."}, status=400)
+
+    emoji = (data.get("emoji") or "").strip()
+    if emoji not in ALLOWED_REACTIONS:
+        return web.json_response({"error": "Unsupported reaction emoji."}, status=400)
+
+    async with get_db_session() as session:
+        found, active_emoji, reactions_list = await toggle_anon_comment_reaction(
+            session=session,
+            post_id=post_id,
+            comment_id=comment_id,
+            web_user_id=user.id,
+            emoji=emoji,
+        )
+        if not found:
+            return web.json_response({"error": "Comment not found."}, status=404)
+
+    public_ws_reactions = [
+        {"emoji": r["emoji"], "count": r["count"]}
+        for r in reactions_list
+    ]
+    await broadcast_ws_event(
+        {
+            "type": "anon_comment_reaction",
+            "post_id": post_id,
+            "comment_id": comment_id,
+            "reactions": public_ws_reactions,
+        }
+    )
+
+    return web.json_response(
+        {
+            "ok": True,
+            "post_id": post_id,
+            "comment_id": comment_id,
+            "active_emoji": active_emoji,
+            "reactions": reactions_list,
         }
     )
 

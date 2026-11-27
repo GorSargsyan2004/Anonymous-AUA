@@ -3249,6 +3249,8 @@ async function loadAnonymousPosts(page = 1) {
           const reportCount = Number(p.report_count || 0);
           const commentCount = Number(p.comment_count || 0);
           const isOpen = Boolean(state.openAnonCommentPostIds && state.openAnonCommentPostIds.has(Number(p.index)));
+          state.anonPostsReactionsById = state.anonPostsReactionsById || {};
+          state.anonPostsReactionsById[p.index] = p.reactions || [];
           return `
         <div class="glass-card anon-post-card" id="anon-post-card-${p.index}">
           <div class="anon-post-header">
@@ -3282,6 +3284,25 @@ async function loadAnonymousPosts(page = 1) {
               </span>
               <span class="anon-toggle-chevron">${isOpen ? "▴" : "▾"}</span>
             </button>
+
+            <div class="anon-reaction-anchor">
+              <button
+                type="button"
+                class="anon-react-trigger-btn"
+                onclick="toggleAnonReactionPicker(event, 'post-${p.index}')"
+                title="Add anonymous reaction"
+              >
+                <span>😊</span>
+                <span class="anon-react-plus">+</span>
+              </button>
+              <div class="chat-reaction-picker anon-reaction-picker" id="anonReactionPicker-post-${p.index}">
+                ${buildAnonQuickReactionButtonsHtml("post", p.index, null)}
+              </div>
+            </div>
+
+            <div class="chat-reactions-wrapper anon-post-reactions-bar" id="anonPostReactions-${p.index}">
+              ${renderAnonReactionsChipsHtml("post", p.index, null, p.reactions || [])}
+            </div>
           </div>
           <div id="anon-comments-drawer-${p.index}" class="anon-comments-drawer${isOpen ? "" : " hidden"}" ${isOpen ? "" : "hidden"}>
             <div class="anon-comments-drawer-head">
@@ -3524,9 +3545,200 @@ function renderAnonPostCommentsStream(postId, scrollToBottom = false) {
   }
 
   stream.innerHTML = comments.map((c) => buildAnonCommentBubbleHtml(c)).join("");
+  stream.querySelectorAll(".anon-comment-row").forEach((rowEl) => {
+    initDesktopHoverPicker(rowEl);
+  });
   if (scrollToBottom) {
     stream.scrollTop = stream.scrollHeight;
   }
+}
+
+function buildAnonQuickReactionButtonsHtml(targetType, postId, commentId) {
+  const quickBtns = TELEGRAM_QUICK_REACTIONS.map((emoji) => {
+    const clickCall =
+      targetType === "comment"
+        ? `toggleAnonCommentReaction(${Number(postId)}, ${Number(commentId)}, '${emoji}')`
+        : `toggleAnonPostReaction(${Number(postId)}, '${emoji}')`;
+    return `<button type="button" class="chat-reaction-btn" onclick="${clickCall}" title="${emoji}">${emoji}</button>`;
+  }).join("");
+
+  const expandCall =
+    targetType === "comment"
+      ? `openFullReactionsGridForAnon(event, 'comment', ${Number(postId)}, ${Number(commentId)})`
+      : `openFullReactionsGridForAnon(event, 'post', ${Number(postId)}, null)`;
+
+  return `
+    ${quickBtns}
+    <button
+      type="button"
+      class="tg-reaction-expand-btn"
+      onclick="${expandCall}"
+      title="All reactions"
+      aria-label="View all reactions"
+    >
+      <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round">
+        <polyline points="6 9 12 15 18 9"></polyline>
+      </svg>
+    </button>
+  `;
+}
+
+function renderAnonReactionsChipsHtml(targetType, postId, commentId, reactions) {
+  if (!reactions || reactions.length === 0) return "";
+  return reactions
+    .map((r) => {
+      const isActive = Boolean(r.reacted_by_me);
+      const clickCall =
+        targetType === "comment"
+          ? `toggleAnonCommentReaction(${Number(postId)}, ${Number(commentId)}, '${escapeHtml(r.emoji)}')`
+          : `toggleAnonPostReaction(${Number(postId)}, '${escapeHtml(r.emoji)}')`;
+      return `
+        <button
+          type="button"
+          class="chat-reaction-badge ${isActive ? "active" : ""}"
+          onclick="${clickCall}"
+          title="Anonymous reaction ${escapeHtml(r.emoji)} (${Number(r.count || 0)})"
+        >
+          <span class="chat-reaction-emoji">${r.emoji}</span>
+          <span class="chat-reaction-count">${Number(r.count || 0)}</span>
+        </button>
+      `;
+    })
+    .join("");
+}
+
+function toggleAnonReactionPicker(e, pickerKey) {
+  if (e) {
+    e.preventDefault();
+    e.stopPropagation();
+  }
+  const picker = document.getElementById(`anonReactionPicker-${pickerKey}`);
+  if (!picker) return;
+  makeHorizontalScrollable(picker);
+  const wasOpen = picker.classList.contains("visible") || picker.classList.contains("desktop-active");
+  document.querySelectorAll(".chat-reaction-picker.visible, .chat-reaction-picker.desktop-active").forEach((p) => {
+    p.classList.remove("visible");
+    p.classList.remove("desktop-active");
+  });
+  if (!wasOpen) {
+    picker.classList.add("visible");
+    picker.classList.add("desktop-active");
+  }
+}
+
+function openFullReactionsGridForAnon(e, targetType, postId, commentId) {
+  if (e) {
+    e.preventDefault();
+    e.stopPropagation();
+  }
+  state.gridAnonTarget = {
+    type: targetType,
+    postId: Number(postId),
+    commentId: commentId ? Number(commentId) : null,
+  };
+  state.gridTargetMsgId = null;
+  const btn = e ? e.currentTarget : null;
+  openFullReactionsGrid(btn, null);
+}
+
+function mergeMyAnonReactionState(oldReactions, incomingPublicReactions, myActiveEmoji = undefined) {
+  const prevMine = new Set(
+    (oldReactions || []).filter((r) => Boolean(r.reacted_by_me)).map((r) => r.emoji)
+  );
+  return (incomingPublicReactions || []).map((r) => ({
+    emoji: r.emoji,
+    count: Number(r.count || 0),
+    reacted_by_me:
+      myActiveEmoji !== undefined
+        ? r.emoji === myActiveEmoji
+        : r.reacted_by_me !== undefined
+        ? Boolean(r.reacted_by_me)
+        : prevMine.has(r.emoji),
+  }));
+}
+
+function updateAnonPostReactionsDOM(postId, reactions, myActiveEmoji = undefined) {
+  const pid = Number(postId);
+  state.anonPostsReactionsById = state.anonPostsReactionsById || {};
+  const merged = mergeMyAnonReactionState(state.anonPostsReactionsById[pid], reactions, myActiveEmoji);
+  state.anonPostsReactionsById[pid] = merged;
+  const el = document.getElementById(`anonPostReactions-${pid}`);
+  if (el) {
+    el.innerHTML = renderAnonReactionsChipsHtml("post", pid, null, merged);
+  }
+}
+
+function updateAnonCommentReactionsDOM(postId, commentId, reactions, myActiveEmoji = undefined) {
+  const pid = Number(postId);
+  const cid = Number(commentId);
+  const list = state.anonCommentsByPost[pid] || [];
+  const commentObj = list.find((c) => Number(c.id) === cid);
+  const merged = mergeMyAnonReactionState(commentObj ? commentObj.reactions : [], reactions, myActiveEmoji);
+  if (commentObj) {
+    commentObj.reactions = merged;
+  }
+  const el = document.getElementById(`anonCommentReactions-${cid}`);
+  if (el) {
+    el.innerHTML = renderAnonReactionsChipsHtml("comment", pid, cid, merged);
+  }
+}
+
+async function toggleAnonPostReaction(postId, emoji) {
+  if (!state.user) {
+    showToast("Please sign in to react to anonymous posts.", true);
+    openAuthModal("login");
+    return;
+  }
+  document.querySelectorAll(".chat-reaction-picker.visible, .chat-reaction-picker.desktop-active").forEach((el) => {
+    el.classList.remove("visible");
+    el.classList.remove("desktop-active");
+  });
+  try {
+    const res = await apiFetch(`/api/anonymous/posts/${Number(postId)}/react`, {
+      method: "POST",
+      body: JSON.stringify({ emoji }),
+    });
+    if (res && res.ok) {
+      updateAnonPostReactionsDOM(postId, res.reactions || [], res.active_emoji);
+    }
+  } catch (err) {
+    showToast(err.message || "Failed to update reaction.", true);
+  }
+}
+
+async function toggleAnonCommentReaction(postId, commentId, emoji) {
+  if (!state.user) {
+    showToast("Please sign in to react to comments.", true);
+    openAuthModal("login");
+    return;
+  }
+  document.querySelectorAll(".chat-reaction-picker.visible, .chat-reaction-picker.desktop-active").forEach((el) => {
+    el.classList.remove("visible");
+    el.classList.remove("desktop-active");
+  });
+  try {
+    const res = await apiFetch(`/api/anonymous/posts/${Number(postId)}/comments/${Number(commentId)}/react`, {
+      method: "POST",
+      body: JSON.stringify({ emoji }),
+    });
+    if (res && res.ok) {
+      updateAnonCommentReactionsDOM(postId, commentId, res.reactions || [], res.active_emoji);
+    }
+  } catch (err) {
+    showToast(err.message || "Failed to update reaction.", true);
+  }
+}
+
+function handleAnonCommentDblClick(e, postId, commentId) {
+  if (e && e.target && e.target.closest("a, button, .anon-comment-reply-quote, .chat-reaction-btn, .chat-reaction-badge")) {
+    return;
+  }
+  if (e && e.preventDefault) e.preventDefault();
+  const clientX = (e && typeof e.clientX === "number" && e.clientX > 0) ? e.clientX : window.innerWidth / 2;
+  const clientY = (e && typeof e.clientY === "number" && e.clientY > 0) ? e.clientY : window.innerHeight / 2;
+  if (navigator.vibrate) navigator.vibrate([30, 20]);
+  spawnHeartParticle(clientX, clientY);
+  toggleAnonCommentReaction(postId, commentId, "❤️");
 }
 
 function buildAnonCommentBubbleHtml(c) {
@@ -3586,25 +3798,37 @@ function buildAnonCommentBubbleHtml(c) {
   const safeSnippetAttr = encodeJsAttr((c.content_text || "").slice(0, 75));
 
   return `
-    <div class="anon-comment-row${isMine ? " own" : ""}" id="anon-comment-${c.id}" data-comment-id="${c.id}">
+    <div class="anon-comment-row${isMine ? " own" : ""}" id="anon-comment-${c.id}" data-comment-id="${c.id}" ondblclick="handleAnonCommentDblClick(event, ${c.post_id}, ${c.id})">
       ${!isMine ? avatarHtml : ""}
-      <div class="anon-comment-bubble${isMine ? " own" : ""}${isOp ? " op-bubble" : ""}">
-        <div class="anon-comment-bubble-top">
-          <div class="anon-comment-author-wrap">${authorHeaderHtml}</div>
-          <div class="anon-comment-actions">
-            <span class="anon-comment-time">${escapeHtml(timeStr)}</span>
-            <button type="button" class="anon-comment-act-btn" title="Reply to this comment"
-              onclick="setAnonCommentReplyTarget(${c.post_id}, ${c.id}, decodeURIComponent('${safeAuthorAttr}'), decodeURIComponent('${safeSnippetAttr}'))">
-              ↩
-            </button>
-            ${canDel
-              ? `<button type="button" class="anon-comment-act-btn del" title="Delete comment"
-                   onclick="deleteAnonPostComment(${c.post_id}, ${c.id})">&times;</button>`
-              : ""}
-          </div>
+      <div class="anon-comment-bubble-wrap">
+        <div class="chat-reaction-picker anon-comment-reaction-picker" id="anonReactionPicker-comment-${c.id}">
+          ${buildAnonQuickReactionButtonsHtml("comment", c.post_id, c.id)}
         </div>
-        ${replyQuoteHtml}
-        <div class="anon-comment-text">${escapeHtml(c.content_text)}</div>
+        <div class="anon-comment-bubble${isMine ? " own" : ""}${isOp ? " op-bubble" : ""}">
+          <div class="anon-comment-bubble-top">
+            <div class="anon-comment-author-wrap">${authorHeaderHtml}</div>
+            <div class="anon-comment-actions">
+              <span class="anon-comment-time">${escapeHtml(timeStr)}</span>
+              <button type="button" class="anon-comment-act-btn" title="React anonymously"
+                onclick="toggleAnonReactionPicker(event, 'comment-${c.id}')">
+                😊
+              </button>
+              <button type="button" class="anon-comment-act-btn" title="Reply to this comment"
+                onclick="setAnonCommentReplyTarget(${c.post_id}, ${c.id}, decodeURIComponent('${safeAuthorAttr}'), decodeURIComponent('${safeSnippetAttr}'))">
+                ↩
+              </button>
+              ${canDel
+                ? `<button type="button" class="anon-comment-act-btn del" title="Delete comment"
+                     onclick="deleteAnonPostComment(${c.post_id}, ${c.id})">&times;</button>`
+                : ""}
+            </div>
+          </div>
+          ${replyQuoteHtml}
+          <div class="anon-comment-text">${escapeHtml(c.content_text)}</div>
+        </div>
+        <div class="chat-reactions-wrapper anon-comment-reactions-bar" id="anonCommentReactions-${c.id}">
+          ${renderAnonReactionsChipsHtml("comment", c.post_id, c.id, c.reactions || [])}
+        </div>
       </div>
     </div>
   `;
@@ -6601,9 +6825,18 @@ function filterReactionsGrid(query) {
 }
 
 function handleGridReactionSelect(emoji) {
+  const anonTarget = state.gridAnonTarget;
   const msgId = state.gridTargetMsgId || state.activeMenuMsgId;
   closeFullReactionsGrid();
   closeTelegramMessageMenu();
+  if (anonTarget) {
+    if (anonTarget.type === "comment" && anonTarget.commentId) {
+      toggleAnonCommentReaction(anonTarget.postId, anonTarget.commentId, emoji);
+    } else if (anonTarget.type === "post" && anonTarget.postId) {
+      toggleAnonPostReaction(anonTarget.postId, emoji);
+    }
+    return;
+  }
   if (msgId) {
     toggleMessageReaction(msgId, emoji);
   }
@@ -6612,7 +6845,8 @@ function handleGridReactionSelect(emoji) {
 function openFullReactionsGrid(anchorEl, msgId) {
   if (msgId) {
     state.gridTargetMsgId = Number(msgId);
-  } else {
+    state.gridAnonTarget = null;
+  } else if (!state.gridAnonTarget) {
     state.gridTargetMsgId = state.activeMenuMsgId;
   }
 
@@ -6688,6 +6922,7 @@ function openFullReactionsGridForMsg(e, msgId) {
 
 function closeFullReactionsGrid() {
   state.gridTargetMsgId = null;
+  state.gridAnonTarget = null;
   const picker = document.getElementById("fullReactionsPickerPanel");
   if (picker) {
     picker.classList.add("hidden");
@@ -7902,6 +8137,10 @@ function initSpamChatWebSocket() {
               renderAnonPostCommentsStream(pid, false);
             }
           }
+        } else if (data.type === "anon_post_reaction" && data.post_id) {
+          updateAnonPostReactionsDOM(data.post_id, data.reactions || []);
+        } else if (data.type === "anon_comment_reaction" && data.post_id && data.comment_id) {
+          updateAnonCommentReactionsDOM(data.post_id, data.comment_id, data.reactions || []);
         }
       } catch { }
     };
@@ -7920,7 +8159,12 @@ document.addEventListener("click", (e) => {
   if (!e.target.closest("#profileMenuPopover") && !e.target.closest("#navbarProfileBtn")) {
     closeProfileMenu();
   }
-  if (!e.target.closest(".chat-reaction-picker") && !e.target.closest(".tg-reaction-expand-btn") && !e.target.closest("#fullReactionsPickerPanel")) {
+  if (
+    !e.target.closest(".chat-reaction-picker") &&
+    !e.target.closest(".tg-reaction-expand-btn") &&
+    !e.target.closest("#fullReactionsPickerPanel") &&
+    !e.target.closest(".anon-react-trigger-btn")
+  ) {
     document.querySelectorAll(".chat-reaction-picker.visible, .chat-reaction-picker.desktop-active").forEach((p) => {
       p.classList.remove("visible");
       p.classList.remove("desktop-active");

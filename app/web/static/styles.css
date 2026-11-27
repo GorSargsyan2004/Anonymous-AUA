@@ -1619,14 +1619,90 @@ a,
   box-shadow: 0 0 10px rgba(56, 189, 248, 0.25);
 }
 
-/* Telegram-Style Inline Comments Drawer on Anonymous Posts */
+/* Telegram-Style Inline Comments Drawer & Anonymous Reactions on Anonymous Posts */
 .anon-post-footer {
   display: flex;
   align-items: center;
   justify-content: flex-start;
+  flex-wrap: wrap;
+  gap: 8px;
   padding-top: 8px;
   margin-top: 2px;
   border-top: 1px solid rgba(56, 189, 248, 0.11);
+}
+
+.anon-reaction-anchor {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+}
+
+.anon-react-trigger-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 5px 11px;
+  border-radius: 999px;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text-ice);
+  background: rgba(15, 23, 42, 0.72);
+  border: 1px solid rgba(56, 189, 248, 0.25);
+  cursor: pointer;
+  transition: all 0.18s ease;
+}
+
+.anon-react-trigger-btn:hover {
+  background: rgba(14, 165, 233, 0.2);
+  border-color: var(--neon-blue-bright);
+  color: #ffffff;
+  box-shadow: 0 0 12px rgba(56, 189, 248, 0.22);
+}
+
+.anon-react-plus {
+  font-size: 11.5px;
+  opacity: 0.85;
+}
+
+.anon-reaction-picker {
+  left: 0;
+  bottom: calc(100% + 6px);
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .anon-reaction-anchor:hover .anon-reaction-picker,
+  .anon-comment-row:hover .anon-comment-reaction-picker {
+    display: flex !important;
+  }
+}
+
+.anon-post-reactions-bar {
+  margin-top: 0 !important;
+  align-items: center;
+}
+
+.anon-comment-bubble-wrap {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  max-width: 100%;
+}
+
+.anon-comment-row:not(.own) .anon-comment-reaction-picker {
+  left: 0;
+}
+
+.anon-comment-row.own .anon-comment-reaction-picker {
+  right: 0;
+}
+
+.anon-comment-row.own .anon-comment-reactions-bar {
+  justify-content: flex-end;
+}
+
+.anon-comment-reactions-bar:empty,
+.anon-post-reactions-bar:empty {
+  display: none;
 }
 
 .anon-comments-toggle-btn {

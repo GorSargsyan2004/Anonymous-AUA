@@ -780,6 +780,48 @@ class AnonymousPostComment(Base):
     reply_to = relationship("AnonymousPostComment", remote_side=[id], foreign_keys=[reply_to_id])
 
 
+class AnonymousPublicPostReaction(Base):
+    """Stores strictly anonymous emoji reactions on public anonymous posts."""
+    __tablename__ = "anonymous_public_post_reactions"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    post_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("anonymous_public_posts.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    web_user_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("web_users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    emoji: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    __table_args__ = (
+        UniqueConstraint("post_id", "web_user_id", name="uq_anon_post_reaction_post_user"),
+    )
+
+
+class AnonymousPostCommentReaction(Base):
+    """Stores strictly anonymous emoji reactions on anonymous post comments."""
+    __tablename__ = "anonymous_post_comment_reactions"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    comment_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("anonymous_post_comments.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    web_user_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("web_users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    emoji: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    __table_args__ = (
+        UniqueConstraint("comment_id", "web_user_id", name="uq_anon_comment_reaction_comment_user"),
+    )
+
+
 class TelegramGroup(Base):
     """Stores student-submitted Telegram groups and communities on AUA Hub."""
     __tablename__ = "telegram_groups"

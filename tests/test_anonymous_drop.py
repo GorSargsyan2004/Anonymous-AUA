@@ -13,8 +13,15 @@ from aiohttp.test_utils import TestClient, TestServer
 from sqlalchemy import delete, select
 
 from app.config import settings
-from app.database.models import AnonymousDropQueue, AnonymousPublicPost
+from app.database.models import AnonymousDropQueue, AnonymousPublicPost, WebUser
 from app.database.session import engine, get_db_session, init_db
+from app.database.web_crud import (
+    create_anon_post_comment,
+    create_anonymous_public_post,
+    list_anon_post_comments,
+    toggle_anon_comment_reaction,
+    toggle_anon_post_reaction,
+)
 from app.web.drop_service import (
     CAPTCHA_ALPHABET,
     CAPTCHA_LENGTH,
@@ -519,6 +526,83 @@ class TestAnonymousDropService(unittest.IsolatedAsyncioTestCase):
         self.assertIn("tor_keys/", gitignore)
         self.assertIn("hidden_service/", gitignore)
         self.assertIn("hs_ed25519_secret_key", gitignore)
+
+    async def test_anonymous_post_and_comment_reactions_crud_and_privacy(self) -> None:
+        """Verify anonymous reactions on Anonymous Posts and Comments toggle/switch cleanly and expose zero user identities."""
+        async with get_db_session() as session:
+            await session.execute(
+                delete(WebUser).where(WebUser.email.in_(["react_u1@edu.aua.am", "react_u2@edu.aua.am"]))
+            )
+            await session.commit()
+
+            w1 = WebUser(name="Reactor One", email="react_u1@edu.aua.am")
+            w2 = WebUser(name="Reactor Two", email="react_u2@edu.aua.am")
+            session.add_all([w1, w2])
+            await session.commit()
+            await session.refresh(w1)
+            await session.refresh(w2)
+
+            post = await create_anonymous_public_post(
+                session=session,
+                telegram_user_id=None,
+                content_text="Testing anonymous reactions on posts and comments [DROP_TEST_MARKER]",
+                source="web_drop",
+            )
+            _, comment, _ = await create_anon_post_comment(
+                session=session,
+                post_id=post.id,
+                web_user_id=w1.id,
+                content_text="First comment to react to!",
+                is_anonymous=True,
+            )
+
+            # 1. Post reactions: w1 and w2 react with 🔥
+            found1, active1, list1 = await toggle_anon_post_reaction(session, post.id, w1.id, "🔥")
+            self.assertTrue(found1)
+            self.assertEqual(active1, "🔥")
+            self.assertEqual(list1, [{"emoji": "🔥", "count": 1, "reacted_by_me": True}])
+
+            found2, active2, list2 = await toggle_anon_post_reaction(session, post.id, w2.id, "🔥")
+            self.assertTrue(found2)
+            self.assertEqual(active2, "🔥")
+            self.assertEqual(list2, [{"emoji": "🔥", "count": 2, "reacted_by_me": True}])
+            # Ensure zero user_ids or users list are exposed
+            self.assertNotIn("user_ids", list2[0])
+            self.assertNotIn("users", list2[0])
+
+            # w1 switches reaction from 🔥 to ❤️
+            _, active_switch, list_switch = await toggle_anon_post_reaction(session, post.id, w1.id, "❤️")
+            self.assertEqual(active_switch, "❤️")
+            by_emoji = {r["emoji"]: r for r in list_switch}
+            self.assertEqual(by_emoji["🔥"]["count"], 1)
+            self.assertFalse(by_emoji["🔥"]["reacted_by_me"])
+            self.assertEqual(by_emoji["❤️"]["count"], 1)
+            self.assertTrue(by_emoji["❤️"]["reacted_by_me"])
+
+            # w1 toggles ❤️ off
+            _, active_off, list_off = await toggle_anon_post_reaction(session, post.id, w1.id, "❤️")
+            self.assertIsNone(active_off)
+            self.assertEqual(list_off, [{"emoji": "🔥", "count": 1, "reacted_by_me": False}])
+
+            # 2. Comment reactions: w2 reacts to comment with 👍
+            c_found, c_active, c_list = await toggle_anon_comment_reaction(
+                session, post.id, comment.id, w2.id, "👍"
+            )
+            self.assertTrue(c_found)
+            self.assertEqual(c_active, "👍")
+            self.assertEqual(c_list, [{"emoji": "👍", "count": 1, "reacted_by_me": True}])
+
+            # Verify list_anon_post_comments includes the reaction with reacted_by_me scoped to current_user_id
+            _, comments_for_w1 = await list_anon_post_comments(session, post.id, current_user_id=w1.id)
+            self.assertEqual(comments_for_w1[0]["reactions"], [{"emoji": "👍", "count": 1, "reacted_by_me": False}])
+
+            _, comments_for_w2 = await list_anon_post_comments(session, post.id, current_user_id=w2.id)
+            self.assertEqual(comments_for_w2[0]["reactions"], [{"emoji": "👍", "count": 1, "reacted_by_me": True}])
+
+            await session.execute(
+                delete(WebUser).where(WebUser.id.in_([w1.id, w2.id]))
+            )
+            await session.commit()
 
 
 if __name__ == "__main__":
