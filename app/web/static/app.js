@@ -913,7 +913,7 @@ async function checkCurrentSession() {
         syncAiSessionWithServer(true);
         showToast("Signed in with your AUA Google account! ✨");
       }
-    } else {
+    } else if (data && data.authenticated === false) {
       state.user = null;
       state.token = null;
       state.notifications = [];
@@ -928,10 +928,13 @@ async function checkCurrentSession() {
       } catch { }
     }
   } catch {
-    if (!state.token) {
-      state.user = null;
-      clearLocalAiSessionState();
-      try { localStorage.removeItem("aua_hub_user"); } catch { }
+    // Transient network error or server restart: preserve existing cached state.user
+    // and retry session verification shortly instead of logging the user out.
+    if (!state._sessionRetryTimer) {
+      state._sessionRetryTimer = setTimeout(() => {
+        state._sessionRetryTimer = null;
+        checkCurrentSession();
+      }, 3000);
     }
   }
   renderNavbarAuth();

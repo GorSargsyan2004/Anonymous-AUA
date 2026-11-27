@@ -484,12 +484,12 @@ async def security_middleware(request: web.Request, handler: Callable) -> web.St
         "Content-Security-Policy",
         (
             "default-src 'self'; "
-            "script-src 'self' 'unsafe-inline' https://challenges.cloudflare.com; "
+            "script-src 'self' 'unsafe-inline' https://challenges.cloudflare.com https://static.cloudflareinsights.com; "
             "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
             "font-src 'self' https://fonts.gstatic.com data:; "
             "img-src 'self' data: blob:; "
             "media-src 'self' blob:; "
-            "connect-src 'self' ws: wss: https://challenges.cloudflare.com; "
+            "connect-src 'self' ws: wss: https://challenges.cloudflare.com https://fonts.googleapis.com https://fonts.gstatic.com https://cloudflareinsights.com https://static.cloudflareinsights.com; "
             "frame-src 'self' https://challenges.cloudflare.com; "
             "manifest-src 'self'; "
             "worker-src 'self'; "
@@ -502,8 +502,10 @@ async def security_middleware(request: web.Request, handler: Callable) -> web.St
     if request.path.startswith("/uploads/"):
         response.headers.setdefault("Content-Disposition", "inline")
     elif request.path.startswith("/static/") and "Cache-Control" not in response.headers:
-        if "v" in request.query:
-            response.headers["Cache-Control"] = "public, max-age=604800, immutable"
+        if request.path.endswith((".js", ".css")):
+            response.headers["Cache-Control"] = "public, max-age=0, must-revalidate"
+        elif "v" in request.query:
+            response.headers["Cache-Control"] = "public, max-age=86400, must-revalidate"
         elif request.path.startswith("/static/partners/") or request.path.endswith(
             (".png", ".ico", ".svg", ".webp", ".woff2")
         ):

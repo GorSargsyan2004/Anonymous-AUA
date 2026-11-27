@@ -1,9 +1,9 @@
 /* AUA Hub Service Worker (PWA Support & Offline Shell Cache) */
-const CACHE_NAME = "aua-hub-shell-v50";
+const CACHE_NAME = "aua-hub-shell-v51";
 const SHELL_ASSETS = [
   "/",
-  "/static/styles.css?v=20261127_10",
-  "/static/app.js?v=20261127_10",
+  "/static/styles.css?v=20261127_11",
+  "/static/app.js?v=20261127_11",
   "/static/partners/findaua-logo.png",
   "/static/partners/jenzareviews-logo.png",
   "/static/partners/auautils-logo.png",
@@ -44,43 +44,35 @@ self.addEventListener("fetch", (event) => {
   if (req.method !== "GET") return;
 
   const url = new URL(req.url);
+  // Never intercept cross-origin requests (e.g. Google Fonts, Cloudflare Turnstile/Insights)
+  if (url.origin !== self.location.origin) {
+    return;
+  }
+
   // Never cache dynamic API or WebSocket endpoints
   if (url.pathname.startsWith("/api/") || url.pathname.startsWith("/ws/")) {
     return;
   }
 
-  // Cache-first for immutable ?v= versioned static bundles on mobile/repeat loads
-  if (
-    url.origin === self.location.origin &&
-    url.pathname.startsWith("/static/") &&
-    url.searchParams.has("v")
-  ) {
-    event.respondWith(
-      caches.match(req).then((cached) => {
-        if (cached) return cached;
-        return fetch(req).then((networkResp) => {
-          if (networkResp && networkResp.status === 200) {
-            const clone = networkResp.clone();
-            caches.open(CACHE_NAME).then((cache) => cache.put(req, clone)).catch(() => { });
-          }
-          return networkResp;
-        });
-      })
-    );
-    return;
-  }
-
-  // Network-first with cache fallback for HTML shell & unversioned static assets
+  // Network-first with cache fallback for static assets & HTML shell
   event.respondWith(
     fetch(req)
       .then((networkResp) => {
-        if (networkResp && networkResp.status === 200 && url.origin === self.location.origin) {
+        if (networkResp && networkResp.status === 200) {
           const clone = networkResp.clone();
           caches.open(CACHE_NAME).then((cache) => cache.put(req, clone)).catch(() => { });
         }
         return networkResp;
       })
-      .catch(() => caches.match(req).then((cached) => cached || caches.match("/")))
+      .catch(() =>
+        caches.match(req).then((cached) => {
+          if (cached) return cached;
+          if (req.mode === "navigate") {
+            return caches.match("/");
+          }
+          return new Response("Offline", { status: 503, statusText: "Offline" });
+        })
+      )
   );
 });
 
