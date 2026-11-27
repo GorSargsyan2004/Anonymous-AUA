@@ -24,7 +24,7 @@
   <link rel="icon" type="image/png" sizes="32x32" href="/static/favicon-32x32.png?v=20261113_1" />
   <link rel="icon" type="image/png" sizes="192x192" href="/static/favicon-192x192.png?v=20261113_1" />
   <link rel="shortcut icon" href="/favicon.ico?v=20261113_1" />
-  <link rel="stylesheet" href="/static/styles.css?v=20261127_3" />
+  <link rel="stylesheet" href="/static/styles.css?v=20261127_4" />
 </head>
 
 <body>
@@ -112,6 +112,16 @@
           anonymous campus posts and your personal inbox, discover student Telegram groups, and connect in the campus
           lounge.
         </p>
+
+        <!-- Prominent Download / Install Web App Hero Bar (Works on iOS, Android & Desktop) -->
+        <div id="homePwaHeroBar" class="home-pwa-hero-bar hero-reveal-lead">
+          <button type="button" id="pwaInstallBtn" class="btn-illuminated home-pwa-install-cta"
+            onclick="promptPwaInstall()">
+            <span class="home-pwa-cta-icon">📲</span>
+            <span>Download / Install AUA Hub App</span>
+            <span class="home-pwa-cta-pill">iOS &bull; Android &bull; Desktop</span>
+          </button>
+        </div>
 
         <div class="home-modules-grid">
           <div class="glass-card home-module-card home-ai-card hero-reveal-card" style="--card-d: 0.52s;"
@@ -266,6 +276,22 @@
           </div>
         </div>
 
+        <!-- Dedicated App Download Banner Card at Bottom of Home -->
+        <div id="homePwaBottomCard" class="glass-panel home-pwa-bottom-card hero-reveal-contact">
+          <div class="home-pwa-bottom-info">
+            <div class="home-pwa-bottom-icon">📱</div>
+            <div>
+              <div class="home-pwa-bottom-title">Get the AUA Hub App on Your Phone or Laptop</div>
+              <div class="home-pwa-bottom-sub">
+                Install AUA Hub to your Home Screen for 1-tap full-screen launch, faster loading, and instant browser notifications — no App Store download required.
+              </div>
+            </div>
+          </div>
+          <button type="button" class="btn-illuminated home-pwa-bottom-btn" onclick="promptPwaInstall()">
+            📲 Install Web App
+          </button>
+        </div>
+
         <div class="glass-panel home-contact-pill hero-reveal-contact">
           <div>
             🚀 <strong>Have your own student-run program or website?</strong> Let me know at
@@ -277,11 +303,6 @@
             <a href="https://t.me/sargsiangor" target="_blank" rel="noopener noreferrer">@sargsiangor</a>
           </div>
         </div>
-
-        <button type="button" id="pwaInstallBtn" class="btn-glass"
-          style="display:none; padding:9px 18px; font-size:13px;" onclick="promptPwaInstall()">
-          Install AUA Hub App to Home Screen
-        </button>
       </div>
     </section>
 
@@ -1799,7 +1820,135 @@
     </div>
   </div>
 
-  <script src="/static/app.js?v=20261127_3"></script>
+  <!-- Install / Download AUA Hub Web App Modal (iOS, Android, Desktop & Telegram In-App Browser Guide) -->
+  <div id="pwaInstallModal" class="modal-backdrop hidden" hidden
+    onclick="if(event.target === this) closePwaInstallModal()">
+    <div class="modal-card pwa-install-modal-card" role="dialog" aria-modal="true"
+      aria-labelledby="pwaInstallModalTitle">
+      <div class="pwa-modal-header">
+        <div class="pwa-modal-title-row">
+          <span class="pwa-modal-badge-icon">📲</span>
+          <div>
+            <h3 id="pwaInstallModalTitle" class="pwa-modal-title">Install AUA Hub App</h3>
+            <p class="pwa-modal-sub">Add AUA Hub to your Home Screen or Desktop in 10 seconds</p>
+          </div>
+        </div>
+        <button type="button" class="modal-close-btn" onclick="closePwaInstallModal()"
+          aria-label="Close install instructions">&times;</button>
+      </div>
+
+      <!-- Warning if user opened link inside Telegram's in-app webview -->
+      <div id="pwaTelegramWebviewNotice" class="pwa-tg-webview-notice hidden" hidden>
+        <strong>💡 Opened inside Telegram?</strong>
+        <span>Tap the <b>⋯</b> menu (top-right) or compass icon and select <b>"Open in Safari"</b> (iPhone) or <b>"Open in Chrome"</b> (Android) first to install the app.</span>
+      </div>
+
+      <!-- Platform Switcher Tabs -->
+      <div class="pwa-platform-tabs" role="tablist">
+        <button type="button" id="pwaTabIos" class="pwa-platform-tab active" onclick="switchPwaGuidePlatform('ios')">
+          🍎 iPhone / iPad
+        </button>
+        <button type="button" id="pwaTabAndroid" class="pwa-platform-tab" onclick="switchPwaGuidePlatform('android')">
+          🤖 Android
+        </button>
+        <button type="button" id="pwaTabDesktop" class="pwa-platform-tab" onclick="switchPwaGuidePlatform('desktop')">
+          💻 Mac / Windows
+        </button>
+      </div>
+
+      <!-- iOS Instructions -->
+      <div id="pwaGuideIos" class="pwa-guide-panel">
+        <div class="pwa-step-item">
+          <div class="pwa-step-num">1</div>
+          <div class="pwa-step-body">
+            <div class="pwa-step-title">Open in Safari (or Chrome) &amp; Tap <b>Share</b></div>
+            <div class="pwa-step-desc">
+              Tap the <b>Share</b> icon <span class="pwa-key-chip">📤 Square with arrow ↑</span> at the bottom of Safari (or top-right of the address bar in Chrome on iOS).
+            </div>
+          </div>
+        </div>
+        <div class="pwa-step-item">
+          <div class="pwa-step-num">2</div>
+          <div class="pwa-step-body">
+            <div class="pwa-step-title">Tap <b>"Add to Home Screen"</b></div>
+            <div class="pwa-step-desc">
+              Scroll down the share sheet and tap <span class="pwa-key-chip">➕ Add to Home Screen</span>, then tap <b>Add</b> in the top-right corner.
+            </div>
+          </div>
+        </div>
+        <div class="pwa-step-item">
+          <div class="pwa-step-num">3</div>
+          <div class="pwa-step-body">
+            <div class="pwa-step-title">Launch from Your Home Screen</div>
+            <div class="pwa-step-desc">
+              The <b>AUA Hub</b> icon will appear on your iPhone/iPad Home Screen and open in full-screen standalone mode!
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Android Instructions -->
+      <div id="pwaGuideAndroid" class="pwa-guide-panel hidden" hidden>
+        <div id="pwaAndroidDirectWrap" class="pwa-direct-install-box hidden" hidden>
+          <div>
+            <b>⚡ One-Tap Install Ready</b>
+            <div style="font-size:12px; color:var(--text-secondary); margin-top:2px;">Your browser supports instant 1-tap app installation:</div>
+          </div>
+          <button type="button" class="btn-illuminated btn-sm" onclick="triggerNativePwaPromptFromModal()">
+            📲 Install Now
+          </button>
+        </div>
+        <div class="pwa-step-item">
+          <div class="pwa-step-num">1</div>
+          <div class="pwa-step-body">
+            <div class="pwa-step-title">Tap the Browser Menu <span class="pwa-key-chip">⋮</span></div>
+            <div class="pwa-step-desc">
+              In Chrome (or Samsung Internet), tap the <b>three dots ⋮</b> in the top-right corner of your screen.
+            </div>
+          </div>
+        </div>
+        <div class="pwa-step-item">
+          <div class="pwa-step-num">2</div>
+          <div class="pwa-step-body">
+            <div class="pwa-step-title">Tap <b>"Install app"</b> or <b>"Add to Home screen"</b></div>
+            <div class="pwa-step-desc">
+              Select <span class="pwa-key-chip">📲 Install app</span> from the menu and confirm to install AUA Hub as a native-style Android app.
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Desktop Instructions -->
+      <div id="pwaGuideDesktop" class="pwa-guide-panel hidden" hidden>
+        <div class="pwa-step-item">
+          <div class="pwa-step-num">1</div>
+          <div class="pwa-step-body">
+            <div class="pwa-step-title">Chrome / Brave / Edge (Mac &amp; Windows)</div>
+            <div class="pwa-step-desc">
+              Click the <span class="pwa-key-chip">⊕ Install AUA Hub</span> icon on the right side of your browser's address bar (URL bar) and click <b>Install</b>.
+            </div>
+          </div>
+        </div>
+        <div class="pwa-step-item">
+          <div class="pwa-step-num">2</div>
+          <div class="pwa-step-body">
+            <div class="pwa-step-title">Safari on Mac</div>
+            <div class="pwa-step-desc">
+              Click <b>File</b> in the top menu bar (or the Share button) and select <span class="pwa-key-chip">Add to Dock...</span>.
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div style="margin-top:16px; display:flex; justify-content:flex-end;">
+        <button type="button" class="btn-illuminated" style="width:100%;" onclick="closePwaInstallModal()">
+          Got It!
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <script src="/static/app.js?v=20261127_4"></script>
 </body>
 
 </html>

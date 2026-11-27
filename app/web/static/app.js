@@ -8356,37 +8356,158 @@ function renderPagination(container, currentPage, totalPages, callbackName) {
    PWA Service Worker & Add-to-Home-Screen Support
    -------------------------------------------------------------------------- */
 
+function isPwaStandaloneMode() {
+  try {
+    if (window.matchMedia && window.matchMedia("(display-mode: standalone)").matches) {
+      return true;
+    }
+    if (window.navigator && window.navigator.standalone === true) {
+      return true;
+    }
+  } catch { }
+  return false;
+}
+
+function updatePwaInstallCtaVisibility() {
+  const isInstalled = isPwaStandaloneMode();
+  const heroBar = document.getElementById("homePwaHeroBar");
+  const bottomCard = document.getElementById("homePwaBottomCard");
+  if (heroBar) {
+    heroBar.classList.toggle("hidden", isInstalled);
+    if (isInstalled) heroBar.setAttribute("hidden", "");
+    else heroBar.removeAttribute("hidden");
+  }
+  if (bottomCard) {
+    bottomCard.classList.toggle("hidden", isInstalled);
+    if (isInstalled) bottomCard.setAttribute("hidden", "");
+    else bottomCard.removeAttribute("hidden");
+  }
+  const directBox = document.getElementById("pwaAndroidDirectWrap");
+  if (directBox) {
+    const hasNative = Boolean(state.deferredPwaPrompt);
+    directBox.classList.toggle("hidden", !hasNative);
+    if (hasNative) directBox.removeAttribute("hidden");
+    else directBox.setAttribute("hidden", "");
+  }
+}
+
+function detectUserInstallPlatform() {
+  const ua = (navigator.userAgent || "").toLowerCase();
+  const isTelegramWebview =
+    ua.includes("telegram") ||
+    Boolean(window.TelegramWebviewProxy) ||
+    Boolean(window.Telegram && window.Telegram.WebApp && window.Telegram.WebApp.initData);
+
+  if (/iphone|ipad|ipod/.test(ua) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1)) {
+    return { platform: "ios", isTelegramWebview };
+  }
+  if (/android/.test(ua)) {
+    return { platform: "android", isTelegramWebview };
+  }
+  return { platform: "desktop", isTelegramWebview };
+}
+
+function switchPwaGuidePlatform(platform) {
+  const tabs = {
+    ios: document.getElementById("pwaTabIos"),
+    android: document.getElementById("pwaTabAndroid"),
+    desktop: document.getElementById("pwaTabDesktop"),
+  };
+  const panels = {
+    ios: document.getElementById("pwaGuideIos"),
+    android: document.getElementById("pwaGuideAndroid"),
+    desktop: document.getElementById("pwaGuideDesktop"),
+  };
+
+  for (const key of ["ios", "android", "desktop"]) {
+    const isAct = key === platform;
+    if (tabs[key]) tabs[key].classList.toggle("active", isAct);
+    if (panels[key]) {
+      panels[key].classList.toggle("hidden", !isAct);
+      if (isAct) panels[key].removeAttribute("hidden");
+      else panels[key].setAttribute("hidden", "");
+    }
+  }
+}
+
+function openPwaInstallModal() {
+  const modal = document.getElementById("pwaInstallModal");
+  if (!modal) return;
+  const info = detectUserInstallPlatform();
+  switchPwaGuidePlatform(info.platform);
+
+  const tgNotice = document.getElementById("pwaTelegramWebviewNotice");
+  if (tgNotice) {
+    tgNotice.classList.toggle("hidden", !info.isTelegramWebview);
+    if (info.isTelegramWebview) tgNotice.removeAttribute("hidden");
+    else tgNotice.setAttribute("hidden", "");
+  }
+  updatePwaInstallCtaVisibility();
+
+  modal.classList.remove("hidden");
+  modal.removeAttribute("hidden");
+  modal.classList.add("open");
+}
+
+function closePwaInstallModal() {
+  const modal = document.getElementById("pwaInstallModal");
+  if (!modal) return;
+  modal.classList.remove("open");
+  modal.classList.add("hidden");
+  modal.setAttribute("hidden", "");
+}
+
+async function triggerNativePwaPromptFromModal() {
+  if (!state.deferredPwaPrompt) return;
+  try {
+    state.deferredPwaPrompt.prompt();
+    const choice = await state.deferredPwaPrompt.userChoice;
+    if (choice && choice.outcome === "accepted") {
+      closePwaInstallModal();
+    }
+  } catch { }
+  state.deferredPwaPrompt = null;
+  updatePwaInstallCtaVisibility();
+}
+
 function initPwaSupport() {
   if ("serviceWorker" in navigator) {
     navigator.serviceWorker.register("/sw.js", { scope: "/" }).catch(() => { });
   }
   initBrowserNotificationBridge();
+  updatePwaInstallCtaVisibility();
 
   window.addEventListener("beforeinstallprompt", (e) => {
     e.preventDefault();
     state.deferredPwaPrompt = e;
-    const btn = document.getElementById("pwaInstallBtn");
-    if (btn) btn.style.display = "inline-flex";
+    updatePwaInstallCtaVisibility();
   });
 
   window.addEventListener("appinstalled", () => {
     state.deferredPwaPrompt = null;
-    const btn = document.getElementById("pwaInstallBtn");
-    if (btn) btn.style.display = "none";
-    showToast("AUA Hub installed to your device!");
+    closePwaInstallModal();
+    updatePwaInstallCtaVisibility();
+    showToast("AUA Hub installed to your device! 🎉");
   });
 }
 
 async function promptPwaInstall() {
-  if (!state.deferredPwaPrompt) return;
   trackWebEvent("click_pwa_install");
-  try {
-    state.deferredPwaPrompt.prompt();
-    await state.deferredPwaPrompt.userChoice;
-  } catch { }
-  state.deferredPwaPrompt = null;
-  const btn = document.getElementById("pwaInstallBtn");
-  if (btn) btn.style.display = "none";
+  if (state.deferredPwaPrompt) {
+    try {
+      state.deferredPwaPrompt.prompt();
+      const choice = await state.deferredPwaPrompt.userChoice;
+      state.deferredPwaPrompt = null;
+      updatePwaInstallCtaVisibility();
+      if (choice && choice.outcome === "accepted") {
+        return;
+      }
+    } catch {
+      openPwaInstallModal();
+    }
+    return;
+  }
+  openPwaInstallModal();
 }
 
 /* --------------------------------------------------------------------------
@@ -10269,27 +10390,36 @@ function buildGpaAssignmentRowHtml(a, group, dropState, metrics) {
 
   return `
     <div class="gpa-assignment-row${isDropped ? " is-dropped-row" : ""}" id="gpaAssignRow_${escapeHtml(a.id)}" data-assign-id="${escapeHtml(a.id)}">
-      <input type="text" class="input-glass gpa-assign-name-input" value="${escapeHtml(a.name)}"
-        placeholder="Assignment name" maxlength="140"
-        oninput="handleGpaAssignmentEdit('${escapeHtml(a.id)}', 'name', this.value)" />
+      <div class="gpa-name-cell-wrap">
+        <input type="text" class="input-glass gpa-assign-name-input" value="${escapeHtml(a.name)}"
+          placeholder="Assignment name" maxlength="140"
+          oninput="handleGpaAssignmentEdit('${escapeHtml(a.id)}', 'name', this.value)" />
+      </div>
       <div class="gpa-weight-cell-wrap">
-        <input type="number" class="input-glass gpa-assign-weight-input" value="${baseWeight}"
-          min="0" max="200" step="0.01" placeholder="Weight %" aria-label="Base weight percent"
-          oninput="handleGpaAssignmentEdit('${escapeHtml(a.id)}', 'weight', this.value)" />
-        ${weightMetaHtml}
+        <span class="gpa-mobile-field-lbl">Weight (%)</span>
+        <div class="gpa-weight-input-box">
+          <input type="number" class="input-glass gpa-assign-weight-input" value="${baseWeight}"
+            min="0" max="200" step="0.01" placeholder="Weight %" aria-label="Base weight percent"
+            oninput="handleGpaAssignmentEdit('${escapeHtml(a.id)}', 'weight', this.value)" />
+          ${weightMetaHtml}
+        </div>
       </div>
       <div class="gpa-score-cell-wrap">
-        <input type="number" class="input-glass gpa-assign-score-input"
-          data-score-for="${escapeHtml(a.id)}"
-          value="${scoreVal}" min="0" max="200" step="0.1"
-          placeholder="${escapeHtml(hint.placeholder)}" aria-label="Earned score percent"
-          oninput="handleGpaAssignmentEdit('${escapeHtml(a.id)}', 'score', this.value)" />
-        <span id="gpaHintBadge_${escapeHtml(a.id)}"
-          class="gpa-req-hint-badge ${hint.badgeClass}${showHintBadge ? "" : " hidden"}">
-          ${escapeHtml(hint.badgeText)}
-        </span>
+        <span class="gpa-mobile-field-lbl">Earned Score (%)</span>
+        <div class="gpa-score-input-box">
+          <input type="number" class="input-glass gpa-assign-score-input"
+            data-score-for="${escapeHtml(a.id)}"
+            value="${scoreVal}" min="0" max="200" step="0.1"
+            placeholder="${escapeHtml(hint.placeholder)}" aria-label="Earned score percent"
+            oninput="handleGpaAssignmentEdit('${escapeHtml(a.id)}', 'score', this.value)" />
+          <span id="gpaHintBadge_${escapeHtml(a.id)}"
+            class="gpa-req-hint-badge ${hint.badgeClass}${showHintBadge ? "" : " hidden"}">
+            ${escapeHtml(hint.badgeText)}
+          </span>
+        </div>
       </div>
       <div class="gpa-drop-cell-wrap">
+        <span class="gpa-mobile-field-lbl">Drop Status</span>
         ${dropCellHtml}
       </div>
       <div class="gpa-row-actions-cell">
@@ -10416,6 +10546,18 @@ function renderActiveGpaCourseEditor() {
         .map((a) => buildGpaAssignmentRowHtml(a, group, dropState, metrics))
         .join("");
 
+      const singularItemName = singularizeGpaItemName(catName);
+      const footerAddBtnHtml = !group.isFinal
+        ? `
+          <button type="button" class="gpa-category-footer-add-btn"
+            onclick="addGpaItemToCategory(decodeURIComponent('${safeCatAttr}'))">
+            <span class="gpa-cat-footer-plus">＋</span>
+            <span>Add Another ${escapeHtml(singularItemName)} to ${escapeHtml(catName)}</span>
+            <span class="gpa-cat-footer-sub">Auto-balances ${group.totalBaseWeight.toFixed(1)}% weight across ${group.items.length + 1} items</span>
+          </button>
+        `
+        : "";
+
       return `
         <div class="gpa-category-block" data-category-name="${escapeHtml(catName)}">
           <div class="gpa-category-header">
@@ -10423,9 +10565,9 @@ function renderActiveGpaCourseEditor() {
               <span class="gpa-category-title">${catIcon} ${escapeHtml(catName)}</span>
               <span class="gpa-category-weight-badge">${group.totalBaseWeight.toFixed(1)}% total</span>
               <button type="button" class="gpa-cat-add-item-btn"
-                title="Add another item to ${escapeHtml(catName)} and re-balance category weights"
+                title="Add another ${escapeHtml(singularItemName)} to ${escapeHtml(catName)} and re-balance category weights"
                 onclick="addGpaItemToCategory(decodeURIComponent('${safeCatAttr}'))">
-                + Item
+                <span>＋</span> Add ${escapeHtml(singularItemName)}
               </button>
             </div>
             <div class="gpa-category-header-right">
@@ -10435,6 +10577,7 @@ function renderActiveGpaCourseEditor() {
           <div class="gpa-category-rows">
             ${rowsHtml}
           </div>
+          ${footerAddBtnHtml}
         </div>
       `;
     })
@@ -11056,7 +11199,34 @@ function addGpaAssignmentRow() {
 function removeGpaAssignmentRow(assignId) {
   const course = getActiveGpaCourse();
   if (!course || !Array.isArray(course.assignments)) return;
+  const target = course.assignments.find((a) => a.id === assignId);
+  if (!target) return;
+
+  const catName = inferGpaAssignmentCategory(target.name, target.category);
+  const siblings = course.assignments.filter(
+    (a) => inferGpaAssignmentCategory(a.name, a.category) === catName
+  );
+  const catTotalWeight = Math.round(
+    siblings.reduce((acc, a) => acc + Math.max(0, Number(a.weight || 0)), 0) * 100
+  ) / 100;
+
   course.assignments = course.assignments.filter((a) => a.id !== assignId);
+
+  // If other items remain in this category, redistribute the category's total weight across them
+  const remainingSiblings = course.assignments.filter(
+    (a) => inferGpaAssignmentCategory(a.name, a.category) === catName
+  );
+  if (remainingSiblings.length > 0 && catTotalWeight > 0) {
+    const newWeights = splitWeightEvenlyClient(catTotalWeight, remainingSiblings.length);
+    const maxDrops = Math.max(0, remainingSiblings.length - 1);
+    remainingSiblings.forEach((a, idx) => {
+      a.weight = newWeights[idx];
+      if (Number(a.category_drop_lowest) > maxDrops) {
+        a.category_drop_lowest = maxDrops;
+      }
+    });
+  }
+
   renderActiveGpaCourseEditor();
   refreshOptimalMetricsInPlace(course);
   scheduleGpaCourseAutoSave(course.id);
