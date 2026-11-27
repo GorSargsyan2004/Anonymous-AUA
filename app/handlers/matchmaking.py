@@ -1479,7 +1479,7 @@ async def relay_anonymous_message(message: Message, bot: Bot, state: FSMContext)
 
 @router.message_reaction()
 async def relay_message_reaction(event: MessageReactionUpdated, bot: Bot) -> None:
-    """Relay emoji reactions on messages between connected anonymous partners."""
+    """Relay emoji reactions on messages between connected anonymous partners or group chat members."""
     user = event.user
     if not user:
         return
@@ -1487,6 +1487,15 @@ async def relay_message_reaction(event: MessageReactionUpdated, bot: Bot) -> Non
     user_id = user.id
 
     async with get_db_session() as session:
+        # 1. Check if user is in an active group chat first
+        active_group_res = await get_user_active_group_member(session, user_id=user_id)
+        if active_group_res is not None:
+            from app.services.group_chat_service import relay_group_message_reaction
+
+            reactor_member, group = active_group_res
+            await relay_group_message_reaction(bot, session, group, reactor_member, event)
+            return
+
         db_user = await get_user(session, user_id=user_id)
         if not db_user or not db_user.current_partner_id:
             return
@@ -1541,7 +1550,7 @@ async def relay_message_reaction(event: MessageReactionUpdated, bot: Bot) -> Non
 
 @router.edited_message()
 async def relay_edited_message(message: Message, bot: Bot, state: FSMContext) -> None:
-    """Relay message edits (text or media captions) anonymously to partner."""
+    """Relay message edits (text or media captions) anonymously to partner or group chat members."""
     # If user is in an active FSM state (like reporting reason or admin penalty), do not relay
     current_state = await state.get_state()
     if current_state is not None:
@@ -1557,6 +1566,15 @@ async def relay_edited_message(message: Message, bot: Bot, state: FSMContext) ->
     user_id = message.from_user.id
 
     async with get_db_session() as session:
+        # 1. Check if user is in an active group chat first
+        active_group_res = await get_user_active_group_member(session, user_id=user_id)
+        if active_group_res is not None:
+            from app.services.group_chat_service import relay_group_edited_message
+
+            sender_member, group = active_group_res
+            await relay_group_edited_message(bot, session, group, sender_member, message)
+            return
+
         db_user = await get_user(session, user_id=user_id)
         if not db_user or not db_user.current_partner_id:
             return

@@ -3529,6 +3529,30 @@ async def record_group_chat_message(
     return msg
 
 
+async def update_group_chat_message_content(
+    session: AsyncSession,
+    group_id: int,
+    group_message_id: int,
+    new_text_content: Optional[str],
+) -> None:
+    """Update the stored text_content of an edited message in the rolling 100-message window."""
+    now = datetime.now(timezone.utc)
+    await session.execute(
+        update(GroupChatMessage)
+        .where(
+            GroupChatMessage.id == group_message_id,
+            GroupChatMessage.group_id == group_id,
+        )
+        .values(text_content=new_text_content)
+    )
+    await session.execute(
+        update(GroupChat)
+        .where(GroupChat.id == group_id)
+        .values(last_activity_at=now)
+    )
+    await session.commit()
+
+
 async def get_recent_group_messages(
     session: AsyncSession,
     group_id: int,

@@ -58,7 +58,9 @@ from app.services.group_chat_service import (
     generate_unique_random_nickname,
     group_reply_buffer,
     group_slow_mode,
+    relay_group_edited_message,
     relay_group_message,
+    relay_group_message_reaction,
     validate_group_description,
     validate_group_name,
     validate_group_nickname,
@@ -577,6 +579,159 @@ class TestGroupChatsAndModeration(unittest.IsolatedAsyncioTestCase):
             u2_rec = await get_group_member_record(session, grp.id, u2.id)
             self.assertFalse(u2_rec.is_active)
             self.assertIsNotNone(u2_rec.left_at)
+
+            # Re-join u2 so all 3 members (u0, u1, u2) are active for edit, reaction, typing, and Link Shield tests
+            _, mem2, _, _ = await join_group_chat_atomic(session, u2, grp.id, "SilverWolf")
+            group_slow_mode.clear_for_testing()
+
+            bot.send_message = AsyncMock(side_effect=lambda **kw: SimpleNamespace(message_id=500 + kw["chat_id"] % 100))
+            bot.send_photo = AsyncMock(side_effect=lambda **kw: SimpleNamespace(message_id=600 + kw["chat_id"] % 100))
+            bot.send_chat_action = AsyncMock()
+            bot.edit_message_text = AsyncMock()
+            bot.edit_message_caption = AsyncMock()
+            bot.set_message_reaction = AsyncMock()
+
+            # F. Typing / Chat Action Indicator (respects user.show_typing)
+            u0.show_typing = True
+            await session.commit()
+            msg_typing = SimpleNamespace(
+                message_id=701,
+                text="Initial message before edit",
+                caption=None,
+                photo=None,
+                video=None,
+                animation=None,
+                sticker=None,
+                voice=None,
+                video_note=None,
+                audio=None,
+                document=None,
+                media_group_id=None,
+                reply_to_message=None,
+                answer=AsyncMock(),
+            )
+            ok, _ = await relay_group_message(bot, session, grp, mem0, msg_typing)
+            self.assertTrue(ok)
+            self.assertEqual(bot.send_chat_action.await_count, 2)
+            action_chats = {c.kwargs["chat_id"]: c.kwargs["action"] for c in bot.send_chat_action.await_args_list}
+            self.assertEqual(action_chats, {u1.id: "typing", u2.id: "typing"})
+
+            # When show_typing is False, send_chat_action is suppressed
+            bot.send_chat_action.reset_mock()
+            group_slow_mode.clear_for_testing()
+            u0.show_typing = False
+            await session.commit()
+            photo_for_edit = SimpleNamespace(
+                message_id=702,
+                text=None,
+                caption="Original photo caption",
+                photo=[SimpleNamespace(file_id="photo_edit_fid")],
+                video=None,
+                animation=None,
+                sticker=None,
+                voice=None,
+                video_note=None,
+                audio=None,
+                document=None,
+                media_group_id=None,
+                reply_to_message=None,
+                answer=AsyncMock(),
+            )
+            ok, _ = await relay_group_message(bot, session, grp, mem0, photo_for_edit)
+            self.assertTrue(ok)
+            self.assertEqual(bot.send_chat_action.await_count, 0)
+            u0.show_typing = True
+            await session.commit()
+
+            # G. Editing text message & photo caption updates all recipients' copies and rolling DB transcript
+            edited_text_msg = SimpleNamespace(
+                message_id=701,
+                text="Updated message after edit!",
+                caption=None,
+                photo=None,
+                video=None,
+                animation=None,
+                sticker=None,
+                voice=None,
+                video_note=None,
+                audio=None,
+                document=None,
+                answer=AsyncMock(),
+            )
+            ok_edit, err_edit = await relay_group_edited_message(bot, session, grp, mem0, edited_text_msg)
+            self.assertTrue(ok_edit, err_edit)
+            self.assertEqual(bot.edit_message_text.await_count, 2)
+            edit_calls = {c.kwargs["chat_id"]: c.kwargs for c in bot.edit_message_text.await_args_list}
+            self.assertEqual(edit_calls[u1.id]["message_id"], 500 + (u1.id % 100))
+            self.assertEqual(edit_calls[u2.id]["message_id"], 500 + (u2.id % 100))
+            self.assertIn("<b>BlueFox:</b>\nUpdated message after edit!", edit_calls[u1.id]["text"])
+
+            edited_photo_msg = SimpleNamespace(
+                message_id=702,
+                text=None,
+                caption="Updated photo caption!",
+                photo=[SimpleNamespace(file_id="photo_edit_fid")],
+                video=None,
+                animation=None,
+                sticker=None,
+                voice=None,
+                video_note=None,
+                audio=None,
+                document=None,
+                answer=AsyncMock(),
+            )
+            ok_cap_edit, err_cap_edit = await relay_group_edited_message(bot, session, grp, mem0, edited_photo_msg)
+            self.assertTrue(ok_cap_edit, err_cap_edit)
+            self.assertEqual(bot.edit_message_caption.await_count, 2)
+            cap_calls = {c.kwargs["chat_id"]: c.kwargs for c in bot.edit_message_caption.await_args_list}
+            self.assertEqual(cap_calls[u1.id]["message_id"], 600 + (u1.id % 100))
+            self.assertIn("<b>BlueFox</b>\nUpdated photo caption!", cap_calls[u1.id]["caption"])
+
+            # Verify rolling DB transcript reflects the edited text & caption
+            recent_db_msgs = await get_recent_group_messages(session, grp.id)
+            db_texts = [m.text_content for m in recent_db_msgs]
+            self.assertIn("Updated message after edit!", db_texts)
+            self.assertIn('[Photo, caption: "Updated photo caption!"]', db_texts)
+
+            # H. Emoji Reactions: u1 reacts to u0's message (in u1's chat: 500 + u1.id % 100) -> relayed to u0 (701) and u2 (500 + u2.id % 100)
+            reaction_event = SimpleNamespace(
+                message_id=500 + (u1.id % 100),
+                user=SimpleNamespace(id=u1.id),
+                new_reaction=[SimpleNamespace(type="emoji", emoji="🔥")],
+            )
+            ok_rx, err_rx = await relay_group_message_reaction(bot, session, grp, mem1, reaction_event)
+            self.assertTrue(ok_rx, err_rx)
+            self.assertEqual(bot.set_message_reaction.await_count, 2)
+            rx_calls = {c.kwargs["chat_id"]: c.kwargs for c in bot.set_message_reaction.await_args_list}
+            self.assertEqual(rx_calls[u0.id]["message_id"], 701)
+            self.assertEqual(rx_calls[u2.id]["message_id"], 500 + (u2.id % 100))
+            self.assertEqual(rx_calls[u0.id]["reaction"][0].emoji, "🔥")
+
+            # I. Link Shield blocks IP-logger URLs in group messages and group message edits
+            group_slow_mode.clear_for_testing()
+            malicious_msg = SimpleNamespace(
+                message_id=703,
+                text="Click my link https://grabify.link/track123 right now",
+                caption=None,
+                entities=None,
+                caption_entities=None,
+                photo=None,
+                video=None,
+                animation=None,
+                sticker=None,
+                voice=None,
+                video_note=None,
+                audio=None,
+                document=None,
+                media_group_id=None,
+                reply_to_message=None,
+                answer=AsyncMock(),
+                reply=AsyncMock(),
+            )
+            ok_mal, reason_mal = await relay_group_message(bot, session, grp, mem0, malicious_msg)
+            self.assertFalse(ok_mal)
+            self.assertEqual(reason_mal, "link_blocked")
+            malicious_msg.reply.assert_awaited_once()
 
     # -------------------------------------------------------------------------
     # 5. Multi-Party AI Moderation: 100-Msg Rolling Window, (left) Speakers & Penalties

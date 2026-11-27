@@ -17,18 +17,20 @@ from aiogram.exceptions import (
     TelegramForbiddenError,
     TelegramRetryAfter,
 )
-from aiogram.types import Message
+from aiogram.types import Message, MessageReactionUpdated
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database.crud import (
     close_group_chat_by_id,
     get_active_group_members,
     get_inactive_group_chats_for_closure,
+    get_user,
     leave_group_chat,
     record_group_chat_message,
+    update_group_chat_message_content,
 )
 from app.database.models import GroupChat, GroupChatMember
-from app.services.link_shield import URL_REGEX
+from app.services.link_shield import URL_REGEX, link_shield
 
 logger = logging.getLogger(__name__)
 
@@ -273,6 +275,23 @@ class GroupReplyBuffer:
             return None
         return user_map.get(recipient_user_id)
 
+    def resolve_group_message(
+        self,
+        group_id: int,
+        user_id: int,
+        telegram_message_id: int,
+    ) -> Tuple[Optional[int], Dict[int, int]]:
+        """Resolve (group_message_id, {recipient_user_id: recipient_tg_message_id}) for a message in user_id's chat."""
+        rev = self._reverse.get(group_id)
+        fwd = self._forward.get(group_id)
+        if not rev or not fwd:
+            return None, {}
+        gmsg_id = rev.get((user_id, telegram_message_id))
+        if gmsg_id is None:
+            return None, {}
+        user_map = fwd.get(gmsg_id) or {}
+        return gmsg_id, dict(user_map)
+
     def clear_group(self, group_id: int) -> None:
         """Remove all stored reply mappings for a closed group."""
         self._forward.pop(group_id, None)
@@ -422,6 +441,23 @@ def extract_message_type_and_meta(message: Message) -> Tuple[str, Optional[str],
     return "unknown", None, None, False
 
 
+def get_group_chat_action_for_msg_type(msg_type: str) -> str:
+    """Return the appropriate Telegram chat action string for a group message type."""
+    if msg_type == "photo":
+        return "upload_photo"
+    if msg_type in ("video", "animation"):
+        return "upload_video"
+    if msg_type == "voice":
+        return "record_voice"
+    if msg_type == "video_note":
+        return "record_video_note"
+    if msg_type == "sticker":
+        return "choose_sticker"
+    if msg_type in ("document", "audio"):
+        return "upload_document"
+    return "typing"
+
+
 async def _send_with_retry_after(coro_factory):
     """Execute a Telegram send coroutine factory, respecting RetryAfter (429) once."""
     try:
@@ -505,6 +541,20 @@ async def relay_group_message(
         )
         return False, "unsupported_type"
 
+    # 1b. Scan links with Link Shield (block IP loggers, phishing, and dangerous executable links)
+    scan_res = await link_shield.scan_message(message)
+    if scan_res.is_blocked:
+        reason = html.escape(scan_res.block_reason or "Unsafe URL")
+        reply_fn = getattr(message, "reply", None) or getattr(message, "answer", None)
+        if reply_fn:
+            await reply_fn(
+                "🚫 <b>Message Blocked by Link Shield</b>\n\n"
+                "Your message was not delivered to the group because it contains a link detected as a potential IP-tracker, phishing page, or unsafe file:\n"
+                f"<code>{reason}</code>",
+                parse_mode="HTML",
+            )
+        return False, "link_blocked"
+
     # 2. Check per-sender slow mode
     allowed, retry_sec = group_slow_mode.check_and_record(group_id, sender_id, is_media=is_media)
     if not allowed:
@@ -530,15 +580,29 @@ async def relay_group_message(
     if sender_tg_msg_id is not None:
         group_reply_buffer.record_delivery(group_id, db_msg.id, sender_id, sender_tg_msg_id)
 
-    replied_to = getattr(message, "reply_to_message", None)
+    replied_to = getattr(message, "reply_to_message", None) or getattr(message, "external_reply", None)
     replied_tg_id = getattr(replied_to, "message_id", None) if replied_to else None
 
-    # 5. Fetch active recipients
+    # 5. Fetch active recipients and sender's show_typing preference
     active_members = await get_active_group_members(session, group_id)
     recipients = [m for m in active_members if m.user_id != sender_id]
 
+    sender_user = await get_user(session, user_id=sender_id)
+    show_typing = getattr(sender_user, "show_typing", True) if sender_user is not None else True
+    if show_typing is None:
+        show_typing = True
+    chat_action = get_group_chat_action_for_msg_type(msg_type)
+    send_action_fn = getattr(bot, "send_chat_action", None)
+
     for recipient in recipients:
         r_uid = recipient.user_id
+        if show_typing and callable(send_action_fn):
+            try:
+                res_act = send_action_fn(chat_id=r_uid, action=chat_action)
+                if asyncio.iscoroutine(res_act):
+                    await res_act
+            except Exception:
+                pass
         reply_to_msg_id: Optional[int] = None
         if replied_tg_id is not None:
             reply_to_msg_id = group_reply_buffer.resolve_reply_target(
@@ -641,6 +705,9 @@ async def relay_group_message(
                     )
 
                 if sent_msg is not None and getattr(sent_msg, "message_id", None) is not None:
+                    # Record the sticker/video_note message_id first, then the follow-up tag message_id
+                    # while keeping sent_msg.message_id as the primary forward target in fwd[db_msg.id][r_uid]
+                    # so reactions on the sticker/video_note map to the sticker itself, and replies to either work!
                     tag_text = format_non_captionable_attribution(nickname)
                     tag_msg = await _send_with_retry_after(
                         lambda uid=r_uid, txt=tag_text, m_id=sent_msg.message_id: bot.send_message(
@@ -674,6 +741,149 @@ async def relay_group_message(
                 logger.debug("BadRequest relaying to %s in group %s: %s", r_uid, group_id, e)
         except TelegramAPIError as e:
             logger.warning("TelegramAPIError relaying to %s in group %s: %s", r_uid, group_id, e)
+
+    return True, ""
+
+
+async def relay_group_edited_message(
+    bot: Bot,
+    session: AsyncSession,
+    group: GroupChat,
+    sender_member: GroupChatMember,
+    message: Message,
+) -> Tuple[bool, str]:
+    """Relay a message edit (text or media caption) from the original sender to all group members.
+
+    Preserves the sender's nickname header (`<b>Nickname:</b>\\n...` or `<b>Nickname</b>\\n...`),
+    enforces Link Shield on the edited text/caption, and updates the rolling 100-message DB transcript.
+    """
+    group_id = group.id
+    sender_id = sender_member.user_id
+    nickname = sender_member.nickname
+    edited_tg_msg_id = getattr(message, "message_id", None)
+    if edited_tg_msg_id is None:
+        return False, "missing_message_id"
+
+    gmsg_id, user_msg_map = group_reply_buffer.resolve_group_message(
+        group_id=group_id,
+        user_id=sender_id,
+        telegram_message_id=edited_tg_msg_id,
+    )
+    if gmsg_id is None or not user_msg_map:
+        return False, "message_not_in_buffer"
+
+    # Scan edited content with Link Shield
+    scan_res = await link_shield.scan_message(message)
+    if scan_res.is_blocked:
+        reason = html.escape(scan_res.block_reason or "Unsafe URL")
+        reply_fn = getattr(message, "reply", None) or getattr(message, "answer", None)
+        if reply_fn:
+            await reply_fn(
+                "🚫 <b>Edit Blocked by Link Shield</b>\n\n"
+                "Your edited message contains a link detected as an unsafe URL or IP-tracker:\n"
+                f"<code>{reason}</code>\n\n"
+                "<i>The edit was not relayed to the group.</i>",
+                parse_mode="HTML",
+            )
+        return False, "link_blocked"
+
+    is_text_edit = getattr(message, "text", None) is not None
+    is_caption_edit = not is_text_edit and (
+        getattr(message, "caption", None) is not None
+        or any(
+            getattr(message, attr, None) is not None
+            for attr in ("photo", "video", "animation", "document", "audio", "voice")
+        )
+    )
+    if not is_text_edit and not is_caption_edit:
+        return False, "unsupported_edit_type"
+
+    _, db_text_content, _, _ = extract_message_type_and_meta(message)
+    await update_group_chat_message_content(
+        session=session,
+        group_id=group_id,
+        group_message_id=gmsg_id,
+        new_text_content=db_text_content,
+    )
+
+    active_members = await get_active_group_members(session, group_id)
+    active_uids = {m.user_id for m in active_members if m.user_id != sender_id}
+
+    formatted_text = format_group_text_message(nickname, message.text or "") if is_text_edit else ""
+    formatted_caption = format_group_media_caption(nickname, getattr(message, "caption", None)) if is_caption_edit else ""
+
+    for r_uid, target_msg_id in user_msg_map.items():
+        if r_uid == sender_id or r_uid not in active_uids:
+            continue
+        try:
+            if is_text_edit:
+                await _send_with_retry_after(
+                    lambda uid=r_uid, mid=target_msg_id, txt=formatted_text: bot.edit_message_text(
+                        chat_id=uid,
+                        message_id=mid,
+                        text=txt,
+                        parse_mode="HTML",
+                    )
+                )
+            else:
+                await _send_with_retry_after(
+                    lambda uid=r_uid, mid=target_msg_id, cap=formatted_caption: bot.edit_message_caption(
+                        chat_id=uid,
+                        message_id=mid,
+                        caption=cap,
+                        parse_mode="HTML",
+                    )
+                )
+        except TelegramBadRequest as e:
+            if "message is not modified" in str(e).lower():
+                continue
+            logger.debug("Could not edit group message for member %s in group %s: %s", r_uid, group_id, e)
+        except Exception as e:
+            logger.debug("Error relaying group message edit to member %s in group %s: %s", r_uid, group_id, e)
+
+    return True, ""
+
+
+async def relay_group_message_reaction(
+    bot: Bot,
+    session: AsyncSession,
+    group: GroupChat,
+    reactor_member: GroupChatMember,
+    event: MessageReactionUpdated,
+) -> Tuple[bool, str]:
+    """Relay an emoji reaction on a group message to all other active members' copies of that message."""
+    group_id = group.id
+    reactor_id = reactor_member.user_id
+    reacted_tg_msg_id = getattr(event, "message_id", None)
+    if reacted_tg_msg_id is None:
+        return False, "missing_message_id"
+
+    gmsg_id, user_msg_map = group_reply_buffer.resolve_group_message(
+        group_id=group_id,
+        user_id=reactor_id,
+        telegram_message_id=reacted_tg_msg_id,
+    )
+    if gmsg_id is None or not user_msg_map:
+        return False, "message_not_in_buffer"
+
+    active_members = await get_active_group_members(session, group_id)
+    active_uids = {m.user_id for m in active_members if m.user_id != reactor_id}
+
+    reaction_to_set = event.new_reaction if getattr(event, "new_reaction", None) is not None else []
+
+    for r_uid, target_msg_id in user_msg_map.items():
+        if r_uid == reactor_id or r_uid not in active_uids:
+            continue
+        try:
+            await _send_with_retry_after(
+                lambda uid=r_uid, mid=target_msg_id, rx=reaction_to_set: bot.set_message_reaction(
+                    chat_id=uid,
+                    message_id=mid,
+                    reaction=rx,
+                )
+            )
+        except Exception as e:
+            logger.debug("Could not relay group reaction to member %s on msg %s: %s", r_uid, target_msg_id, e)
 
     return True, ""
 
