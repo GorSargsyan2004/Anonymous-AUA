@@ -1670,8 +1670,7 @@ a,
 }
 
 @media (hover: hover) and (pointer: fine) {
-  .anon-reaction-anchor:hover .anon-reaction-picker,
-  .anon-comment-row:hover .anon-comment-reaction-picker {
+  .anon-reaction-anchor:hover .anon-reaction-picker {
     display: flex !important;
   }
 }
@@ -1686,6 +1685,30 @@ a,
   display: flex;
   flex-direction: column;
   max-width: 100%;
+}
+
+.anon-comment-row {
+  position: relative;
+  z-index: 1;
+}
+
+.anon-comment-row:hover,
+.anon-comment-row.picker-open {
+  z-index: 40;
+}
+
+.anon-comment-reaction-picker {
+  z-index: 90 !important;
+}
+
+.anon-comment-reaction-picker.open-below {
+  bottom: auto !important;
+  top: calc(100% + 4px) !important;
+}
+
+.anon-comment-reaction-picker.open-below::after {
+  top: auto !important;
+  bottom: 100% !important;
 }
 
 .anon-comment-row:not(.own) .anon-comment-reaction-picker {
@@ -1777,11 +1800,13 @@ a,
 }
 
 .anon-comments-stream {
+  position: relative;
   min-height: 110px;
   max-height: 310px;
   overflow-y: auto;
+  overflow-x: hidden;
   overscroll-behavior-y: contain;
-  padding: 12px 12px;
+  padding: 16px 12px;
   display: flex;
   flex-direction: column;
   gap: 9px;

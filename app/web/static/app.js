@@ -3545,9 +3545,6 @@ function renderAnonPostCommentsStream(postId, scrollToBottom = false) {
   }
 
   stream.innerHTML = comments.map((c) => buildAnonCommentBubbleHtml(c)).join("");
-  stream.querySelectorAll(".anon-comment-row").forEach((rowEl) => {
-    initDesktopHoverPicker(rowEl);
-  });
   if (scrollToBottom) {
     stream.scrollTop = stream.scrollHeight;
   }
@@ -3619,8 +3616,27 @@ function toggleAnonReactionPicker(e, pickerKey) {
   document.querySelectorAll(".chat-reaction-picker.visible, .chat-reaction-picker.desktop-active").forEach((p) => {
     p.classList.remove("visible");
     p.classList.remove("desktop-active");
+    p.classList.remove("open-below");
+  });
+  document.querySelectorAll(".anon-comment-row.picker-open").forEach((r) => {
+    r.classList.remove("picker-open");
   });
   if (!wasOpen) {
+    const commentRow = picker.closest(".anon-comment-row");
+    const stream = picker.closest(".anon-comments-stream");
+    if (commentRow) {
+      commentRow.classList.add("picker-open");
+    }
+    if (commentRow && stream) {
+      const rowRect = commentRow.getBoundingClientRect();
+      const streamRect = stream.getBoundingClientRect();
+      // If the comment is within 52px of the top of the scroll container, open below the comment so the header never clips it
+      if (rowRect.top - streamRect.top < 52) {
+        picker.classList.add("open-below");
+      } else {
+        picker.classList.remove("open-below");
+      }
+    }
     picker.classList.add("visible");
     picker.classList.add("desktop-active");
   }
@@ -3692,6 +3708,10 @@ async function toggleAnonPostReaction(postId, emoji) {
   document.querySelectorAll(".chat-reaction-picker.visible, .chat-reaction-picker.desktop-active").forEach((el) => {
     el.classList.remove("visible");
     el.classList.remove("desktop-active");
+    el.classList.remove("open-below");
+  });
+  document.querySelectorAll(".anon-comment-row.picker-open").forEach((r) => {
+    r.classList.remove("picker-open");
   });
   try {
     const res = await apiFetch(`/api/anonymous/posts/${Number(postId)}/react`, {
@@ -3715,6 +3735,10 @@ async function toggleAnonCommentReaction(postId, commentId, emoji) {
   document.querySelectorAll(".chat-reaction-picker.visible, .chat-reaction-picker.desktop-active").forEach((el) => {
     el.classList.remove("visible");
     el.classList.remove("desktop-active");
+    el.classList.remove("open-below");
+  });
+  document.querySelectorAll(".anon-comment-row.picker-open").forEach((r) => {
+    r.classList.remove("picker-open");
   });
   try {
     const res = await apiFetch(`/api/anonymous/posts/${Number(postId)}/comments/${Number(commentId)}/react`, {
@@ -6424,6 +6448,10 @@ async function toggleMessageReaction(msgId, emoji) {
   document.querySelectorAll(".chat-reaction-picker.visible, .chat-reaction-picker.desktop-active").forEach((el) => {
     el.classList.remove("visible");
     el.classList.remove("desktop-active");
+    el.classList.remove("open-below");
+  });
+  document.querySelectorAll(".anon-comment-row.picker-open").forEach((r) => {
+    r.classList.remove("picker-open");
   });
 
   try {
@@ -8163,11 +8191,16 @@ document.addEventListener("click", (e) => {
     !e.target.closest(".chat-reaction-picker") &&
     !e.target.closest(".tg-reaction-expand-btn") &&
     !e.target.closest("#fullReactionsPickerPanel") &&
-    !e.target.closest(".anon-react-trigger-btn")
+    !e.target.closest(".anon-react-trigger-btn") &&
+    !e.target.closest(".anon-comment-act-btn")
   ) {
     document.querySelectorAll(".chat-reaction-picker.visible, .chat-reaction-picker.desktop-active").forEach((p) => {
       p.classList.remove("visible");
       p.classList.remove("desktop-active");
+      p.classList.remove("open-below");
+    });
+    document.querySelectorAll(".anon-comment-row.picker-open").forEach((r) => {
+      r.classList.remove("picker-open");
     });
   }
   if (!e.target.closest("#telegramMessageMenu") && !e.target.closest(".chat-bubble-row") && !e.target.closest("#fullReactionsPickerPanel") && !e.target.closest("#tgDesktopReactionsFlyout")) {
