@@ -3010,7 +3010,7 @@ function switchAnonymousSubtab(subtab) {
     } else if (validSubtab === "inbox") {
       instrEl.innerHTML = `Receive personal anonymous messages via <a href="https://t.me/${escapeHtml(botUser)}" target="_blank" rel="noopener noreferrer" style="color:var(--neon-blue-bright); font-weight:700;">@${escapeHtml(botUser)}</a> using <code>/link</code> and <code>/sync</code>.`;
     } else {
-      instrEl.innerHTML = `Posts can only be created via <a href="https://t.me/${escapeHtml(botUser)}" target="_blank" rel="noopener noreferrer" style="color:var(--neon-blue-bright); font-weight:700;">@${escapeHtml(botUser)}</a> using the <code>/post</code> command.`;
+      instrEl.innerHTML = `Post via <a href="https://t.me/${escapeHtml(botUser)}" target="_blank" rel="noopener noreferrer" style="color:var(--neon-blue-bright); font-weight:700;">@${escapeHtml(botUser)}</a> (<code>/post</code>) or <a href="https://drop.auahub.am" target="_blank" rel="noopener noreferrer" title="Post without Telegram or login — Tor supported" style="color:var(--neon-blue-bright); font-weight:700;">🧅 Web / Tor Drop &nearr;</a> <span style="color:var(--text-muted); font-size:12px;">(no Telegram or login &bull; Tor supported)</span>`;
     }
   }
 
