@@ -8404,13 +8404,6 @@ a,
     justify-content: space-between;
   }
 
-  .gpa-cat-add-item-btn {
-    margin-left: auto;
-    min-height: 36px;
-    padding: 6px 14px;
-    font-size: 12.5px;
-  }
-
   .gpa-category-header-right {
     width: 100%;
     justify-content: space-between;

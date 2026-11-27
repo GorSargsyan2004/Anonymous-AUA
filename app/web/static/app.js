@@ -10564,11 +10564,6 @@ function renderActiveGpaCourseEditor() {
             <div class="gpa-category-header-left">
               <span class="gpa-category-title">${catIcon} ${escapeHtml(catName)}</span>
               <span class="gpa-category-weight-badge">${group.totalBaseWeight.toFixed(1)}% total</span>
-              <button type="button" class="gpa-cat-add-item-btn"
-                title="Add another ${escapeHtml(singularItemName)} to ${escapeHtml(catName)} and re-balance category weights"
-                onclick="addGpaItemToCategory(decodeURIComponent('${safeCatAttr}'))">
-                <span>＋</span> Add ${escapeHtml(singularItemName)}
-              </button>
             </div>
             <div class="gpa-category-header-right">
               ${dropPolicyRightHtml}
