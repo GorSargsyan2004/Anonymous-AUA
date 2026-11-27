@@ -9341,7 +9341,7 @@ const ORDERED_PERCENT_LETTERS = [
 
 const GPA_CALC_STORAGE_KEY = "aua_hub_gpa_calc_v1";
 
-state.gpaSubtab = "calculator";
+state.gpaSubtab = "tracker";
 state.gpaCalcRows = [];
 state.gpaPriorGpa = "";
 state.gpaPriorCredits = "";
@@ -9357,10 +9357,8 @@ function initGpaTrackerView() {
   initGpaCalculatorState();
   renderGpaCalculatorRows();
   recalculateGpaHud();
-  renderGpaTrackerAuthState();
-  if (state.user && !state.gpaCoursesLoaded) {
-    loadGpaUserCourses(false);
-  } else if (state.user) {
+  switchGpaSubtab("tracker");
+  if (state.user && state.gpaCoursesLoaded) {
     renderGpaCourseNodesBar();
     renderActiveGpaCourseEditor();
   }
