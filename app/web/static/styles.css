@@ -1619,6 +1619,393 @@ a,
   box-shadow: 0 0 10px rgba(56, 189, 248, 0.25);
 }
 
+/* Telegram-Style Inline Comments Drawer on Anonymous Posts */
+.anon-post-footer {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  padding-top: 8px;
+  margin-top: 2px;
+  border-top: 1px solid rgba(56, 189, 248, 0.11);
+}
+
+.anon-comments-toggle-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 6px 13px;
+  border-radius: 999px;
+  font-size: 12.5px;
+  font-weight: 700;
+  color: var(--text-ice);
+  background: rgba(14, 165, 233, 0.1);
+  border: 1px solid rgba(56, 189, 248, 0.28);
+  cursor: pointer;
+  transition: all 0.18s ease;
+}
+
+.anon-comments-toggle-btn:hover,
+.anon-comments-toggle-btn.active {
+  background: rgba(14, 165, 233, 0.22);
+  border-color: var(--neon-blue-bright);
+  color: #ffffff;
+  box-shadow: 0 0 14px rgba(56, 189, 248, 0.24);
+}
+
+.anon-toggle-chevron {
+  font-size: 11px;
+  opacity: 0.8;
+}
+
+.anon-comments-drawer {
+  margin-top: 8px;
+  border-radius: 15px;
+  background: rgba(6, 11, 24, 0.86);
+  border: 1px solid rgba(56, 189, 248, 0.24);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  animation: fadeInView 0.2s ease;
+}
+
+.anon-comments-drawer-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 9px 14px;
+  background: rgba(15, 25, 48, 0.65);
+  border-bottom: 1px solid rgba(56, 189, 248, 0.14);
+}
+
+.anon-comments-drawer-title {
+  font-size: 12px;
+  font-weight: 800;
+  color: var(--text-ice);
+  letter-spacing: 0.01em;
+}
+
+.anon-comments-close-btn {
+  background: transparent;
+  border: none;
+  color: var(--text-secondary);
+  font-size: 11.5px;
+  font-weight: 700;
+  cursor: pointer;
+  padding: 2px 6px;
+  border-radius: 6px;
+}
+
+.anon-comments-close-btn:hover {
+  color: var(--text-white);
+  background: rgba(56, 189, 248, 0.12);
+}
+
+.anon-comments-stream {
+  min-height: 110px;
+  max-height: 310px;
+  overflow-y: auto;
+  overscroll-behavior-y: contain;
+  padding: 12px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+}
+
+.anon-comments-stream::-webkit-scrollbar {
+  width: 5px;
+}
+
+.anon-comments-stream::-webkit-scrollbar-thumb {
+  background: rgba(56, 189, 248, 0.25);
+  border-radius: 4px;
+}
+
+.anon-comments-loading,
+.anon-comments-empty {
+  text-align: center;
+  padding: 26px 14px;
+  font-size: 12.8px;
+  color: var(--text-secondary);
+}
+
+.anon-comment-row {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+  max-width: 92%;
+}
+
+.anon-comment-row.own {
+  align-self: flex-end;
+  flex-direction: row-reverse;
+}
+
+.anon-mask-avatar {
+  background: linear-gradient(135deg, rgba(14, 165, 233, 0.25), rgba(139, 92, 246, 0.28)) !important;
+  border: 1px solid rgba(125, 211, 252, 0.4) !important;
+  flex-shrink: 0;
+}
+
+.anon-comment-bubble {
+  padding: 8px 12px;
+  border-radius: 14px 14px 14px 4px;
+  background: rgba(17, 28, 54, 0.9);
+  border: 1px solid rgba(56, 189, 248, 0.2);
+  min-width: 140px;
+  max-width: 100%;
+  transition: box-shadow 0.25s ease, border-color 0.25s ease;
+}
+
+.anon-comment-bubble.own {
+  border-radius: 14px 14px 4px 14px;
+  background: linear-gradient(135deg, rgba(2, 132, 199, 0.32), rgba(15, 30, 62, 0.94));
+  border-color: rgba(56, 189, 248, 0.45);
+}
+
+.anon-comment-bubble.op-bubble {
+  border-color: rgba(192, 132, 252, 0.55);
+}
+
+.anon-comment-highlight .anon-comment-bubble {
+  border-color: var(--neon-blue-bright) !important;
+  box-shadow: 0 0 18px rgba(56, 189, 248, 0.45) !important;
+}
+
+.anon-comment-bubble-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 4px;
+}
+
+.anon-comment-author-wrap {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.anon-comment-author-anon {
+  font-size: 12px;
+  font-weight: 800;
+  color: #bae6fd;
+}
+
+.anon-comment-author-named {
+  font-size: 12px !important;
+  font-weight: 800 !important;
+}
+
+.anon-comment-op-pill {
+  font-size: 9.5px;
+  font-weight: 800;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: rgba(168, 85, 247, 0.25);
+  border: 1px solid rgba(192, 132, 252, 0.6);
+  color: #e9d5ff;
+}
+
+.anon-comment-anon-pill {
+  font-size: 9.5px;
+  font-weight: 700;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: rgba(56, 189, 248, 0.14);
+  border: 1px solid rgba(56, 189, 248, 0.35);
+  color: #7dd3fc;
+}
+
+.anon-comment-you-tag {
+  font-size: 10.5px;
+  color: var(--text-secondary);
+  font-weight: 600;
+}
+
+.anon-comment-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.anon-comment-time {
+  font-size: 10.5px;
+  color: rgba(148, 163, 184, 0.72);
+  margin-right: 2px;
+}
+
+.anon-comment-act-btn {
+  background: transparent;
+  border: none;
+  color: var(--text-secondary);
+  font-size: 12.5px;
+  font-weight: 700;
+  cursor: pointer;
+  padding: 1px 5px;
+  border-radius: 5px;
+  line-height: 1.2;
+}
+
+.anon-comment-act-btn:hover {
+  color: var(--neon-blue-bright);
+  background: rgba(56, 189, 248, 0.14);
+}
+
+.anon-comment-act-btn.del:hover {
+  color: #fca5a5;
+  background: rgba(239, 68, 68, 0.18);
+}
+
+.anon-comment-reply-quote {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 4px 8px;
+  margin-bottom: 5px;
+  border-left: 2.5px solid var(--neon-blue-bright);
+  border-radius: 4px 8px 8px 4px;
+  background: rgba(14, 165, 233, 0.1);
+  cursor: pointer;
+  font-size: 11.2px;
+}
+
+.anon-reply-quote-author {
+  font-weight: 800;
+  color: #7dd3fc;
+}
+
+.anon-reply-quote-text {
+  color: var(--text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.anon-comment-text {
+  font-size: 13.5px;
+  color: var(--text-white);
+  line-height: 1.45;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.anon-comment-reply-strip {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 12px;
+  background: rgba(14, 165, 233, 0.13);
+  border-top: 1px solid rgba(56, 189, 248, 0.22);
+  font-size: 11.8px;
+  color: var(--text-ice);
+}
+
+.anon-reply-strip-info {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.anon-reply-strip-snippet {
+  color: var(--text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.anon-reply-strip-close {
+  background: transparent;
+  border: none;
+  color: var(--text-secondary);
+  font-size: 15px;
+  font-weight: 800;
+  cursor: pointer;
+  padding: 0 4px;
+}
+
+.anon-comment-composer-wrap {
+  padding: 9px 10px;
+  background: rgba(10, 17, 34, 0.92);
+  border-top: 1px solid rgba(56, 189, 248, 0.16);
+}
+
+.anon-comment-form {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.anon-identity-toggle-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 7px 11px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 800;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: all 0.18s ease;
+}
+
+.anon-identity-toggle-pill.mode-anon {
+  background: linear-gradient(135deg, rgba(139, 92, 246, 0.26), rgba(14, 165, 233, 0.22));
+  border: 1px solid rgba(167, 139, 250, 0.65);
+  color: #ede9fe;
+  box-shadow: 0 0 12px rgba(139, 92, 246, 0.24);
+}
+
+.anon-identity-toggle-pill.mode-named {
+  background: rgba(14, 165, 233, 0.18);
+  border: 1px solid rgba(56, 189, 248, 0.55);
+  color: #e0f2fe;
+}
+
+.anon-comment-input {
+  flex: 1;
+  min-width: 0;
+  padding: 8px 12px !important;
+  font-size: 13.2px !important;
+  border-radius: 999px !important;
+}
+
+.anon-comment-send-btn {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  border: 1px solid rgba(125, 211, 252, 0.6);
+  background: linear-gradient(135deg, #0284c7, #38bdf8);
+  color: #ffffff;
+  font-size: 14px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  box-shadow: 0 0 12px rgba(56, 189, 248, 0.35);
+  transition: transform 0.15s ease;
+}
+
+.anon-comment-send-btn:hover:not(:disabled) {
+  transform: scale(1.06);
+}
+
+.anon-comment-guest-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+  font-size: 12.2px;
+  color: var(--text-secondary);
+  padding: 2px 4px;
+}
+
 .sync-code-display {
   font-family: 'JetBrains Mono', monospace;
   font-size: 32px;

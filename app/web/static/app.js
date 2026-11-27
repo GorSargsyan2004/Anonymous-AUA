@@ -1609,6 +1609,21 @@ function _navigateToNotificationTarget(targetType, targetId, extraData = {}) {
   } else if (targetType === "inbox") {
     switchView("anonymous");
     switchAnonymousSubtab("inbox");
+  } else if (targetType === "anon_post") {
+    switchView("anonymous");
+    switchAnonymousSubtab("posts");
+    const pid = Number(targetId || extraData?.post_id || 0);
+    if (pid) {
+      setTimeout(() => {
+        const card = document.getElementById(`anon-post-card-${pid}`);
+        if (card) {
+          card.scrollIntoView({ behavior: "smooth", block: "center" });
+          card.classList.add("hn-card-highlighted");
+          setTimeout(() => card.classList.remove("hn-card-highlighted"), 3200);
+        }
+        toggleAnonPostComments(pid, true);
+      }, 320);
+    }
   }
 }
 
@@ -2640,6 +2655,8 @@ async function loadAnonymousPosts(page = 1) {
         (p) => {
           const isReported = Boolean(p.reported_by_me);
           const reportCount = Number(p.report_count || 0);
+          const commentCount = Number(p.comment_count || 0);
+          const isOpen = Boolean(state.openAnonCommentPostIds && state.openAnonCommentPostIds.has(Number(p.index)));
           return `
         <div class="glass-card anon-post-card" id="anon-post-card-${p.index}">
           <div class="anon-post-header">
@@ -2659,11 +2676,49 @@ async function loadAnonymousPosts(page = 1) {
             </div>
           </div>
           <div style="font-size:15px; color:var(--text-white); white-space:pre-wrap; line-height:1.6;">${escapeHtml(p.content_text)}</div>
+          <div class="anon-post-footer">
+            <button
+              type="button"
+              id="anon-comment-toggle-${p.index}"
+              class="anon-comments-toggle-btn${isOpen ? " active" : ""}"
+              onclick="toggleAnonPostComments(${p.index})"
+              aria-expanded="${isOpen}"
+            >
+              <span>💬</span>
+              <span id="anon-comment-count-label-${p.index}">
+                ${commentCount > 0 ? `Comments (${commentCount})` : "Comment"}
+              </span>
+              <span class="anon-toggle-chevron">${isOpen ? "▴" : "▾"}</span>
+            </button>
+          </div>
+          <div id="anon-comments-drawer-${p.index}" class="anon-comments-drawer${isOpen ? "" : " hidden"}" ${isOpen ? "" : "hidden"}>
+            <div class="anon-comments-drawer-head">
+              <span class="anon-comments-drawer-title">💬 Discussion &bull; Post #${p.index}</span>
+              <button type="button" class="anon-comments-close-btn" onclick="toggleAnonPostComments(${p.index}, false)">
+                Hide ▴
+              </button>
+            </div>
+            <div id="anon-comments-stream-${p.index}" class="anon-comments-stream">
+              <div class="anon-comments-loading">Loading discussion...</div>
+            </div>
+            <div id="anon-reply-strip-${p.index}" class="anon-comment-reply-strip hidden" hidden></div>
+            <div id="anon-composer-wrap-${p.index}" class="anon-comment-composer-wrap">
+              ${buildAnonCommentComposerHtml(p.index)}
+            </div>
+          </div>
         </div>
       `;
         }
       )
       .join("");
+
+    if (state.openAnonCommentPostIds && state.openAnonCommentPostIds.size > 0) {
+      for (const openPid of state.openAnonCommentPostIds) {
+        if (document.getElementById(`anon-comments-drawer-${openPid}`)) {
+          loadAnonPostComments(openPid);
+        }
+      }
+    }
 
     renderPagination(pag, data.page, data.total_pages, "loadAnonymousPosts");
   } catch (err) {
@@ -6872,6 +6927,29 @@ function initSpamChatWebSocket() {
           if (state.user && Number(data.recipient_id) === Number(state.user.id)) {
             if (!state.aiIsGenerating) {
               applyServerAiSessionState(data);
+            }
+          }
+        } else if (data.type === "anon_post_comment_new" && data.post_id && data.comment) {
+          const pid = Number(data.post_id);
+          updateAnonPostCommentCountBadge(pid, data.comment_count);
+          if (state.openAnonCommentPostIds && state.openAnonCommentPostIds.has(pid)) {
+            const list = state.anonCommentsByPost[pid] || [];
+            if (!list.some((c) => Number(c.id) === Number(data.comment.id))) {
+              list.push(data.comment);
+              state.anonCommentsByPost[pid] = list;
+              renderAnonPostCommentsStream(pid, true);
+            }
+          }
+        } else if (data.type === "anon_post_comment_delete" && data.post_id && data.comment_id) {
+          const pid = Number(data.post_id);
+          const cid = Number(data.comment_id);
+          updateAnonPostCommentCountBadge(pid, data.comment_count);
+          if (state.anonCommentsByPost && state.anonCommentsByPost[pid]) {
+            state.anonCommentsByPost[pid] = state.anonCommentsByPost[pid].filter(
+              (c) => Number(c.id) !== cid
+            );
+            if (state.openAnonCommentPostIds && state.openAnonCommentPostIds.has(pid)) {
+              renderAnonPostCommentsStream(pid, false);
             }
           }
         }

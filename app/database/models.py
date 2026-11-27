@@ -728,6 +728,32 @@ class AnonymousPublicPostReport(Base):
     )
 
 
+class AnonymousPostComment(Base):
+    """Stores Telegram-style comments on public anonymous posts (supports anonymous or named mode)."""
+    __tablename__ = "anonymous_post_comments"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    post_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("anonymous_public_posts.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    web_user_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("web_users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    reply_to_id: Mapped[Optional[int]] = mapped_column(
+        Integer, ForeignKey("anonymous_post_comments.id", ondelete="SET NULL"), nullable=True
+    )
+    content_text: Mapped[str] = mapped_column(Text, nullable=False)
+    is_anonymous: Mapped[bool] = mapped_column(
+        Boolean, default=True, nullable=False, server_default=text("true")
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False, index=True
+    )
+
+    web_user = relationship("WebUser", foreign_keys=[web_user_id])
+    reply_to = relationship("AnonymousPostComment", remote_side=[id], foreign_keys=[reply_to_id])
+
+
 class TelegramGroup(Base):
     """Stores student-submitted Telegram groups and communities on AUA Hub."""
     __tablename__ = "telegram_groups"

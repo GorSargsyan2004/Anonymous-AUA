@@ -27,6 +27,7 @@ from app.database.models import (
     AcademicFeedback,
     AIUsageLog,
     AnonymousInbox,
+    AnonymousPostComment,
     AnonymousPublicPost,
     AnonymousPublicPostReport,
     BotActivitySnapshot,
@@ -826,6 +827,224 @@ async def get_reported_anon_post_ids(
     )
     rows = (await session.execute(stmt)).scalars().all()
     return set(rows)
+
+
+async def get_anon_post_comment_counts(
+    session: AsyncSession,
+    post_ids: List[int],
+) -> Dict[int, int]:
+    """Return a mapping of {post_id: comment_count} for the given post IDs."""
+    if not post_ids:
+        return {}
+    stmt = (
+        select(AnonymousPostComment.post_id, func.count(AnonymousPostComment.id))
+        .where(AnonymousPostComment.post_id.in_(post_ids))
+        .group_by(AnonymousPostComment.post_id)
+    )
+    rows = (await session.execute(stmt)).all()
+    return {int(pid): int(cnt) for pid, cnt in rows}
+
+
+def _serialize_anon_post_comments_thread(
+    post: AnonymousPublicPost,
+    comments: List[AnonymousPostComment],
+    current_user_id: Optional[int] = None,
+    is_admin: bool = False,
+) -> List[Dict[str, Any]]:
+    """Serialize a chronological list of comments for a post with deterministic per-post Anon #N / Author (OP) aliases."""
+    anon_alias_by_uid: Dict[int, str] = {}
+    next_anon_num = 1
+    post_tg_uid = int(post.telegram_user_id) if post.telegram_user_id is not None else None
+
+    for c in comments:
+        if c.is_anonymous and c.web_user_id not in anon_alias_by_uid:
+            u = c.web_user
+            u_tg = int(u.telegram_user_id) if (u and u.telegram_user_id is not None) else None
+            if post_tg_uid is not None and u_tg is not None and u_tg == post_tg_uid:
+                anon_alias_by_uid[c.web_user_id] = "Author (OP)"
+            else:
+                anon_alias_by_uid[c.web_user_id] = f"Anon #{next_anon_num}"
+                next_anon_num += 1
+
+    display_name_by_cid: Dict[int, str] = {}
+    snippet_by_cid: Dict[int, str] = {}
+
+    for c in comments:
+        if c.is_anonymous:
+            d_name = anon_alias_by_uid.get(c.web_user_id, "Anon")
+        else:
+            u = c.web_user
+            is_del = bool(not u or getattr(u, "is_deleted", False))
+            d_name = "Deleted Account" if is_del else (u.name or "AUA Student")
+        display_name_by_cid[c.id] = d_name
+        raw_txt = (c.content_text or "").strip()
+        snippet_by_cid[c.id] = raw_txt[:80] + ("…" if len(raw_txt) > 80 else "")
+
+    serialized: List[Dict[str, Any]] = []
+    for c in comments:
+        is_mine = bool(current_user_id is not None and int(c.web_user_id) == int(current_user_id))
+        can_delete = bool(is_mine or is_admin)
+
+        if c.is_anonymous:
+            alias = anon_alias_by_uid.get(c.web_user_id, "Anon")
+            author_id = None
+            author_name = alias
+            author_avatar = ""
+            is_op = alias == "Author (OP)"
+            is_alumni = False
+            is_bot_synced = False
+            is_deleted = False
+        else:
+            u = c.web_user
+            is_deleted = bool(not u or getattr(u, "is_deleted", False))
+            u_tg = int(u.telegram_user_id) if (u and u.telegram_user_id is not None) else None
+            is_op = bool(post_tg_uid is not None and u_tg is not None and u_tg == post_tg_uid)
+            author_id = None if is_deleted else u.id
+            author_name = "Deleted Account" if is_deleted else (u.name or "AUA Student")
+            author_avatar = "/static/bot-logo.svg" if is_deleted else (u.avatar_url or "")
+            is_alumni = bool(not is_deleted and u and u.email and u.email.endswith("@alumni.aua.am"))
+            is_bot_synced = bool(not is_deleted and u and u.telegram_user_id)
+
+        reply_preview = None
+        if c.reply_to_id and c.reply_to_id in display_name_by_cid:
+            reply_preview = {
+                "id": c.reply_to_id,
+                "author_name": display_name_by_cid[c.reply_to_id],
+                "snippet": snippet_by_cid.get(c.reply_to_id, ""),
+            }
+
+        serialized.append(
+            {
+                "id": c.id,
+                "post_id": c.post_id,
+                "content_text": c.content_text,
+                "is_anonymous": bool(c.is_anonymous),
+                "author_id": author_id,
+                "author_name": author_name,
+                "author_avatar": author_avatar,
+                "is_op": is_op,
+                "is_alumni": is_alumni,
+                "is_bot_synced": is_bot_synced,
+                "is_deleted": is_deleted,
+                "is_mine": is_mine,
+                "can_delete": can_delete,
+                "reply_to": reply_preview,
+                "created_at": c.created_at.isoformat() if c.created_at else None,
+            }
+        )
+    return serialized
+
+
+async def list_anon_post_comments(
+    session: AsyncSession,
+    post_id: int,
+    current_user_id: Optional[int] = None,
+    is_admin: bool = False,
+) -> Tuple[Optional[AnonymousPublicPost], List[Dict[str, Any]]]:
+    """Fetch a visible anonymous public post and its serialized comment thread."""
+    post = (
+        await session.execute(
+            select(AnonymousPublicPost).where(
+                and_(
+                    AnonymousPublicPost.id == post_id,
+                    AnonymousPublicPost.is_hidden.is_(False),
+                )
+            )
+        )
+    ).scalar_one_or_none()
+    if not post:
+        return None, []
+
+    stmt = (
+        select(AnonymousPostComment)
+        .options(selectinload(AnonymousPostComment.web_user))
+        .where(AnonymousPostComment.post_id == post_id)
+        .order_by(AnonymousPostComment.id.asc())
+        .limit(300)
+    )
+    rows = list((await session.execute(stmt)).scalars().all())
+    return post, _serialize_anon_post_comments_thread(
+        post=post,
+        comments=rows,
+        current_user_id=current_user_id,
+        is_admin=is_admin,
+    )
+
+
+async def create_anon_post_comment(
+    session: AsyncSession,
+    post_id: int,
+    web_user_id: int,
+    content_text: str,
+    is_anonymous: bool = True,
+    reply_to_id: Optional[int] = None,
+) -> Tuple[Optional[AnonymousPublicPost], Optional[AnonymousPostComment], Optional[AnonymousPostComment]]:
+    """Create a comment on a visible anonymous post. Returns (post, new_comment, parent_comment_or_none)."""
+    post = (
+        await session.execute(
+            select(AnonymousPublicPost).where(
+                and_(
+                    AnonymousPublicPost.id == post_id,
+                    AnonymousPublicPost.is_hidden.is_(False),
+                )
+            )
+        )
+    ).scalar_one_or_none()
+    if not post:
+        return None, None, None
+
+    parent_comment: Optional[AnonymousPostComment] = None
+    clean_reply_id: Optional[int] = None
+    if reply_to_id:
+        parent_comment = (
+            await session.execute(
+                select(AnonymousPostComment).where(
+                    and_(
+                        AnonymousPostComment.id == int(reply_to_id),
+                        AnonymousPostComment.post_id == post_id,
+                    )
+                )
+            )
+        ).scalar_one_or_none()
+        if parent_comment:
+            clean_reply_id = parent_comment.id
+
+    comment = AnonymousPostComment(
+        post_id=post_id,
+        web_user_id=web_user_id,
+        reply_to_id=clean_reply_id,
+        content_text=content_text.strip()[:600],
+        is_anonymous=bool(is_anonymous),
+    )
+    session.add(comment)
+    await session.commit()
+    await session.refresh(comment)
+    return post, comment, parent_comment
+
+
+async def delete_anon_post_comment(
+    session: AsyncSession,
+    post_id: int,
+    comment_id: int,
+    web_user_id: int,
+    is_admin: bool = False,
+) -> Tuple[bool, Optional[str]]:
+    """Delete an anonymous post comment if the caller is the comment author or admin."""
+    stmt = select(AnonymousPostComment).where(
+        and_(
+            AnonymousPostComment.id == comment_id,
+            AnonymousPostComment.post_id == post_id,
+        )
+    )
+    comment = (await session.execute(stmt)).scalar_one_or_none()
+    if not comment:
+        return False, "not_found"
+    if not is_admin and int(comment.web_user_id) != int(web_user_id):
+        return False, "forbidden"
+
+    await session.delete(comment)
+    await session.commit()
+    return True, None
 
 
 async def report_anonymous_public_post(

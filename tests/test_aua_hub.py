@@ -3054,8 +3054,8 @@ class TestAuaHub(unittest.IsolatedAsyncioTestCase):
             self.assertIn('id="notificationsPopover"', html_body)
             self.assertIn('id="browserNotifToggle"', html_body)
             self.assertIn('onchange="handleBrowserNotifToggleChange(this)"', html_body)
-            self.assertIn("/static/styles.css?v=20261122_5", html_body)
-            self.assertIn("/static/app.js?v=20261122_5", html_body)
+            self.assertIn("/static/styles.css?v=20261127_1", html_body)
+            self.assertIn("/static/app.js?v=20261127_1", html_body)
 
             r_js = await client.get("/static/app.js")
             self.assertEqual(r_js.status, 200)
@@ -3070,8 +3070,140 @@ class TestAuaHub(unittest.IsolatedAsyncioTestCase):
             sw_body = await r_sw.text()
             self.assertIn('addEventListener("notificationclick"', sw_body)
             self.assertIn("AUA_HUB_OPEN_NOTIFICATION", sw_body)
-            self.assertIn("/static/styles.css?v=20261122_5", sw_body)
-            self.assertIn("/static/app.js?v=20261122_5", sw_body)
+            self.assertIn("/static/styles.css?v=20261127_1", sw_body)
+            self.assertIn("/static/app.js?v=20261127_1", sw_body)
+
+    async def test_anonymous_post_comments_anon_and_named_flow(self) -> None:
+        """Verify anonymous & named comments on Anonymous Posts, OP/Anon #N aliases, replies, privacy stripping, and deletion."""
+        from app.database.models import AnonymousPostComment, AnonymousPublicPost, User
+        from app.database.web_crud import create_anonymous_public_post
+        from app.web.server import create_web_app
+
+        reset_rate_limits()
+        uid_op = None
+        uid_other = None
+        post_id = None
+        tg_op_id = 9900112233
+
+        try:
+            async with get_db_session() as session:
+                await init_db()
+                tg_user = (await session.execute(select(User).where(User.id == tg_op_id))).scalar_one_or_none()
+                if not tg_user:
+                    session.add(User(id=tg_op_id, username="op_tg_student"))
+                    await session.commit()
+
+                u_op = WebUser(
+                    name="OP Student",
+                    email="anon_comment_op@edu.aua.am",
+                    password_hash="hash_op",
+                    telegram_user_id=tg_op_id,
+                )
+                u_other = WebUser(
+                    name="Second Commenter",
+                    email="anon_comment_other@edu.aua.am",
+                    password_hash="hash_other",
+                )
+                session.add_all([u_op, u_other])
+                await session.commit()
+                await session.refresh(u_op)
+                await session.refresh(u_other)
+                uid_op, uid_other = u_op.id, u_other.id
+
+                post = await create_anonymous_public_post(
+                    session=session,
+                    telegram_user_id=tg_op_id,
+                    content_text="Test anonymous post for inline Telegram-style comments!",
+                )
+                post_id = post.id
+
+            tok_op = create_jwt_token(uid_op, token_version=1)
+            tok_other = create_jwt_token(uid_other, token_version=1)
+            h_op = {"Authorization": f"Bearer {tok_op}"}
+            h_other = {"Authorization": f"Bearer {tok_other}"}
+
+            app = create_web_app()
+            async with TestClient(TestServer(app)) as client:
+                # 1. Unauthenticated caller cannot post a comment (401), can read comments (200)
+                r_unauth = await client.post(
+                    f"/api/anonymous/posts/{post_id}/comments",
+                    json={"content": "Guest comment", "is_anonymous": True},
+                )
+                self.assertEqual(r_unauth.status, 401)
+
+                # 2. Second user posts an anonymous comment -> gets 'Anon #1' and author_id is None
+                r_c1 = await client.post(
+                    f"/api/anonymous/posts/{post_id}/comments",
+                    headers=h_other,
+                    json={"content": "First anonymous comment!", "is_anonymous": True},
+                )
+                self.assertEqual(r_c1.status, 201)
+                c1_data = (await r_c1.json())["comment"]
+                self.assertTrue(c1_data["is_anonymous"])
+                self.assertIsNone(c1_data["author_id"])
+                self.assertEqual(c1_data["author_name"], "Anon #1")
+                self.assertFalse(c1_data["is_op"])
+
+                # 3. Post owner replies anonymously -> gets 'Author (OP)' badge
+                r_c2 = await client.post(
+                    f"/api/anonymous/posts/{post_id}/comments",
+                    headers=h_op,
+                    json={
+                        "content": "Thanks for commenting on my post!",
+                        "is_anonymous": True,
+                        "reply_to_id": c1_data["id"],
+                    },
+                )
+                self.assertEqual(r_c2.status, 201)
+                c2_data = (await r_c2.json())["comment"]
+                self.assertTrue(c2_data["is_anonymous"])
+                self.assertIsNone(c2_data["author_id"])
+                self.assertEqual(c2_data["author_name"], "Author (OP)")
+                self.assertTrue(c2_data["is_op"])
+                self.assertEqual(c2_data["reply_to"]["id"], c1_data["id"])
+                self.assertEqual(c2_data["reply_to"]["author_name"], "Anon #1")
+
+                # 4. Second user posts a NAMED comment -> exposes name & author_id
+                r_c3 = await client.post(
+                    f"/api/anonymous/posts/{post_id}/comments",
+                    headers=h_other,
+                    json={"content": "Here is my non-anonymous follow-up!", "is_anonymous": False},
+                )
+                self.assertEqual(r_c3.status, 201)
+                c3_data = (await r_c3.json())["comment"]
+                self.assertFalse(c3_data["is_anonymous"])
+                self.assertEqual(c3_data["author_id"], uid_other)
+                self.assertEqual(c3_data["author_name"], "Second Commenter")
+
+                # 5. Non-author cannot delete someone else's comment (403); author can delete their own (200)
+                r_del_forbidden = await client.delete(
+                    f"/api/anonymous/posts/{post_id}/comments/{c1_data['id']}",
+                    headers=h_op,
+                )
+                self.assertEqual(r_del_forbidden.status, 403)
+
+                r_del_ok = await client.delete(
+                    f"/api/anonymous/posts/{post_id}/comments/{c1_data['id']}",
+                    headers=h_other,
+                )
+                self.assertEqual(r_del_ok.status, 200)
+                self.assertEqual((await r_del_ok.json())["comment_count"], 2)
+        finally:
+            async with get_db_session() as session:
+                if post_id:
+                    await session.execute(
+                        delete(AnonymousPostComment).where(AnonymousPostComment.post_id == post_id)
+                    )
+                    await session.execute(
+                        delete(AnonymousPublicPost).where(AnonymousPublicPost.id == post_id)
+                    )
+                uids = [u for u in (uid_op, uid_other) if u is not None]
+                if uids:
+                    await session.execute(delete(UserNotification).where(UserNotification.recipient_id.in_(uids)))
+                    await session.execute(delete(WebUser).where(WebUser.id.in_(uids)))
+                await session.execute(delete(User).where(User.id == tg_op_id))
+                await session.commit()
+            reset_rate_limits()
 
     async def test_gpa_tracker_syllabus_cache_rate_limits_and_course_crud(self) -> None:
         """Verify GPA Tracker navbar placement, SyllabusCache hit/miss deduplication, rate limits, and user-scoped Course CRUD."""

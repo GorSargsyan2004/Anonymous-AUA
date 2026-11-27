@@ -62,6 +62,7 @@ from app.database.web_crud import (
     authenticate_web_user,
     check_web_email_cooldown,
     create_academic_feedback,
+    create_anon_post_comment,
     create_have_need_post,
     create_spam_chat_message,
     create_telegram_group,
@@ -70,6 +71,7 @@ from app.database.web_crud import (
     create_web_password_reset_otp,
     create_web_registration_otp,
     delete_academic_feedback,
+    delete_anon_post_comment,
     delete_have_need_post,
     delete_or_anonymize_web_user,
     delete_spam_chat_message,
@@ -79,6 +81,7 @@ from app.database.web_crud import (
     find_reciprocal_have_need_matches,
     generate_web_sync_code,
     get_active_semester_label,
+    get_anon_post_comment_counts,
     get_feedback_catalog,
     get_full_admin_stata_payload,
     get_message_reactions,
@@ -91,6 +94,7 @@ from app.database.web_crud import (
     get_web_user_by_email,
     get_web_user_by_id,
     list_academic_feedbacks,
+    list_anon_post_comments,
     list_anonymous_public_posts,
     list_have_need_posts,
     list_spam_chat_messages_for_user,
@@ -2623,7 +2627,9 @@ async def api_list_anonymous_posts(request: web.Request) -> web.Response:
 
     async with get_db_session() as session:
         posts, total = await list_anonymous_public_posts(session, search_query=q, page=page, per_page=per_page)
-        reported_ids = await get_reported_anon_post_ids(session, reporter_key, [p.id for p in posts])
+        post_ids = [p.id for p in posts]
+        reported_ids = await get_reported_anon_post_ids(session, reporter_key, post_ids)
+        comment_counts = await get_anon_post_comment_counts(session, post_ids)
 
     total_pages = max(1, (total + per_page - 1) // per_page)
     return web.json_response(
@@ -2634,6 +2640,7 @@ async def api_list_anonymous_posts(request: web.Request) -> web.Response:
                     "content_text": p.content_text,
                     "report_count": int(p.report_count or 0),
                     "reported_by_me": p.id in reported_ids,
+                    "comment_count": int(comment_counts.get(p.id, 0)),
                     "created_at": p.created_at.isoformat() if p.created_at else None,
                 }
                 for p in posts
@@ -2710,6 +2717,249 @@ async def api_report_anonymous_post(request: web.Request) -> web.Response:
             "report_count": int(res.get("report_count", 0)),
             "auto_hidden": bool(res.get("auto_hidden")),
             "threshold": ANON_POST_REPORT_HIDE_THRESHOLD,
+        }
+    )
+
+
+@routes.get("/api/anonymous/posts/{post_id:\\d+}/comments")
+async def api_list_anon_post_comments(request: web.Request) -> web.Response:
+    try:
+        post_id = int(request.match_info["post_id"])
+    except (KeyError, ValueError):
+        return web.json_response({"error": "Invalid post ID."}, status=400)
+
+    user = await get_current_web_user(request)
+    is_admin = bool(user and is_stata_admin(user))
+
+    async with get_db_session() as session:
+        post, comments = await list_anon_post_comments(
+            session=session,
+            post_id=post_id,
+            current_user_id=user.id if user else None,
+            is_admin=is_admin,
+        )
+
+    if not post:
+        return web.json_response({"error": "Anonymous post not found."}, status=404)
+
+    return web.json_response(
+        {
+            "ok": True,
+            "post_id": post_id,
+            "comment_count": len(comments),
+            "comments": comments,
+        }
+    )
+
+
+@routes.post("/api/anonymous/posts/{post_id:\\d+}/comments")
+async def api_create_anon_post_comment(request: web.Request) -> web.Response:
+    user = await get_current_web_user(request)
+    if not user:
+        return web.json_response({"error": "Please sign in to comment on anonymous posts."}, status=401)
+
+    try:
+        post_id = int(request.match_info["post_id"])
+    except (KeyError, ValueError):
+        return web.json_response({"error": "Invalid post ID."}, status=400)
+
+    allowed, retry = check_rate_limit("anon_post_comment", str(user.id), max_calls=12, window_sec=60)
+    if not allowed:
+        return web.json_response(
+            {"error": f"You are commenting too fast. Please wait {retry}s."},
+            status=429,
+        )
+
+    try:
+        data = await request.json()
+        if not isinstance(data, dict):
+            return web.json_response({"error": "Invalid JSON body."}, status=400)
+    except Exception:
+        return web.json_response({"error": "Invalid JSON body."}, status=400)
+
+    content = str(data.get("content") or "").strip()
+    if not content:
+        return web.json_response({"error": "Comment cannot be empty."}, status=400)
+    if len(content) > 600:
+        return web.json_response({"error": "Comment cannot exceed 600 characters."}, status=400)
+
+    for m_url in URL_REGEX.finditer(content):
+        url_cand = m_url.group(0)
+        safe_ok, reason = LinkShield.is_url_safe(url_cand)
+        if not safe_ok:
+            return web.json_response(
+                {"error": f"Blocked unsafe link in comment ({reason or 'unsafe URL'})."},
+                status=400,
+            )
+
+    is_anonymous = bool(data.get("is_anonymous", True))
+    raw_reply_to = data.get("reply_to_id")
+    reply_to_id: Optional[int] = None
+    if raw_reply_to is not None and str(raw_reply_to).strip() != "":
+        try:
+            reply_to_id = int(raw_reply_to)
+        except (TypeError, ValueError):
+            reply_to_id = None
+
+    is_admin = is_stata_admin(user)
+    notifs_to_broadcast: List[Dict[str, Any]] = []
+
+    async with get_db_session() as session:
+        post, new_comment, parent_comment = await create_anon_post_comment(
+            session=session,
+            post_id=post_id,
+            web_user_id=user.id,
+            content_text=content,
+            is_anonymous=is_anonymous,
+            reply_to_id=reply_to_id,
+        )
+        if not post or not new_comment:
+            return web.json_response({"error": "Anonymous post not found."}, status=404)
+
+        _, all_comments = await list_anon_post_comments(
+            session=session,
+            post_id=post_id,
+            current_user_id=user.id,
+            is_admin=is_admin,
+        )
+        created_serialized = next(
+            (c for c in all_comments if int(c["id"]) == int(new_comment.id)),
+            None,
+        )
+
+        sender_label = (
+            created_serialized["author_name"]
+            if created_serialized
+            else ("Anon" if is_anonymous else user.name)
+        )
+        notified_recipient_ids: Set[int] = {user.id}
+
+        if parent_comment and parent_comment.web_user_id not in notified_recipient_ids:
+            recip_id = int(parent_comment.web_user_id)
+            notified_recipient_ids.add(recip_id)
+            notif = await create_user_notification(
+                session=session,
+                recipient_id=recip_id,
+                sender_id=None if is_anonymous else user.id,
+                category="chat_reply",
+                title=f"{sender_label} replied on Post #{post_id}",
+                content=content[:100],
+                target_type="anon_post",
+                target_id=str(post_id),
+                extra_data={"post_id": post_id, "comment_id": new_comment.id},
+            )
+            unread_cnt = await get_unread_notification_count(session, recip_id)
+            notifs_to_broadcast.append(
+                {
+                    "type": "new_notification",
+                    "recipient_id": recip_id,
+                    "notification": serialize_user_notification(notif),
+                    "unread_count": unread_cnt,
+                }
+            )
+
+        if post.telegram_user_id is not None:
+            owner_web = (
+                await session.execute(
+                    select(WebUser).where(WebUser.telegram_user_id == post.telegram_user_id)
+                )
+            ).scalar_one_or_none()
+            if owner_web and owner_web.id not in notified_recipient_ids:
+                recip_id = int(owner_web.id)
+                notified_recipient_ids.add(recip_id)
+                notif = await create_user_notification(
+                    session=session,
+                    recipient_id=recip_id,
+                    sender_id=None if is_anonymous else user.id,
+                    category="chat_reply",
+                    title=f"New comment on your Anonymous Post #{post_id}",
+                    content=f"{sender_label}: {content[:85]}",
+                    target_type="anon_post",
+                    target_id=str(post_id),
+                    extra_data={"post_id": post_id, "comment_id": new_comment.id},
+                )
+                unread_cnt = await get_unread_notification_count(session, recip_id)
+                notifs_to_broadcast.append(
+                    {
+                        "type": "new_notification",
+                        "recipient_id": recip_id,
+                        "notification": serialize_user_notification(notif),
+                        "unread_count": unread_cnt,
+                    }
+                )
+
+    for n_ev in notifs_to_broadcast:
+        await broadcast_ws_event(n_ev)
+
+    if created_serialized:
+        public_ws_comment = dict(created_serialized)
+        public_ws_comment["is_mine"] = False
+        public_ws_comment["can_delete"] = False
+        await broadcast_ws_event(
+            {
+                "type": "anon_post_comment_new",
+                "post_id": post_id,
+                "comment_count": len(all_comments),
+                "comment": public_ws_comment,
+            }
+        )
+
+    return web.json_response(
+        {
+            "ok": True,
+            "post_id": post_id,
+            "comment_count": len(all_comments),
+            "comment": created_serialized,
+            "comments": all_comments,
+        },
+        status=201,
+    )
+
+
+@routes.delete("/api/anonymous/posts/{post_id:\\d+}/comments/{comment_id:\\d+}")
+async def api_delete_anon_post_comment(request: web.Request) -> web.Response:
+    user = await get_current_web_user(request)
+    if not user:
+        return web.json_response({"error": "Authentication required."}, status=401)
+
+    try:
+        post_id = int(request.match_info["post_id"])
+        comment_id = int(request.match_info["comment_id"])
+    except (KeyError, ValueError):
+        return web.json_response({"error": "Invalid post or comment ID."}, status=400)
+
+    is_admin = is_stata_admin(user)
+    async with get_db_session() as session:
+        ok, err_code = await delete_anon_post_comment(
+            session=session,
+            post_id=post_id,
+            comment_id=comment_id,
+            web_user_id=user.id,
+            is_admin=is_admin,
+        )
+        if not ok:
+            if err_code == "forbidden":
+                return web.json_response({"error": "You can only delete your own comments."}, status=403)
+            return web.json_response({"error": "Comment not found."}, status=404)
+
+        counts = await get_anon_post_comment_counts(session, [post_id])
+        remaining = int(counts.get(post_id, 0))
+
+    await broadcast_ws_event(
+        {
+            "type": "anon_post_comment_delete",
+            "post_id": post_id,
+            "comment_id": comment_id,
+            "comment_count": remaining,
+        }
+    )
+
+    return web.json_response(
+        {
+            "ok": True,
+            "post_id": post_id,
+            "deleted_id": comment_id,
+            "comment_count": remaining,
         }
     )
 
