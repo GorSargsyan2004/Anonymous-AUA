@@ -57,8 +57,8 @@ _PLACEHOLDER_SECRETS = {
     "changeme",
 }
 
-# Unambiguous 6-char CAPTCHA alphabet (excludes 0, O, 1, I, l)
-CAPTCHA_ALPHABET = "23456789ABCDEFGHJKLMNPQRSTUVWXYZ"
+# Unambiguous 6-char CAPTCHA alphabet (excludes 0, O, Q, D, 1, I, l, 8, B)
+CAPTCHA_ALPHABET = "2345679ACEFGHJKLMNPRSTUVWXYZ"
 CAPTCHA_LENGTH = 6
 CAPTCHA_TTL_SECONDS = 300
 
@@ -388,7 +388,7 @@ def render_captcha_png(text: str) -> bytes:
         line_color = rng.choice([(37, 99, 235), (56, 189, 248), (51, 65, 85)])
         draw.line([(x1, y1), (x2, y2)], fill=line_color, width=rng.randint(1, 2))
 
-    font = _load_captcha_font(28)
+    font = _load_captcha_font(30)
     palette = [
         (125, 211, 252),
         (96, 165, 250),
@@ -401,14 +401,14 @@ def render_captcha_png(text: str) -> bytes:
     start_x = 18
     step_x = 31
     for idx, ch in enumerate(text):
-        glyph_img = Image.new("RGBA", (44, 52), (0, 0, 0, 0))
+        glyph_img = Image.new("RGBA", (46, 56), (0, 0, 0, 0))
         g_draw = ImageDraw.Draw(glyph_img)
         color = rng.choice(palette)
         g_draw.text((8, 6), ch, font=font, fill=color)
-        angle = rng.randint(-20, 20)
+        angle = rng.randint(-12, 12)
         rotated = glyph_img.rotate(angle, resample=Image.BICUBIC, expand=False)
-        x_pos = start_x + idx * step_x + rng.randint(-3, 3)
-        y_pos = 10 + rng.randint(-5, 6)
+        x_pos = start_x + idx * step_x + rng.randint(-2, 2)
+        y_pos = 8 + rng.randint(-3, 4)
         img.paste(rotated, (x_pos, y_pos), rotated)
 
     # Apply subtle sine-wave horizontal/vertical distortion
@@ -417,28 +417,26 @@ def render_captcha_png(text: str) -> bytes:
     dst_pixels = warped.load()
     phase_x = rng.uniform(0, 2 * math.pi)
     phase_y = rng.uniform(0, 2 * math.pi)
-    amp_x = rng.uniform(1.8, 3.0)
-    amp_y = rng.uniform(1.2, 2.2)
+    amp_x = rng.uniform(0.9, 1.5)
+    amp_y = rng.uniform(0.6, 1.1)
 
     for y in range(height):
-        shift_x = int(amp_x * math.sin(2.0 * math.pi * y / 28.0 + phase_x))
+        shift_x = int(amp_x * math.sin(2.0 * math.pi * y / 32.0 + phase_x))
         for x in range(width):
-            shift_y = int(amp_y * math.cos(2.0 * math.pi * x / 36.0 + phase_y))
+            shift_y = int(amp_y * math.cos(2.0 * math.pi * x / 40.0 + phase_y))
             sx = (x + shift_x) % width
             sy = (y + shift_y) % height
             dst_pixels[x, y] = src_pixels[sx, sy]
 
-    # Foreground strike-through noise line
+    # Subtle foreground noise arc
     w_draw = ImageDraw.Draw(warped)
-    for _ in range(2):
-        pts = [
-            (rng.randint(8, 35), rng.randint(14, height - 14)),
-            (rng.randint(85, 135), rng.randint(14, height - 14)),
-            (rng.randint(175, width - 8), rng.randint(14, height - 14)),
-        ]
-        w_draw.line(pts, fill=(56, 189, 248), width=1)
+    pts = [
+        (rng.randint(8, 35), rng.randint(14, height - 14)),
+        (rng.randint(85, 135), rng.randint(14, height - 14)),
+        (rng.randint(175, width - 8), rng.randint(14, height - 14)),
+    ]
+    w_draw.line(pts, fill=(56, 189, 248), width=1)
 
-    warped = warped.filter(ImageFilter.SMOOTH)
     buf = io.BytesIO()
     warped.save(buf, format="PNG", optimize=True)
     return buf.getvalue()
@@ -804,9 +802,14 @@ def render_drop_page(
 
           <div class="captcha-box">
             <div class="captcha-image-col">
-              <div class="field-label">Security Check (Zero-JS)</div>
+              <div class="captcha-header-row">
+                <span class="field-label" style="margin-bottom:0;">Security Check (Zero-JS)</span>
+                <button type="submit" name="refresh_captcha" value="1" formnovalidate class="btn-refresh-captcha" title="Generate a new CAPTCHA image while keeping your typed post">
+                  &#8635; New Code
+                </button>
+              </div>
               <img src="{escaped_uri}" alt="6-character security challenge image" width="220" height="72" class="captcha-img" />
-              <div class="field-hint">Case-insensitive &bull; No 0/O or 1/I</div>
+              <div class="field-hint">Case-insensitive &bull; Excludes 0, O, Q, D, 1, I, 8, B</div>
             </div>
             <div class="captcha-input-col">
               <label for="captcha_answer" class="field-label">Enter 6-Character Code</label>
@@ -823,7 +826,7 @@ def render_drop_page(
                 placeholder="6-char code"
                 class="captcha-input"
               />
-              <div class="field-hint">Reload page if you need a different image.</div>
+              <div class="field-hint">Click &ldquo;&#8635; New Code&rdquo; anytime to get a fresh image without losing your text.</div>
             </div>
           </div>
 
@@ -1041,6 +1044,28 @@ def render_drop_page(
     }}
     .captcha-image-col {{
       flex: 0 0 auto;
+    }}
+    .captcha-header-row {{
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      margin-bottom: 7px;
+    }}
+    .btn-refresh-captcha {{
+      background: rgba(56, 189, 248, 0.12);
+      color: var(--accent-blue);
+      border: 1px solid rgba(56, 189, 248, 0.35);
+      border-radius: 6px;
+      padding: 3px 9px;
+      font-size: 12px;
+      font-weight: 700;
+      cursor: pointer;
+      font-family: inherit;
+    }}
+    .btn-refresh-captcha:hover {{
+      background: rgba(56, 189, 248, 0.22);
+      color: #ffffff;
     }}
     .captcha-input-col {{
       flex: 1 1 200px;
@@ -1266,6 +1291,7 @@ async def handle_drop_submit(request: web.Request) -> web.Response:
     raw_content = parsed_form.get("content", [""])[0] or ""
     challenge_token = (parsed_form.get("challenge_token", [""])[0] or "").strip()
     captcha_answer = (parsed_form.get("captcha_answer", [""])[0] or "").strip()
+    refresh_captcha = (parsed_form.get("refresh_captcha", [""])[0] or "").strip()
 
     # 2. Honeypot Check (reject without calling Gemini)
     if honeypot_val:
@@ -1280,8 +1306,26 @@ async def handle_drop_submit(request: web.Request) -> web.Response:
             status=400,
         )
 
-    # 3. Stateless CAPTCHA & Replay Check (preserve user text on failure)
+    # 2b. Zero-JS CAPTCHA Refresh Button ("↻ New Code" preserves typed text without error)
     preserved_clean = _INVISIBLE_AND_CONTROL_RE.sub("", raw_content)[:MAX_POST_LENGTH]
+    if refresh_captcha == "1":
+        # Mark old challenge nonce as spent if valid format
+        old_parts = challenge_token.split(".")
+        if len(old_parts) == 4 and re.fullmatch(r"[0-9a-f]{32}", old_parts[0]):
+            drop_state.mark_nonce_spent(old_parts[0])
+        _, new_token, new_uri = create_stateless_captcha()
+        return build_drop_html_response(
+            render_drop_page(
+                transport=transport,
+                captcha_data_uri=new_uri,
+                challenge_token=new_token,
+                preserved_text=preserved_clean,
+                error_message=None,
+            ),
+            status=200,
+        )
+
+    # 3. Stateless CAPTCHA & Replay Check (preserve user text on failure)
     captcha_ok, captcha_err = verify_stateless_captcha(challenge_token, captcha_answer)
     if not captcha_ok:
         _, new_token, new_uri = create_stateless_captcha()

@@ -187,7 +187,7 @@ class TestAnonymousDropService(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(len(ans), CAPTCHA_LENGTH)
             for ch in ans:
                 self.assertIn(ch, CAPTCHA_ALPHABET)
-                self.assertNotIn(ch, "0O1Il")
+                self.assertNotIn(ch, "0OQD1Il8B")
 
         # Valid solve (case-insensitive)
         ans, token, _ = create_stateless_captcha(custom_answer="K7M9P2")
@@ -230,6 +230,30 @@ class TestAnonymousDropService(unittest.IsolatedAsyncioTestCase):
         self.assertIn("&lt;script&gt;alert(&quot;xss&quot;)&lt;/script&gt;", body)
         self.assertNotIn('<script>alert("xss")</script>', body)
         self.assertNotIn("auahub.am", body.lower())
+
+        # Zero-JS "↻ New Code" button (`refresh_captcha=1`) generates a fresh CAPTCHA with HTTP 200 and no error banner while preserving draft text
+        _, token_ref, _ = create_stateless_captcha(custom_answer="A2C3E4")
+        resp_ref = await self.client.post(
+            "/_drop/submit",
+            data=urlencode({
+                "website": "",
+                "challenge_token": token_ref,
+                "captcha_answer": "",
+                "refresh_captcha": "1",
+                "content": user_draft,
+            }),
+            headers={
+                **self._proxy_headers("onion"),
+                "Content-Type": "application/x-www-form-urlencoded",
+            },
+        )
+        self.assertEqual(resp_ref.status, 200)
+        body_ref = await resp_ref.text()
+        self.assertNotIn("Submission Not Accepted:", body_ref)
+        self.assertIn("&lt;script&gt;alert(&quot;xss&quot;)&lt;/script&gt;", body_ref)
+        # Old token nonce must also be spent after refresh
+        ok_old, _ = verify_stateless_captcha(token_ref, "A2C3E4")
+        self.assertFalse(ok_old)
 
     async def test_honeypot_blocks_without_calling_gemini(self) -> None:
         """Filled honeypot (`website`) must reject immediately without invoking Gemini."""
