@@ -727,8 +727,9 @@ async def consume_sync_code_and_link_bot(
 
 async def create_anonymous_public_post(
     session: AsyncSession,
-    telegram_user_id: int,
+    telegram_user_id: Optional[int],
     content_text: str,
+    source: str = "telegram",
 ) -> AnonymousPublicPost:
     """Create a new strictly sequentially indexed anonymous post for the AUA Hub Anonymous -> Posts tab."""
     max_id_res = await session.execute(select(func.max(AnonymousPublicPost.id)))
@@ -738,6 +739,7 @@ async def create_anonymous_public_post(
     post = AnonymousPublicPost(
         id=next_id,
         telegram_user_id=telegram_user_id,
+        source=(source or "telegram")[:24],
         content_text=content_text.strip(),
     )
     session.add(post)

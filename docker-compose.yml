@@ -64,9 +64,51 @@ services:
       - TUNNEL_TOKEN=${CLOUDFLARE_TUNNEL_TOKEN}
     depends_on:
       - bot
+      - drop_proxy
+
+  drop_proxy:
+    build:
+      context: ./drop_proxy
+      dockerfile: Dockerfile
+    container_name: aua_drop_proxy
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp:mode=1777,size=16m
+    security_opt:
+      - no-new-privileges:true
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      - DROP_BACKEND_UPSTREAM=bot:8000
+      - DROP_INTERNAL_PROXY_SECRET=${DROP_INTERNAL_PROXY_SECRET:-}
+      - DROP_ONION_HOSTNAME=${DROP_ONION_HOSTNAME:-}
+    ports:
+      - "127.0.0.1:8088:8088"
+    depends_on:
+      - bot
+
+  tor_drop:
+    build:
+      context: ./tor
+      dockerfile: Dockerfile
+    container_name: aua_tor_drop
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp:mode=1777,size=16m
+    security_opt:
+      - no-new-privileges:true
+    volumes:
+      - tor_drop_data:/var/lib/tor
+    depends_on:
+      - drop_proxy
 
 volumes:
   postgres_data:
     name: aua_postgres_data
   telegram_api_data:
     name: aua_telegram_api_data
+  tor_drop_data:
+    name: aua_tor_drop_data

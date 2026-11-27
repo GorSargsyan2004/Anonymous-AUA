@@ -1,0 +1,24 @@
+# Hardened Tor v3 Hidden Service Configuration for AUA Hub Anonymous Drop
+SocksPort 0
+ORPort 0
+ControlPort 0
+ClientUseIPv6 0
+
+DataDirectory /var/lib/tor
+PidFile /tmp/tor.pid
+
+# Minimal startup notice log only — never log visitor circuits or requests
+Log notice stdout
+SafeLogging 1
+
+# Hidden Service Definition -> forwards virtual port 80 to internal drop_proxy:8089
+HiddenServiceDir /var/lib/tor/auahub_drop/
+HiddenServiceVersion 3
+HiddenServicePort 80 drop_proxy:8089
+
+# Introduction Point & Stream DoS Defenses
+HiddenServiceEnableIntroDoSDefense 1
+HiddenServiceEnableIntroDoSRatePerSec 25
+HiddenServiceEnableIntroDoSBurstPerSec 50
+HiddenServiceMaxStreams 50
+HiddenServiceMaxStreamsCloseCircuit 1

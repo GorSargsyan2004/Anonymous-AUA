@@ -71,4 +71,11 @@ implementation_plan.md
 uploads/
 syllabus_backups/
 
+# Tor Hidden Service Private Keys (Strictly Private)
+tor_keys/
+hidden_service/
+*hs_ed25519_secret_key*
+*hs_ed25519_public_key*
+
+
 

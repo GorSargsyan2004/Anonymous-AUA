@@ -152,6 +152,13 @@ from app.services.jenzareviews_sync import (
 )
 from app.services.link_shield import URL_REGEX, LinkShield
 from app.services.sonis_scraper import sync_courses_from_sonis
+from app.web.drop_service import (
+    drop_queue_publisher_worker,
+    handle_drop_healthz,
+    handle_drop_index,
+    handle_drop_submit,
+    verify_proxy_secret,
+)
 
 logger = logging.getLogger("aua_hub_web")
 
@@ -433,6 +440,12 @@ async def security_middleware(request: web.Request, handler: Callable) -> web.St
     raw_low = raw_path.lower()
     if ".." in raw_path or "/." in raw_path or "%2e" in raw_low or "%5c" in raw_low:
         return web.json_response({"error": "Forbidden path."}, status=403)
+
+    # Strict internal route isolation for /_drop/* (Zero-JS / Zero-Cookie Anonymous Dropbox)
+    if request.path.startswith("/_drop"):
+        if not verify_proxy_secret(request):
+            return web.Response(status=404, text="Not Found")
+        return await handler(request)
 
     if request.method in ("POST", "PUT", "DELETE", "PATCH"):
         origin = request.headers.get("Origin")
@@ -5598,6 +5611,26 @@ async def serve_service_worker(request: web.Request) -> web.FileResponse:
     )
 
 
+# ------------------------------------------------------------------------------
+# 10. Isolated Internal Anonymous Post Dropbox Routes (`/_drop/*`)
+# ------------------------------------------------------------------------------
+
+@routes.get("/_drop")
+@routes.get("/_drop/")
+async def route_drop_index(request: web.Request) -> web.Response:
+    return await handle_drop_index(request)
+
+
+@routes.post("/_drop/submit")
+async def route_drop_submit(request: web.Request) -> web.Response:
+    return await handle_drop_submit(request)
+
+
+@routes.get("/_drop/healthz")
+async def route_drop_healthz(request: web.Request) -> web.Response:
+    return await handle_drop_healthz(request)
+
+
 def create_web_app(bot: Any = None) -> web.Application:
     """Create and configure the AUA Hub aiohttp.web Application."""
     app = web.Application(
@@ -5624,11 +5657,12 @@ async def start_background_web_server(bot: Any = None, host: str = "0.0.0.0", po
     await site.start()
     logger.info("AUA Hub Web Server listening on http://%s:%d", host, listen_port)
 
-    # Trigger non-blocking background workers: course sync, free rooms pre-warmer, jenzareviews sync, and telemetry snapshotter
+    # Trigger non-blocking background workers: course sync, free rooms pre-warmer, jenzareviews sync, telemetry snapshotter, and anonymous drop queue publisher
     asyncio.create_task(_initial_course_warmup())
     asyncio.create_task(free_rooms_prewarm_worker())
     asyncio.create_task(jenzareviews_sync_worker())
     asyncio.create_task(bot_activity_snapshot_worker())
+    asyncio.create_task(drop_queue_publisher_worker())
     return runner
 
 

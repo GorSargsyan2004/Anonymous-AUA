@@ -1,0 +1,236 @@
+worker_processes auto;
+pid /tmp/nginx.pid;
+error_log /dev/null crit;
+
+events {
+    worker_connections 512;
+}
+
+http {
+    include       /etc/nginx/mime.types;
+    default_type  text/html;
+
+    access_log off;
+    error_log /dev/null crit;
+    server_tokens off;
+
+    client_body_temp_path /tmp/client_temp;
+    proxy_temp_path       /tmp/proxy_temp;
+    fastcgi_temp_path     /tmp/fastcgi_temp;
+    uwsgi_temp_path       /tmp/uwsgi_temp;
+    scgi_temp_path        /tmp/scgi_temp;
+
+    client_max_body_size 16k;
+    client_body_buffer_size 16k;
+    keepalive_timeout 15;
+    sendfile on;
+
+    # ==========================================================================
+    # Port 8088: Clearnet Cloudflare Tunnel Target (drop.auahub.am)
+    # ==========================================================================
+    server {
+        listen 8088;
+        server_name _;
+
+        access_log off;
+        error_log /dev/null crit;
+        server_tokens off;
+        client_max_body_size 16k;
+
+        location = / {
+            limit_except GET POST HEAD {
+                deny all;
+            }
+
+            add_header Content-Security-Policy "default-src 'none'; style-src 'unsafe-inline'; img-src data:; form-action 'self'; frame-ancestors 'none'; base-uri 'none';" always;
+            add_header X-Frame-Options "DENY" always;
+            add_header X-Content-Type-Options "nosniff" always;
+            add_header Referrer-Policy "no-referrer" always;
+            add_header Permissions-Policy "camera=(), microphone=(), geolocation=(), interest-cohort=()" always;
+            add_header Cache-Control "no-store, no-cache, must-revalidate" always;
+            add_header Strict-Transport-Security "max-age=31536000" always;
+            ${DROP_ONION_HEADER_LINE}
+
+            proxy_http_version 1.1;
+            proxy_set_header Connection "";
+            proxy_set_header Host "drop.local";
+            proxy_set_header Cookie "";
+            proxy_set_header Authorization "";
+            proxy_set_header Referer "";
+            proxy_set_header X-Forwarded-For "";
+            proxy_set_header X-Real-IP "";
+            proxy_set_header CF-Connecting-IP "";
+            proxy_set_header True-Client-IP "";
+            proxy_set_header CF-IPCountry "";
+            proxy_set_header CF-RAY "";
+            proxy_set_header User-Agent "anon-drop";
+            proxy_set_header X-Drop-Transport "clearnet";
+            proxy_set_header X-Drop-Proxy-Secret "${DROP_INTERNAL_PROXY_SECRET}";
+
+            proxy_hide_header Server;
+            proxy_hide_header Set-Cookie;
+            proxy_hide_header Content-Security-Policy;
+            proxy_hide_header X-Frame-Options;
+            proxy_hide_header X-Content-Type-Options;
+            proxy_hide_header Referrer-Policy;
+            proxy_hide_header Permissions-Policy;
+            proxy_hide_header Cache-Control;
+
+            proxy_pass http://${DROP_BACKEND_UPSTREAM}/_drop/;
+        }
+
+        location = /submit {
+            limit_except GET POST HEAD {
+                deny all;
+            }
+
+            add_header Content-Security-Policy "default-src 'none'; style-src 'unsafe-inline'; img-src data:; form-action 'self'; frame-ancestors 'none'; base-uri 'none';" always;
+            add_header X-Frame-Options "DENY" always;
+            add_header X-Content-Type-Options "nosniff" always;
+            add_header Referrer-Policy "no-referrer" always;
+            add_header Permissions-Policy "camera=(), microphone=(), geolocation=(), interest-cohort=()" always;
+            add_header Cache-Control "no-store, no-cache, must-revalidate" always;
+            add_header Strict-Transport-Security "max-age=31536000" always;
+            ${DROP_ONION_HEADER_LINE}
+
+            proxy_http_version 1.1;
+            proxy_set_header Connection "";
+            proxy_set_header Host "drop.local";
+            proxy_set_header Cookie "";
+            proxy_set_header Authorization "";
+            proxy_set_header Referer "";
+            proxy_set_header X-Forwarded-For "";
+            proxy_set_header X-Real-IP "";
+            proxy_set_header CF-Connecting-IP "";
+            proxy_set_header True-Client-IP "";
+            proxy_set_header CF-IPCountry "";
+            proxy_set_header CF-RAY "";
+            proxy_set_header User-Agent "anon-drop";
+            proxy_set_header X-Drop-Transport "clearnet";
+            proxy_set_header X-Drop-Proxy-Secret "${DROP_INTERNAL_PROXY_SECRET}";
+
+            proxy_hide_header Server;
+            proxy_hide_header Set-Cookie;
+            proxy_hide_header Content-Security-Policy;
+            proxy_hide_header X-Frame-Options;
+            proxy_hide_header X-Content-Type-Options;
+            proxy_hide_header Referrer-Policy;
+            proxy_hide_header Permissions-Policy;
+            proxy_hide_header Cache-Control;
+
+            proxy_pass http://${DROP_BACKEND_UPSTREAM}/_drop/submit;
+        }
+
+        location = /healthz {
+            limit_except GET HEAD {
+                deny all;
+            }
+
+            add_header Cache-Control "no-store, no-cache, must-revalidate" always;
+            proxy_set_header Cookie "";
+            proxy_set_header X-Drop-Proxy-Secret "${DROP_INTERNAL_PROXY_SECRET}";
+            proxy_pass http://${DROP_BACKEND_UPSTREAM}/_drop/healthz;
+        }
+
+        location / {
+            return 404;
+        }
+    }
+
+    # ==========================================================================
+    # Port 8089: Direct Tor v3 Hidden Service Target (.onion -> drop_proxy:8089)
+    # ==========================================================================
+    server {
+        listen 8089;
+        server_name _;
+
+        access_log off;
+        error_log /dev/null crit;
+        server_tokens off;
+        client_max_body_size 16k;
+
+        location = / {
+            limit_except GET POST HEAD {
+                deny all;
+            }
+
+            add_header Content-Security-Policy "default-src 'none'; style-src 'unsafe-inline'; img-src data:; form-action 'self'; frame-ancestors 'none'; base-uri 'none';" always;
+            add_header X-Frame-Options "DENY" always;
+            add_header X-Content-Type-Options "nosniff" always;
+            add_header Referrer-Policy "no-referrer" always;
+            add_header Permissions-Policy "camera=(), microphone=(), geolocation=(), interest-cohort=()" always;
+            add_header Cache-Control "no-store, no-cache, must-revalidate" always;
+
+            proxy_http_version 1.1;
+            proxy_set_header Connection "";
+            proxy_set_header Host "onion.local";
+            proxy_set_header Cookie "";
+            proxy_set_header Authorization "";
+            proxy_set_header Referer "";
+            proxy_set_header X-Forwarded-For "";
+            proxy_set_header X-Real-IP "";
+            proxy_set_header CF-Connecting-IP "";
+            proxy_set_header True-Client-IP "";
+            proxy_set_header CF-IPCountry "";
+            proxy_set_header CF-RAY "";
+            proxy_set_header User-Agent "anon-drop";
+            proxy_set_header X-Drop-Transport "onion";
+            proxy_set_header X-Drop-Proxy-Secret "${DROP_INTERNAL_PROXY_SECRET}";
+
+            proxy_hide_header Server;
+            proxy_hide_header Set-Cookie;
+            proxy_hide_header Content-Security-Policy;
+            proxy_hide_header X-Frame-Options;
+            proxy_hide_header X-Content-Type-Options;
+            proxy_hide_header Referrer-Policy;
+            proxy_hide_header Permissions-Policy;
+            proxy_hide_header Cache-Control;
+
+            proxy_pass http://${DROP_BACKEND_UPSTREAM}/_drop/;
+        }
+
+        location = /submit {
+            limit_except GET POST HEAD {
+                deny all;
+            }
+
+            add_header Content-Security-Policy "default-src 'none'; style-src 'unsafe-inline'; img-src data:; form-action 'self'; frame-ancestors 'none'; base-uri 'none';" always;
+            add_header X-Frame-Options "DENY" always;
+            add_header X-Content-Type-Options "nosniff" always;
+            add_header Referrer-Policy "no-referrer" always;
+            add_header Permissions-Policy "camera=(), microphone=(), geolocation=(), interest-cohort=()" always;
+            add_header Cache-Control "no-store, no-cache, must-revalidate" always;
+
+            proxy_http_version 1.1;
+            proxy_set_header Connection "";
+            proxy_set_header Host "onion.local";
+            proxy_set_header Cookie "";
+            proxy_set_header Authorization "";
+            proxy_set_header Referer "";
+            proxy_set_header X-Forwarded-For "";
+            proxy_set_header X-Real-IP "";
+            proxy_set_header CF-Connecting-IP "";
+            proxy_set_header True-Client-IP "";
+            proxy_set_header CF-IPCountry "";
+            proxy_set_header CF-RAY "";
+            proxy_set_header User-Agent "anon-drop";
+            proxy_set_header X-Drop-Transport "onion";
+            proxy_set_header X-Drop-Proxy-Secret "${DROP_INTERNAL_PROXY_SECRET}";
+
+            proxy_hide_header Server;
+            proxy_hide_header Set-Cookie;
+            proxy_hide_header Content-Security-Policy;
+            proxy_hide_header X-Frame-Options;
+            proxy_hide_header X-Content-Type-Options;
+            proxy_hide_header Referrer-Policy;
+            proxy_hide_header Permissions-Policy;
+            proxy_hide_header Cache-Control;
+
+            proxy_pass http://${DROP_BACKEND_UPSTREAM}/_drop/submit;
+        }
+
+        location / {
+            return 404;
+        }
+    }
+}

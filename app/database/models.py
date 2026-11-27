@@ -685,12 +685,15 @@ class HaveNeedPost(Base):
 
 
 class AnonymousPublicPost(Base):
-    """Stores indexed public anonymous posts created through @aua_anonymous_bot (/post)."""
+    """Stores indexed public anonymous posts created through @aua_anonymous_bot (/post) or drop.auahub.am."""
     __tablename__ = "anonymous_public_posts"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     telegram_user_id: Mapped[Optional[int]] = mapped_column(
         BigInteger, ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    source: Mapped[str] = mapped_column(
+        String(24), default="telegram", nullable=False, server_default=text("'telegram'")
     )
     content_text: Mapped[str] = mapped_column(Text, nullable=False)
     report_count: Mapped[int] = mapped_column(
@@ -704,6 +707,28 @@ class AnonymousPublicPost(Base):
     )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+class AnonymousDropQueue(Base):
+    """Anti-timing-correlation queue for pre-screened anonymous web/Tor dropbox posts.
+
+    Stores zero user, IP, header, or transport (clearnet/onion) metadata.
+    `created_at` is rounded down to the nearest 5-minute UTC bucket and rows are purged
+    immediately upon publication.
+    """
+    __tablename__ = "anonymous_drop_queue"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    publish_after: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, index=True
+    )
+    status: Mapped[str] = mapped_column(
+        String(16), default="queued", nullable=False, server_default=text("'queued'"), index=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
     )
 
 

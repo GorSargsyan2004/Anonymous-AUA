@@ -9235,6 +9235,29 @@ a,
   pointer-events: none;
 }
 
+.anon-web-drop-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 10px 15px;
+  font-size: 13.5px;
+  font-weight: 700;
+  color: var(--neon-blue-bright);
+  background: rgba(56, 189, 248, 0.09);
+  border: 1px solid rgba(56, 189, 248, 0.34);
+  border-radius: 10px;
+  text-decoration: none;
+  transition: all 0.18s ease;
+  white-space: nowrap;
+}
+
+.anon-web-drop-btn:hover {
+  background: rgba(56, 189, 248, 0.18);
+  border-color: rgba(56, 189, 248, 0.62);
+  color: #ffffff;
+  transform: translateY(-1px);
+}
+
 @media (max-width: 640px) {
   .anon-groups-grid {
     grid-template-columns: 1fr;

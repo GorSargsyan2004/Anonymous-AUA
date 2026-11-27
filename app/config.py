@@ -184,6 +184,20 @@ class Settings(BaseSettings):
         description="Periodic synchronization interval in seconds (default: 300s = 5 minutes)",
     )
 
+    # Hardened Anonymous Post Dropbox (drop.auahub.am & Tor v3 .onion Mirror)
+    DROP_CAPTCHA_SECRET: Optional[str] = Field(
+        default=None,
+        description="HMAC secret for stateless zero-JS CAPTCHA signing on drop.auahub.am",
+    )
+    DROP_INTERNAL_PROXY_SECRET: Optional[str] = Field(
+        default=None,
+        description="Shared secret between internal drop_proxy and Python backend /_drop/* routes",
+    )
+    DROP_ONION_HOSTNAME: Optional[str] = Field(
+        default=None,
+        description="Optional 56-char Tor v3 .onion hostname (e.g. xxxx...xxxx.onion) for Onion-Location and clearnet banner",
+    )
+
     @field_validator("ADMIN_IDS", mode="before")
     @classmethod
     def parse_admin_ids(cls, v: Any) -> List[int]:
