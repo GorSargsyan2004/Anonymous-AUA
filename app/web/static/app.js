@@ -2628,19 +2628,19 @@ function formatContactLink(dm) {
   ) {
     const url = clean.startsWith("http") ? clean : `https://${clean.replace(/^\/+/, "")}`;
     const label = lower.includes("start=chat_")
-      ? "🎭 Anonymous Chat (/invite) ↗"
-      : "🎭 Anonymous Inbox (/link) ↗";
-    return `<a href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer" class="btn-illuminated hn-anon-bot-btn" style="padding:7px 14px; font-size:12.5px;" title="Connect anonymously via @aua_anonymous_bot">${label}</a>`;
+      ? "🎭 Anonymous Chat ↗"
+      : "🎭 Anonymous Inbox ↗";
+    return `<a href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer" class="btn-illuminated hn-contact-btn hn-anon-bot-btn" title="Connect anonymously via @aua_anonymous_bot">${label}</a>`;
   }
   if (clean.startsWith("@")) {
     const handle = clean.slice(1);
-    return `<a href="https://t.me/${encodeURIComponent(handle)}" target="_blank" rel="noopener noreferrer" class="btn-illuminated" style="padding:7px 14px; font-size:12.5px;">DM ${escapeHtml(clean)}</a>`;
+    return `<a href="https://t.me/${encodeURIComponent(handle)}" target="_blank" rel="noopener noreferrer" class="btn-illuminated hn-contact-btn">💬 DM ${escapeHtml(clean)}</a>`;
   }
   if (clean.startsWith("https://t.me/") || clean.startsWith("http://t.me/") || clean.startsWith("t.me/")) {
     const url = clean.startsWith("http") ? clean : `https://${clean}`;
-    return `<a href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer" class="btn-illuminated" style="padding:7px 14px; font-size:12.5px;">Contact on Telegram</a>`;
+    return `<a href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer" class="btn-illuminated hn-contact-btn">💬 Contact on Telegram ↗</a>`;
   }
-  return `<span class="semester-pill" style="font-size:12px;">${escapeHtml(clean)}</span>`;
+  return `<span class="semester-pill hn-contact-pill">${escapeHtml(clean)}</span>`;
 }
 
 function renderHaveNeedPosts() {
@@ -2700,44 +2700,44 @@ function renderHaveNeedPosts() {
         : renderAvatarCircleHtml(authorObj, "user-avatar-md", true);
 
       const authorTitleHtml = isAnon
-        ? `
-          <div style="display:flex; align-items:center; gap:7px; flex-wrap:wrap;">
-            <span class="hn-author-name hn-author-anon">Anonymous Student</span>
-            <span class="anon-comment-anon-pill">🎭 Anonymous</span>
-            ${p.is_owner ? `<span class="anon-comment-you-tag">(Your Listing)</span>` : ""}
-          </div>
-        `
-        : `<div>${renderClickableUserNameHtml(authorObj, "hn-author-name")}</div>`;
+        ? `<div class="hn-card-author-title"><span class="hn-author-name hn-author-anon">Anonymous Student</span></div>`
+        : `<div class="hn-card-author-title">${renderClickableUserNameHtml(authorObj, "hn-author-name")}</div>`;
+
+      const authorSubBadgesHtml = `
+        ${isAnon ? `<span class="hn-meta-pill hn-meta-pill-anon">🎭 Anonymous</span>` : ""}
+        ${p.is_owner ? `<span class="hn-meta-pill hn-meta-pill-owner">Your Listing</span>` : ""}
+      `;
 
       const ownerControls = p.is_owner
         ? `
-          <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
-            <label class="hn-card-email-pill ${emailEnabled ? "active" : ""}" title="Receive an email when another student matches this course swap">
-              <input
-                type="checkbox"
-                ${emailEnabled ? "checked" : ""}
-                onchange="toggleHaveNeedEmailAlert(${p.id}, this.checked)"
-              />
-              <span>📧 Email if matched</span>
-            </label>
-            <button class="btn-glass" style="padding:6px 12px; font-size:12px;" onclick="startEditHaveNeed(${p.id})">✏️ Edit</button>
-            <button class="btn-danger-glass" onclick="deleteHaveNeed(${p.id})">🗑️ Remove</button>
-          </div>
+          <label class="hn-card-email-pill ${emailEnabled ? "active" : ""}" title="Receive an email when another student matches this course swap">
+            <input
+              type="checkbox"
+              ${emailEnabled ? "checked" : ""}
+              onchange="toggleHaveNeedEmailAlert(${p.id}, this.checked)"
+            />
+            <span>📧 Email if matched</span>
+          </label>
+          <button class="btn-glass hn-owner-btn" onclick="startEditHaveNeed(${p.id})">✏️ Edit</button>
+          <button class="btn-danger-glass hn-owner-btn" onclick="deleteHaveNeed(${p.id})">🗑️ Remove</button>
         `
         : "";
 
       return `
         <div class="glass-card" id="hn-post-${p.id}" data-hn-post-id="${p.id}">
           ${matchBannerHtml}
-          <div style="display:flex; align-items:center; justify-content:space-between; gap:10px; flex-wrap:wrap;">
-            <div style="display:flex; align-items:center; gap:12px;">
+          <div class="hn-card-header">
+            <div class="hn-card-author">
               ${authorAvatarHtml}
-              <div>
+              <div class="hn-card-author-meta">
                 ${authorTitleHtml}
-                <div style="font-size:11.5px; color:var(--text-secondary); margin-top:1px;">${formatDateTime(p.created_at)}</div>
+                <div class="hn-card-author-sub">
+                  <span>${formatDateTime(p.created_at)}</span>
+                  ${authorSubBadgesHtml}
+                </div>
               </div>
             </div>
-            <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
+            <div class="hn-card-actions">
               ${formatContactLink(p.contact_dm)}
               ${ownerControls}
             </div>
