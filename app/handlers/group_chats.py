@@ -8,7 +8,8 @@ from aiogram import Bot, F, Router
 from aiogram.exceptions import TelegramAPIError
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
-from aiogram.types import CallbackQuery, Message
+from aiogram.types import CallbackQuery, InlineKeyboardMarkup, Message
+from aiogram.utils.keyboard import InlineKeyboardBuilder
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database.crud import (
@@ -220,6 +221,202 @@ async def handle_groups_command(message: Message, state: FSMContext) -> None:
         text, kb = await render_group_browser_for_user(session, user, page=1)
 
     await message.answer(text, reply_markup=kb, parse_mode="HTML")
+
+
+def _get_browse_active_groups_keyboard(label: str = "👥 Browse Active Groups") -> InlineKeyboardMarkup:
+    """Return a single-button inline keyboard that opens page 1 of the group browser."""
+    builder = InlineKeyboardBuilder()
+    builder.button(text=label, callback_data="grp_page:1")
+    builder.adjust(1)
+    return builder.as_markup()
+
+
+async def handle_group_deeplink(
+    message: Message,
+    raw_group_id: str,
+    state: FSMContext,
+    bot: Bot,
+) -> None:
+    """Handle /start group_<id> deep-link join flow from auahub.am."""
+    await state.clear()
+    cleaned_id = (raw_group_id or "").strip()
+    if not cleaned_id.isdigit() or int(cleaned_id) <= 0:
+        await message.answer(
+            "⚠️ <b>Invalid Group Link</b>\n\n"
+            "This group chat link is invalid or has expired.",
+            reply_markup=_get_browse_active_groups_keyboard("Browse Active Groups"),
+            parse_mode="HTML",
+        )
+        return
+
+    group_id = int(cleaned_id)
+    user_id = message.from_user.id
+    username = message.from_user.username
+
+    async with get_db_session() as session:
+        user = await get_or_create_user(session, user_id=user_id, username=username)
+
+        # 1. Bot Ban Check
+        if getattr(user, "is_banned", False):
+            await message.answer(
+                "🚫 <b>Access Denied</b>\n\n"
+                "You have been banned from using Anonymous AUA.",
+                parse_mode="HTML",
+            )
+            return
+
+        # Look up GroupChat by id
+        group = await get_group_chat_by_id(session, group_id)
+        if not group or not group.is_active:
+            await message.answer(
+                "⚠️ <b>Group Chat Closed or Not Found</b>\n\n"
+                "This anonymous group chat has closed or no longer exists.",
+                reply_markup=_get_browse_active_groups_keyboard("Browse Active Groups"),
+                parse_mode="HTML",
+            )
+            return
+
+        safe_group_name = html.escape(group.name)
+
+        # 2. Already in This Group
+        active_group_res = await get_user_active_group_member(session, user_id)
+        if active_group_res is not None:
+            active_member, active_group = active_group_res
+            if active_group.id == group.id:
+                await message.answer(
+                    f'💬 You are already in "<b>{safe_group_name}</b>" as <b>{html.escape(active_member.nickname)}</b>. '
+                    "Just send a message to chat!",
+                    parse_mode="HTML",
+                )
+                return
+
+            # 3. Session Exclusivity (different group chat)
+            await message.answer(
+                f'⚠️ <b>Already in Another Group Chat</b>\n\n'
+                f'You are currently in "<b>{html.escape(active_group.name)}</b>". '
+                f'Please send /leave (or /stop) to exit your current group before joining "<b>{safe_group_name}</b>".',
+                parse_mode="HTML",
+            )
+            return
+
+        # 3b. Session Exclusivity (1-on-1 chat or /search queue)
+        if user.current_partner_id is not None or user.is_searching:
+            await message.answer(
+                "⚠️ <b>Active 1-on-1 Session Detected</b>\n\n"
+                f'You are currently in a 1-on-1 chat or search queue. '
+                f'Please send /stop first before joining "<b>{safe_group_name}</b>".',
+                parse_mode="HTML",
+            )
+            return
+
+        # 4. Group Ban Check
+        if await is_user_banned_from_group(session, group.id, user_id):
+            await message.answer(
+                "⚠️ <b>Unable to Join Group</b>\n\n"
+                "You are not able to join this group chat.",
+                reply_markup=_get_browse_active_groups_keyboard("Browse Active Groups"),
+                parse_mode="HTML",
+            )
+            return
+
+        # 5. Profile / Registration Check
+        if not user.sex or not user.orientation:
+            await state.update_data(pending_group_id=group.id)
+            await message.answer(
+                "⚠️ <b>Profile Setup Required</b>\n\n"
+                f'Before joining "<b>{safe_group_name}</b>", please complete your basic profile setup (sex and orientation).\n'
+                "Send /start to set up your profile, then tap the group link again!",
+                parse_mode="HTML",
+            )
+            return
+
+        # 6. Capacity Check
+        current_count = await count_active_group_members(session, group.id)
+        if current_count >= group.max_participants:
+            await message.answer(
+                f"🔒 <b>Group Full ({current_count}/{group.max_participants})</b>\n\n"
+                f'The group "<b>{safe_group_name}</b>" is currently full.',
+                reply_markup=_get_browse_active_groups_keyboard("Browse Active Groups"),
+                parse_mode="HTML",
+            )
+            return
+
+        # 7. Eligibility / Limitation Checks (verified_only, allowed_gender, allowed_orientation)
+        eligible, reason = is_user_eligible_for_group(user, group)
+        if not eligible:
+            await message.answer(
+                f"🔒 <b>Cannot Join {safe_group_name}</b>\n\n"
+                f"{html.escape(reason)}\n"
+                "You don't match this group's preferences.",
+                reply_markup=_get_browse_active_groups_keyboard("Browse Eligible Groups"),
+                parse_mode="HTML",
+            )
+            return
+
+        # 8. Passed all checks! Attempt atomic join (auto-restores sticky nickname if returning member)
+        joined_group, member, new_count, status_or_err = await join_group_chat_atomic(
+            session=session,
+            user=user,
+            group_id=group.id,
+            requested_nickname=None,
+        )
+
+        if status_or_err == "needs_nickname" and joined_group:
+            taken_lower = await get_all_taken_nicknames_in_group(session, group.id)
+            random_nick = generate_unique_random_nickname(taken_lower)
+            await state.set_state(GroupChatJoinState.waiting_for_nickname)
+            await state.update_data(
+                join_group_id=group.id,
+                join_back_page=1,
+                suggested_random_nickname=random_nick,
+            )
+
+            desc_line = (
+                f"📝 <b>Description:</b> {html.escape(group.description.strip())}\n"
+                if (group.description and group.description.strip())
+                else ""
+            )
+            prompt_html = (
+                f"👥 <b>Joining: {safe_group_name} ({current_count}/{group.max_participants})</b>\n"
+                f"{desc_line}\n"
+                "🎭 <b>Choose Your Nickname</b>\n"
+                "Type a custom nickname (2–20 characters: letters, numbers, spaces, <code>_</code>, <code>-</code>) "
+                "or tap the button below to use a random nickname:\n\n"
+                "🔒 <i>Your nickname is sticky in this group and will be remembered if you leave and rejoin.</i>"
+            )
+            kb = get_group_nickname_keyboard(
+                random_nickname=random_nick,
+                cancel_callback=f"grp_view:{group.id}:1",
+            )
+            await message.answer(prompt_html, reply_markup=kb, parse_mode="HTML")
+            return
+
+        if status_or_err or not joined_group or not member:
+            await message.answer(
+                f"⚠️ <b>Could not join group:</b> {html.escape(status_or_err or 'Group unavailable.')}",
+                reply_markup=_get_browse_active_groups_keyboard("Browse Active Groups"),
+                parse_mode="HTML",
+            )
+            return
+
+        # Sticky nickname was automatically restored!
+        safe_nick = html.escape(member.nickname)
+        join_broadcast = f"🎭 <b>{safe_nick}</b> joined the group ({new_count}/{joined_group.max_participants})"
+        await broadcast_group_system_message(
+            bot=bot,
+            session=session,
+            group_id=joined_group.id,
+            html_text=join_broadcast,
+            exclude_user_id=user_id,
+        )
+
+    welcome_html = _build_in_group_welcome_text(
+        joined_group,
+        member.nickname,
+        current_count=new_count,
+        is_creator=False,
+    )
+    await message.answer(welcome_html, parse_mode="HTML")
 
 
 @router.callback_query(F.data == "search_open_groups")

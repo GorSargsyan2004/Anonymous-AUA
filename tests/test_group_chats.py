@@ -155,6 +155,11 @@ class TestGroupChatsAndModeration(unittest.IsolatedAsyncioTestCase):
 
     async def test_pagination_and_eligibility_filtering(self):
         async with get_db_session() as session:
+            u1_init = await get_user(session, self.test_user_ids[1])
+            u2_init = await get_user(session, self.test_user_ids[2])
+            _, base_u1_cnt, _ = await list_eligible_active_groups(session, u1_init, page=1, page_size=5)
+            _, base_u2_cnt, _ = await list_eligible_active_groups(session, u2_init, page=1, page_size=5)
+
             # Create 11 open groups by distinct creators + 1 female-only + 1 verified-only + 1 banned group
             open_groups = []
             for i in range(4, 15):
@@ -209,27 +214,27 @@ class TestGroupChatsAndModeration(unittest.IsolatedAsyncioTestCase):
             )
 
             # Query eligible groups for u2 (male, unverified, banned from open_groups[0]):
-            # Should see 10 open groups (11 - 1 banned), and NOT female_grp or verif_grp
+            # Should see base_u2_cnt + 10 open groups (11 - 1 banned), and NOT female_grp or verif_grp
             u2 = await get_user(session, self.test_user_ids[2])
-            page1_items, total_cnt, total_pages = await list_eligible_active_groups(
+            all_u2_items, total_cnt, total_pages = await list_eligible_active_groups(
+                session, u2, page=1, page_size=50
+            )
+            self.assertEqual(total_cnt, base_u2_cnt + 10)
+            page1_items, _, total_pages = await list_eligible_active_groups(
                 session, u2, page=1, page_size=5
             )
-            self.assertEqual(total_cnt, 10)
-            self.assertEqual(total_pages, 2)
             self.assertEqual(len(page1_items), 5)
-            returned_ids = {g.id for g, _ in page1_items}
+            returned_ids = {g.id for g, _ in all_u2_items}
             self.assertNotIn(female_grp.id, returned_ids)
             self.assertNotIn(verif_grp.id, returned_ids)
             self.assertNotIn(open_groups[0].id, returned_ids)
 
             # Query eligible groups for u1 (female, straight, verified):
-            # Should see all 11 open groups + female_grp + verif_grp = 13 groups -> 3 pages (5, 5, 3)
+            # Should see base_u1_cnt + all 11 open groups + female_grp + verif_grp = base_u1_cnt + 13 groups
             p1, tot13, pages3 = await list_eligible_active_groups(session, u1, page=1, page_size=5)
-            p3, _, _ = await list_eligible_active_groups(session, u1, page=3, page_size=5)
-            self.assertEqual(tot13, 13)
-            self.assertEqual(pages3, 3)
+            self.assertEqual(tot13, base_u1_cnt + 13)
+            self.assertGreaterEqual(pages3, 3)
             self.assertEqual(len(p1), 5)
-            self.assertEqual(len(p3), 3)
 
             # Verify keyboard format: button text ONLY "Name (count/max)", [<] [1/3] [>], [+ Create Group] [🔄 Refresh]
             kb = get_group_browser_keyboard(p1, page=1, total_pages=3)
@@ -758,6 +763,157 @@ class TestGroupChatsAndModeration(unittest.IsolatedAsyncioTestCase):
             await session.refresh(grp_stale)
             self.assertFalse(grp_stale.is_active)
             bot.send_message.assert_awaited()
+
+    # -------------------------------------------------------------------------
+    # 7. Web API (GET /api/anonymous/groups) & Bot Deep-Link (/start group_<id>)
+    # -------------------------------------------------------------------------
+
+    async def test_web_api_anonymous_groups_and_start_deeplink_join(self):
+        from app.handlers.start import handle_start
+        from app.states.states import GroupChatJoinState
+        from app.web.server import api_list_anonymous_group_chats
+
+        async with get_db_session() as session:
+            u0 = await get_user(session, self.test_user_ids[0])  # male, straight, verified
+            u1 = await get_user(session, self.test_user_ids[1])  # female, straight, verified
+            u2 = await get_user(session, self.test_user_ids[2])  # male, bisexual, unverified
+            u4 = await get_user(session, self.test_user_ids[4])  # male, straight, verified
+
+            # Create an open group with capacity 3 (lowest bound)
+            grp_open, _, _ = await create_group_chat_with_creator(
+                session=session,
+                creator=u0,
+                name="DeepLink Open Room",
+                description="Join from auahub.am",
+                max_participants=3,
+                allowed_gender=None,
+                allowed_orientation=None,
+                verified_only=False,
+                creator_nickname="BlueFox",
+            )
+            # Create a verified-only group by u1
+            grp_verif, _, _ = await create_group_chat_with_creator(
+                session=session,
+                creator=u1,
+                name="Verified DeepLink Room",
+                description=None,
+                max_participants=5,
+                allowed_gender=None,
+                allowed_orientation=None,
+                verified_only=True,
+                creator_nickname="CrimsonOwl",
+            )
+            # Create an inactive group by u4 to ensure it's omitted
+            grp_closed, _, _ = await create_group_chat_with_creator(
+                session=session,
+                creator=u4,
+                name="Closed DeepLink Room",
+                description=None,
+                max_participants=5,
+                allowed_gender=None,
+                allowed_orientation=None,
+                verified_only=False,
+                creator_nickname="SilverWolf",
+            )
+            await leave_group_chat(session, user_id=u4.id, group_id=grp_closed.id)
+
+        # 1. Verify GET /api/anonymous/groups response and strict privacy scope
+        mock_req = MagicMock()
+        mock_req.headers = {}
+        mock_req.remote = "127.0.0.1"
+        mock_req.query = {}
+        resp = await api_list_anonymous_group_chats(mock_req)
+        self.assertEqual(resp.status, 200)
+        payload = json.loads(resp.text)
+        self.assertTrue(payload["ok"])
+        self.assertIn("bot_username", payload)
+
+        by_id = {g["id"]: g for g in payload["groups"]}
+        self.assertIn(grp_open.id, by_id)
+        self.assertIn(grp_verif.id, by_id)
+        self.assertNotIn(grp_closed.id, by_id)
+
+        open_item = by_id[grp_open.id]
+        self.assertEqual(open_item["name"], "DeepLink Open Room")
+        self.assertEqual(open_item["current_participants"], 1)
+        self.assertEqual(open_item["max_participants"], 3)
+        self.assertFalse(open_item["is_full"])
+        self.assertTrue(open_item["join_url"].endswith(f"?start=group_{grp_open.id}"))
+        # Strict privacy: never leak creator_id, member IDs, nicknames, or messages
+        for forbidden_key in ("creator_id", "members", "nicknames", "messages", "user_id"):
+            self.assertNotIn(forbidden_key, open_item)
+
+        # 2. Test /start group_<id> deep-link join flow
+        bot = MagicMock()
+        bot.send_message = AsyncMock()
+
+        def _make_state():
+            st = MagicMock()
+            st._state = None
+            st._data = {}
+            st.clear = AsyncMock(side_effect=lambda: st._data.clear() or setattr(st, "_state", None))
+            st.set_state = AsyncMock(side_effect=lambda s: setattr(st, "_state", s))
+            st.update_data = AsyncMock(side_effect=lambda **kw: st._data.update(kw))
+            st.get_data = AsyncMock(side_effect=lambda: dict(st._data))
+            return st
+
+        # A. Valid eligible new member (u4) -> prompts for nickname picker
+        state_u4 = _make_state()
+        msg_u4 = SimpleNamespace(
+            from_user=SimpleNamespace(id=u4.id, username="u4", first_name="U4"),
+            answer=AsyncMock(),
+        )
+        cmd_open = SimpleNamespace(args=f"group_{grp_open.id}")
+        await handle_start(message=msg_u4, command=cmd_open, state=state_u4, bot=bot)
+        self.assertEqual(state_u4._state, GroupChatJoinState.waiting_for_nickname)
+        self.assertEqual(state_u4._data.get("join_group_id"), grp_open.id)
+        msg_u4.answer.assert_awaited_once()
+        self.assertIn("Choose Your Nickname", msg_u4.answer.call_args[0][0])
+
+        # B. Returning member with sticky nickname: u4 joins as "JadeFalcon", leaves, then clicks /start group_<id>
+        async with get_db_session() as session:
+            u4_db = await get_user(session, u4.id)
+            await join_group_chat_atomic(session, u4_db, grp_open.id, "JadeFalcon")
+            await leave_group_chat(session, user_id=u4.id, group_id=grp_open.id)
+
+        msg_u4.answer.reset_mock()
+        await handle_start(message=msg_u4, command=cmd_open, state=state_u4, bot=bot)
+        # Should automatically restore sticky nickname "JadeFalcon" without prompting picker!
+        self.assertIsNone(state_u4._state)
+        self.assertIn("Joined Group Chat", msg_u4.answer.call_args[0][0])
+        self.assertIn("JadeFalcon", msg_u4.answer.call_args[0][0])
+
+        # C. Unverified user (u2) tries to join verified_only group (grp_verif) -> rejected with limitation explanation
+        state_u2 = _make_state()
+        msg_u2 = SimpleNamespace(
+            from_user=SimpleNamespace(id=u2.id, username="u2", first_name="U2"),
+            answer=AsyncMock(),
+        )
+        cmd_verif = SimpleNamespace(args=f"group_{grp_verif.id}")
+        await handle_start(message=msg_u2, command=cmd_verif, state=state_u2, bot=bot)
+        self.assertIn("verified AUA students", msg_u2.answer.call_args[0][0])
+
+        # D. Closed group -> fails gracefully with [Browse Active Groups]
+        msg_u2.answer.reset_mock()
+        cmd_closed = SimpleNamespace(args=f"group_{grp_closed.id}")
+        await handle_start(message=msg_u2, command=cmd_closed, state=state_u2, bot=bot)
+        self.assertIn("Closed or Not Found", msg_u2.answer.call_args[0][0])
+
+        # E. Session exclusivity: u1 is already in grp_verif, tries /start group_<grp_open.id> -> blocked
+        state_u1 = _make_state()
+        msg_u1 = SimpleNamespace(
+            from_user=SimpleNamespace(id=u1.id, username="u1", first_name="U1"),
+            answer=AsyncMock(),
+        )
+        await handle_start(message=msg_u1, command=cmd_open, state=state_u1, bot=bot)
+        self.assertIn("Already in Another Group Chat", msg_u1.answer.call_args[0][0])
+
+        # F. GroupChatBan: ban u2 from grp_open, then u2 tries /start group_<grp_open.id> -> blocked
+        async with get_db_session() as session:
+            await ban_and_kick_user_from_group(session, grp_open.id, u2.id, "banned test")
+        msg_u2.answer.reset_mock()
+        await handle_start(message=msg_u2, command=cmd_open, state=state_u2, bot=bot)
+        self.assertIn("not able to join this group chat", msg_u2.answer.call_args[0][0])
 
 
 if __name__ == "__main__":

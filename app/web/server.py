@@ -99,6 +99,7 @@ from app.database.web_crud import (
     list_anon_post_comments,
     list_anonymous_public_posts,
     list_have_need_posts,
+    list_public_anonymous_group_chats,
     list_spam_chat_messages_for_user,
     list_telegram_groups,
     list_user_courses,
@@ -2654,6 +2655,53 @@ async def api_delete_have_need(request: web.Request) -> web.Response:
 # ------------------------------------------------------------------------------
 # 4. Anonymous Public Posts & Synced Bot Inbox (<Anonymous>)
 # ------------------------------------------------------------------------------
+
+@routes.get("/api/anonymous/groups")
+async def api_list_anonymous_group_chats(request: web.Request) -> web.Response:
+    """Return active Telegram bot Anonymous Group Chats with safe public metadata and deep-link join URLs."""
+    client_ip = get_client_ip(request)
+    allowed, retry = check_rate_limit("anon_groups_read", client_ip, max_calls=90, window_sec=60)
+    if not allowed:
+        return web.json_response({"error": f"Rate limit reached. Please wait {retry}s."}, status=429)
+
+    q = (request.query.get("q") or "").strip()[:100]
+    open_only = (request.query.get("open_only") or "").strip().lower() in ("1", "true", "yes")
+    bot_username = getattr(settings, "BOT_USERNAME", None) or "aua_anonymous_bot"
+
+    async with get_db_session() as session:
+        rows = await list_public_anonymous_group_chats(
+            session=session,
+            search_query=q,
+            open_only=open_only,
+        )
+
+    groups_payload = []
+    for grp, active_count in rows:
+        is_full = active_count >= grp.max_participants
+        groups_payload.append(
+            {
+                "id": grp.id,
+                "name": grp.name,
+                "description": grp.description if (grp.description and grp.description.strip()) else None,
+                "current_participants": active_count,
+                "max_participants": grp.max_participants,
+                "is_full": is_full,
+                "allowed_gender": grp.allowed_gender,
+                "allowed_orientation": grp.allowed_orientation,
+                "verified_only": bool(grp.verified_only),
+                "last_activity_at": grp.last_activity_at.isoformat() if grp.last_activity_at else None,
+                "join_url": f"https://t.me/{bot_username}?start=group_{grp.id}",
+            }
+        )
+
+    return web.json_response(
+        {
+            "ok": True,
+            "bot_username": bot_username,
+            "groups": groups_payload,
+        }
+    )
+
 
 @routes.get("/api/anonymous/posts")
 async def api_list_anonymous_posts(request: web.Request) -> web.Response:

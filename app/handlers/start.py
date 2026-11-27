@@ -70,6 +70,17 @@ async def handle_start(
             code = args[5:]
             await execute_sync_flow(message=message, code=code, state=state, bot=bot)
             return
+        elif args.startswith("group_") or args.startswith("group-"):
+            from app.handlers.group_chats import handle_group_deeplink
+
+            raw_group_id = args[6:]
+            await handle_group_deeplink(message=message, raw_group_id=raw_group_id, state=state, bot=bot)
+            return
+        elif args in ("groups", "rooms", "groups_create"):
+            from app.handlers.group_chats import handle_groups_command
+
+            await handle_groups_command(message=message, state=state)
+            return
 
     user_id = message.from_user.id
     username = message.from_user.username

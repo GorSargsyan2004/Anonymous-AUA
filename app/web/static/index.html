@@ -24,7 +24,7 @@
   <link rel="icon" type="image/png" sizes="32x32" href="/static/favicon-32x32.png?v=20261113_1" />
   <link rel="icon" type="image/png" sizes="192x192" href="/static/favicon-192x192.png?v=20261113_1" />
   <link rel="shortcut icon" href="/favicon.ico?v=20261113_1" />
-  <link rel="stylesheet" href="/static/styles.css?v=20261127_9" />
+  <link rel="stylesheet" href="/static/styles.css?v=20261127_10" />
 </head>
 
 <body>
@@ -137,7 +137,8 @@
             onclick="switchView('gpa-tracker')">
             <div>
               <h3>GPA Tracker <span class="arrow">&rarr;</span></h3>
-              <p style="margin-top:6px;">Calculate your AUA semester &amp; cumulative GPA or upload syllabi to track live
+              <p style="margin-top:6px;">Calculate your AUA semester &amp; cumulative GPA or upload syllabi to track
+                live
                 target scores across assignments.</p>
             </div>
           </div>
@@ -235,8 +236,8 @@
               <div class="home-partner-top">
                 <div class="home-partner-logo-wrap">
                   <img src="/static/partners/jenzareviews-logo.png" width="40" height="40" decoding="async"
-                    onerror="this.onerror=null;this.src='/static/partners/jenzareviews-logo.ico';" alt="JenzaReviews Logo"
-                    class="home-partner-logo" />
+                    onerror="this.onerror=null;this.src='/static/partners/jenzareviews-logo.ico';"
+                    alt="JenzaReviews Logo" class="home-partner-logo" />
                 </div>
                 <div class="home-partner-meta">
                   <div class="home-partner-name-row">
@@ -283,7 +284,8 @@
             <div>
               <div class="home-pwa-bottom-title">Get the AUA Hub App on Your Phone or Laptop</div>
               <div class="home-pwa-bottom-sub">
-                Install AUA Hub to your Home Screen for 1-tap full-screen launch, faster loading, and instant browser notifications — no App Store download required.
+                Install AUA Hub to your Home Screen for 1-tap full-screen launch, faster loading, and instant browser
+                notifications — no App Store download required.
               </div>
             </div>
           </div>
@@ -481,13 +483,15 @@
               <div>
                 <h2 class="gpa-card-title">Semester Course List</h2>
                 <p class="gpa-card-sub">
-                  Add your courses, credits, and expected letter grades. Non-GPA grades (<code>P</code>, <code>NP</code>,
+                  Add your courses, credits, and expected letter grades. Non-GPA grades (<code>P</code>,
+                  <code>NP</code>,
                   <code>W</code>) are excluded from the GPA denominator.
                 </p>
               </div>
               <div class="gpa-calc-actions-wrap">
                 <button type="button" id="gpaImportCoursesBtn" class="btn-glass btn-sm"
-                  onclick="importGpaCalcFromTrackedCourses()" title="Import courses from your saved Course Tracker nodes">
+                  onclick="importGpaCalcFromTrackedCourses()"
+                  title="Import courses from your saved Course Tracker nodes">
                   📥 Import from My Courses
                 </button>
                 <button type="button" class="btn-glass btn-sm" onclick="resetGpaCalculatorRows()">
@@ -509,7 +513,8 @@
 
             <div id="gpaCalcRowsContainer" class="gpa-calc-rows-list"></div>
 
-            <div style="margin-top: 14px; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px;">
+            <div
+              style="margin-top: 14px; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px;">
               <button type="button" class="btn-glass btn-sm" onclick="addGpaCalculatorRow()">
                 + Add Another Course
               </button>
@@ -592,8 +597,8 @@
           <!-- Course Node Tabs Bar -->
           <div class="glass-panel gpa-nodes-bar-panel">
             <div class="gpa-nodes-bar-top">
-              <div id="gpaCourseNodesList" class="gpa-course-nodes-scroll" role="tablist"
-                aria-label="Tracked Courses"></div>
+              <div id="gpaCourseNodesList" class="gpa-course-nodes-scroll" role="tablist" aria-label="Tracked Courses">
+              </div>
               <div class="gpa-nodes-bar-actions">
                 <button type="button" class="btn-illuminated btn-sm" onclick="openGpaNewCourseDrawer('upload')">
                   + Add Course
@@ -634,7 +639,8 @@
                     <div id="gpaUploadLoadingContent" class="hidden" hidden>
                       <div class="gpa-dropzone-icon">⏳</div>
                       <div class="gpa-dropzone-title">Analyzing Syllabus Breakdown...</div>
-                      <div class="gpa-dropzone-sub">Extracting assignment weights, grading scale &amp; course policies</div>
+                      <div class="gpa-dropzone-sub">Extracting assignment weights, grading scale &amp; course policies
+                      </div>
                     </div>
                   </div>
 
@@ -653,7 +659,8 @@
                 <!-- Option B: Quick Manual Creation -->
                 <div class="gpa-manual-create-box">
                   <div class="gpa-manual-box-title">Or Build Manually</div>
-                  <p class="gpa-manual-box-sub">Create a course node with starter assignment rows that you can customize:</p>
+                  <p class="gpa-manual-box-sub">Create a course node with starter assignment rows that you can
+                    customize:</p>
                   <div style="margin-bottom: 10px;">
                     <label class="field-label" for="gpaNewManualName">Course Name</label>
                     <input type="text" id="gpaNewManualName" class="input-glass" maxlength="160"
@@ -966,15 +973,18 @@
         </span>
       </a>
 
-      <!-- Sub-tabs: Posts vs Inbox -->
-      <div
-        style="display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:14px; margin-bottom: 18px;">
-        <div class="subtabs-bar" style="margin-bottom:0;">
-          <button id="anonTabPosts" class="subtab-btn active" onclick="switchAnonymousSubtab('posts')">
+      <!-- Sub-tabs: Posts vs Inbox vs Group Chats -->
+      <div class="anon-subtabs-header-row">
+        <div class="subtabs-bar anon-subtabs-bar" style="margin-bottom:0;">
+          <button type="button" id="anonTabPosts" class="subtab-btn active" onclick="switchAnonymousSubtab('posts')">
             Posts
           </button>
-          <button id="anonTabInbox" class="subtab-btn" onclick="switchAnonymousSubtab('inbox')">
+          <button type="button" id="anonTabInbox" class="subtab-btn" onclick="switchAnonymousSubtab('inbox')">
             Inbox (/link)
+          </button>
+          <button type="button" id="anonTabGroups" class="subtab-btn" onclick="switchAnonymousSubtab('groups')">
+            <span>Group Chats</span>
+            <span id="anonGroupsCountBadge" class="anon-groups-tab-badge hidden" hidden>0</span>
           </button>
         </div>
 
@@ -1031,6 +1041,44 @@
           </div>
         </div>
         <div id="anonInboxContainer"></div>
+      </div>
+
+      <!-- Subview 2C: Live Anonymous Group Chats (via @aua_anonymous_bot) -->
+      <div id="anonGroupsView" style="display:none;">
+        <div class="anon-groups-toolbar">
+          <div class="anon-search-wrapper" style="position: relative; flex: 1; min-width: 220px; max-width: 440px;">
+            <svg class="search-icon-svg" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor"
+              stroke-width="2"
+              style="position: absolute; left: 14px; top: 50%; transform: translateY(-50%); color: var(--text-muted); pointer-events: none;">
+              <circle cx="11" cy="11" r="8"></circle>
+              <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
+            </svg>
+            <input type="text" id="anonGroupsSearchInput" class="input-glass"
+              style="padding-left: 40px; padding-right: 36px;"
+              placeholder="Search live group chats by name or topic..."
+              oninput="handleAnonGroupsSearch(this.value)" autocomplete="off" />
+            <button type="button" id="anonGroupsSearchClear" class="search-clear-btn"
+              style="display: none; position: absolute; right: 10px; top: 50%; transform: translateY(-50%); background: none; border: none; color: var(--text-muted); font-size: 18px; cursor: pointer; padding: 2px 6px; line-height: 1;"
+              onclick="clearAnonGroupsSearch()" title="Clear search">&times;</button>
+          </div>
+
+          <div class="anon-groups-toolbar-actions">
+            <label class="hn-card-email-pill anon-groups-open-filter" for="anonGroupsOpenOnlyToggle">
+              <input type="checkbox" id="anonGroupsOpenOnlyToggle"
+                onchange="handleAnonGroupsOpenOnlyChange(this.checked)" />
+              <span>Hide full groups</span>
+            </label>
+            <button type="button" class="btn-glass anon-groups-refresh-btn" onclick="loadAnonymousGroupChats(true)">
+              Refresh
+            </button>
+            <a id="anonGroupsCreateBotBtn" href="https://t.me/aua_anonymous_bot?start=groups" target="_blank"
+              rel="noopener noreferrer" class="btn-illuminated anon-groups-create-btn">
+              + Create in Bot &nearr;
+            </a>
+          </div>
+        </div>
+
+        <div id="anonGroupsGrid" class="anon-groups-grid"></div>
       </div>
     </section>
 
@@ -1365,10 +1413,14 @@
         <div class="auth-google-divider"><span>or continue with</span></div>
         <button type="button" id="googleSignInBtn" class="btn-google-oauth" onclick="startGoogleSignIn()">
           <svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true">
-            <path fill="#4285F4" d="M23.49 12.27c0-.79-.07-1.54-.2-2.27H12v4.3h6.44a5.5 5.5 0 0 1-2.39 3.61v3h3.87c2.26-2.08 3.57-5.15 3.57-8.64Z"/>
-            <path fill="#34A853" d="M12 24c3.24 0 5.95-1.07 7.93-2.9l-3.87-3a7.17 7.17 0 0 1-10.67-3.76H1.4v3.09A12 12 0 0 0 12 24Z"/>
-            <path fill="#FBBC05" d="M5.39 14.34A7.18 7.18 0 0 1 5.01 12c0-.81.14-1.6.38-2.34V6.57H1.4A12 12 0 0 0 0 12c0 1.94.46 3.77 1.4 5.43l3.99-3.09Z"/>
-            <path fill="#EA4335" d="M12 4.75c1.76 0 3.34.61 4.58 1.8l3.44-3.44C17.95 1.19 15.24 0 12 0A12 12 0 0 0 1.4 6.57l3.99 3.09A7.16 7.16 0 0 1 12 4.75Z"/>
+            <path fill="#4285F4"
+              d="M23.49 12.27c0-.79-.07-1.54-.2-2.27H12v4.3h6.44a5.5 5.5 0 0 1-2.39 3.61v3h3.87c2.26-2.08 3.57-5.15 3.57-8.64Z" />
+            <path fill="#34A853"
+              d="M12 24c3.24 0 5.95-1.07 7.93-2.9l-3.87-3a7.17 7.17 0 0 1-10.67-3.76H1.4v3.09A12 12 0 0 0 12 24Z" />
+            <path fill="#FBBC05"
+              d="M5.39 14.34A7.18 7.18 0 0 1 5.01 12c0-.81.14-1.6.38-2.34V6.57H1.4A12 12 0 0 0 0 12c0 1.94.46 3.77 1.4 5.43l3.99-3.09Z" />
+            <path fill="#EA4335"
+              d="M12 4.75c1.76 0 3.34.61 4.58 1.8l3.44-3.44C17.95 1.19 15.24 0 12 0A12 12 0 0 0 1.4 6.57l3.99 3.09A7.16 7.16 0 0 1 12 4.75Z" />
           </svg>
           <span>Sign in with Google</span>
         </button>
@@ -1430,8 +1482,8 @@
         </div>
         <div style="margin-bottom: 14px;">
           <label class="field-label">🔢 6-Digit Reset Code</label>
-          <input type="text" id="resetOtpInput" class="input-glass auth-otp-input" inputmode="numeric"
-            pattern="[0-9]*" autocomplete="one-time-code" placeholder="123456" maxlength="6" required />
+          <input type="text" id="resetOtpInput" class="input-glass auth-otp-input" inputmode="numeric" pattern="[0-9]*"
+            autocomplete="one-time-code" placeholder="123456" maxlength="6" required />
         </div>
         <div style="margin-bottom: 13px;">
           <label class="field-label">🔑 New Password</label>
@@ -1494,7 +1546,8 @@
             <input type="text" id="groupNameInput" class="input-glass" placeholder="e.g. AUA CS Class of 2028"
               oninput="updateGroupModalPreview()" required />
             <div class="group-upload-status-row">
-              <span id="groupUploadedPreview" class="group-upload-status-text">Optional: click icon to add group photo</span>
+              <span id="groupUploadedPreview" class="group-upload-status-text">Optional: click icon to add group
+                photo</span>
               <button type="button" id="groupRemovePhotoBtn" class="group-remove-photo-btn hidden"
                 onclick="clearGroupUploadedPhoto()">Remove</button>
             </div>
@@ -1830,7 +1883,8 @@
       <!-- Warning if user opened link inside Telegram's in-app webview -->
       <div id="pwaTelegramWebviewNotice" class="pwa-tg-webview-notice hidden" hidden>
         <strong>💡 Opened inside Telegram?</strong>
-        <span>Tap the <b>⋯</b> menu (top-right) or compass icon and select <b>"Open in Safari"</b> (iPhone) or <b>"Open in Chrome"</b> (Android) first to install the app.</span>
+        <span>Tap the <b>⋯</b> menu (top-right) or compass icon and select <b>"Open in Safari"</b> (iPhone) or <b>"Open
+            in Chrome"</b> (Android) first to install the app.</span>
       </div>
 
       <!-- Platform Switcher Tabs -->
@@ -1853,7 +1907,8 @@
           <div class="pwa-step-body">
             <div class="pwa-step-title">Open in Safari (or Chrome) &amp; Tap <b>Share</b></div>
             <div class="pwa-step-desc">
-              Tap the <b>Share</b> icon <span class="pwa-key-chip">📤 Square with arrow ↑</span> at the bottom of Safari (or top-right of the address bar in Chrome on iOS).
+              Tap the <b>Share</b> icon <span class="pwa-key-chip">📤 Square with arrow ↑</span> at the bottom of Safari
+              (or top-right of the address bar in Chrome on iOS).
             </div>
           </div>
         </div>
@@ -1862,7 +1917,8 @@
           <div class="pwa-step-body">
             <div class="pwa-step-title">Tap <b>"Add to Home Screen"</b></div>
             <div class="pwa-step-desc">
-              Scroll down the share sheet and tap <span class="pwa-key-chip">➕ Add to Home Screen</span>, then tap <b>Add</b> in the top-right corner.
+              Scroll down the share sheet and tap <span class="pwa-key-chip">➕ Add to Home Screen</span>, then tap
+              <b>Add</b> in the top-right corner.
             </div>
           </div>
         </div>
@@ -1871,7 +1927,8 @@
           <div class="pwa-step-body">
             <div class="pwa-step-title">Launch from Your Home Screen</div>
             <div class="pwa-step-desc">
-              The <b>AUA Hub</b> icon will appear on your iPhone/iPad Home Screen and open in full-screen standalone mode!
+              The <b>AUA Hub</b> icon will appear on your iPhone/iPad Home Screen and open in full-screen standalone
+              mode!
             </div>
           </div>
         </div>
@@ -1882,7 +1939,8 @@
         <div id="pwaAndroidDirectWrap" class="pwa-direct-install-box hidden" hidden>
           <div>
             <b>⚡ One-Tap Install Ready</b>
-            <div style="font-size:12px; color:var(--text-secondary); margin-top:2px;">Your browser supports instant 1-tap app installation:</div>
+            <div style="font-size:12px; color:var(--text-secondary); margin-top:2px;">Your browser supports instant
+              1-tap app installation:</div>
           </div>
           <button type="button" class="btn-illuminated btn-sm" onclick="triggerNativePwaPromptFromModal()">
             📲 Install Now
@@ -1902,7 +1960,8 @@
           <div class="pwa-step-body">
             <div class="pwa-step-title">Tap <b>"Install app"</b> or <b>"Add to Home screen"</b></div>
             <div class="pwa-step-desc">
-              Select <span class="pwa-key-chip">📲 Install app</span> from the menu and confirm to install AUA Hub as a native-style Android app.
+              Select <span class="pwa-key-chip">📲 Install app</span> from the menu and confirm to install AUA Hub as a
+              native-style Android app.
             </div>
           </div>
         </div>
@@ -1915,7 +1974,8 @@
           <div class="pwa-step-body">
             <div class="pwa-step-title">Chrome / Brave / Edge (Mac &amp; Windows)</div>
             <div class="pwa-step-desc">
-              Click the <span class="pwa-key-chip">⊕ Install AUA Hub</span> icon on the right side of your browser's address bar (URL bar) and click <b>Install</b>.
+              Click the <span class="pwa-key-chip">⊕ Install AUA Hub</span> icon on the right side of your browser's
+              address bar (URL bar) and click <b>Install</b>.
             </div>
           </div>
         </div>
@@ -1924,7 +1984,8 @@
           <div class="pwa-step-body">
             <div class="pwa-step-title">Safari on Mac</div>
             <div class="pwa-step-desc">
-              Click <b>File</b> in the top menu bar (or the Share button) and select <span class="pwa-key-chip">Add to Dock...</span>.
+              Click <b>File</b> in the top menu bar (or the Share button) and select <span class="pwa-key-chip">Add to
+                Dock...</span>.
             </div>
           </div>
         </div>
@@ -1938,7 +1999,7 @@
     </div>
   </div>
 
-  <script src="/static/app.js?v=20261127_9"></script>
+  <script src="/static/app.js?v=20261127_10"></script>
 </body>
 
 </html>

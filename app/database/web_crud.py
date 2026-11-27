@@ -35,6 +35,8 @@ from app.database.models import (
     BotActivitySnapshot,
     ChatInvite,
     Course,
+    GroupChat,
+    GroupChatMember,
     HaveNeedPost,
     InboxMessage,
     JenzaProfessor,
@@ -1612,6 +1614,50 @@ async def list_telegram_groups(
     )
     groups = list((await session.execute(stmt)).scalars().all())
     return groups, total, total_pages
+
+
+async def list_public_anonymous_group_chats(
+    session: AsyncSession,
+    search_query: str = "",
+    open_only: bool = False,
+) -> List[Tuple[GroupChat, int]]:
+    """Query active bot anonymous GroupChat rows with their active participant counts.
+
+    Ordered by active participant count descending, then last_activity_at descending.
+    """
+    member_count_subq = (
+        select(
+            GroupChatMember.group_id.label("g_id"),
+            func.count(GroupChatMember.id).label("active_count"),
+        )
+        .where(GroupChatMember.is_active.is_(True))
+        .group_by(GroupChatMember.group_id)
+        .subquery()
+    )
+
+    active_cnt_col = func.coalesce(member_count_subq.c.active_count, 0)
+    conditions = [GroupChat.is_active.is_(True)]
+
+    if search_query and search_query.strip():
+        q = f"%{search_query.strip()}%"
+        conditions.append(
+            or_(
+                GroupChat.name.ilike(q),
+                GroupChat.description.ilike(q),
+            )
+        )
+
+    if open_only:
+        conditions.append(active_cnt_col < GroupChat.max_participants)
+
+    stmt = (
+        select(GroupChat, active_cnt_col.label("active_count"))
+        .outerjoin(member_count_subq, GroupChat.id == member_count_subq.c.g_id)
+        .where(and_(*conditions))
+        .order_by(active_cnt_col.desc(), GroupChat.last_activity_at.desc(), GroupChat.id.desc())
+    )
+    res = await session.execute(stmt)
+    return [(row[0], int(row[1] or 0)) for row in res.all()]
 
 
 async def update_telegram_group(

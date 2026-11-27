@@ -68,6 +68,11 @@ const state = {
   anonPostsSearch: "",
   inboxSearch: "",
   syncCodeInfo: null,
+  anonGroupsList: [],
+  anonGroupsSearch: "",
+  anonGroupsOpenOnly: false,
+  anonGroupsBotUsername: "aua_anonymous_bot",
+  anonGroupsAutoRefreshTimer: null,
   // Free Rooms state
   freeRoomsPayload: null,
   selectedBuilding: "all",
@@ -774,10 +779,16 @@ function switchView(viewName, pushHistory = true) {
     initFeedbacksView();
   } else if (viewName === "anonymous") {
     trackWebEvent("click_anonymous");
+    stopAnonGroupsAutoRefresh();
     if (state.anonSubtab === "posts") {
       loadAnonymousPosts(state.anonPostsPage);
-    } else {
+      loadAnonymousGroupChats(false, true);
+    } else if (state.anonSubtab === "inbox") {
       loadAnonymousInbox();
+      loadAnonymousGroupChats(false, true);
+    } else if (state.anonSubtab === "groups") {
+      loadAnonymousGroupChats(false);
+      startAnonGroupsAutoRefresh();
     }
   } else if (viewName === "free-rooms") {
     trackWebEvent("click_free_rooms");
@@ -2973,15 +2984,236 @@ function clearInboxSearch() {
 }
 
 function switchAnonymousSubtab(subtab) {
-  state.anonSubtab = subtab;
-  document.getElementById("anonTabPosts").classList.toggle("active", subtab === "posts");
-  document.getElementById("anonTabInbox").classList.toggle("active", subtab === "inbox");
-  document.getElementById("anonPostsView").style.display = subtab === "posts" ? "block" : "none";
-  document.getElementById("anonInboxView").style.display = subtab === "inbox" ? "block" : "none";
-  if (subtab === "posts") {
+  const validSubtab = subtab === "inbox" || subtab === "groups" ? subtab : "posts";
+  state.anonSubtab = validSubtab;
+
+  document.getElementById("anonTabPosts")?.classList.toggle("active", validSubtab === "posts");
+  document.getElementById("anonTabInbox")?.classList.toggle("active", validSubtab === "inbox");
+  document.getElementById("anonTabGroups")?.classList.toggle("active", validSubtab === "groups");
+
+  const postsView = document.getElementById("anonPostsView");
+  const inboxView = document.getElementById("anonInboxView");
+  const groupsView = document.getElementById("anonGroupsView");
+
+  if (postsView) postsView.style.display = validSubtab === "posts" ? "block" : "none";
+  if (inboxView) inboxView.style.display = validSubtab === "inbox" ? "block" : "none";
+  if (groupsView) groupsView.style.display = validSubtab === "groups" ? "block" : "none";
+
+  const instrEl = document.getElementById("anonPostInstruction");
+  const botUser = state.anonGroupsBotUsername || "aua_anonymous_bot";
+  if (instrEl) {
+    if (validSubtab === "groups") {
+      instrEl.innerHTML = `Create or join anonymous multi-party group chats via <a href="https://t.me/${escapeHtml(botUser)}?start=groups" target="_blank" rel="noopener noreferrer" style="color:var(--neon-blue-bright); font-weight:700;">@${escapeHtml(botUser)}</a> using <code>/groups</code>.`;
+    } else if (validSubtab === "inbox") {
+      instrEl.innerHTML = `Receive personal anonymous messages via <a href="https://t.me/${escapeHtml(botUser)}" target="_blank" rel="noopener noreferrer" style="color:var(--neon-blue-bright); font-weight:700;">@${escapeHtml(botUser)}</a> using <code>/link</code> and <code>/sync</code>.`;
+    } else {
+      instrEl.innerHTML = `Posts can only be created via <a href="https://t.me/${escapeHtml(botUser)}" target="_blank" rel="noopener noreferrer" style="color:var(--neon-blue-bright); font-weight:700;">@${escapeHtml(botUser)}</a> using the <code>/post</code> command.`;
+    }
+  }
+
+  stopAnonGroupsAutoRefresh();
+  if (validSubtab === "posts") {
     loadAnonymousPosts(state.anonPostsPage);
-  } else {
+  } else if (validSubtab === "inbox") {
     loadAnonymousInbox();
+  } else if (validSubtab === "groups") {
+    loadAnonymousGroupChats(false);
+    startAnonGroupsAutoRefresh();
+  }
+}
+
+let anonGroupsSearchDebounceTimer = null;
+
+function handleAnonGroupsSearch(val) {
+  const clearBtn = document.getElementById("anonGroupsSearchClear");
+  if (clearBtn) clearBtn.style.display = val ? "block" : "none";
+  clearTimeout(anonGroupsSearchDebounceTimer);
+  anonGroupsSearchDebounceTimer = setTimeout(() => {
+    state.anonGroupsSearch = (val || "").trim();
+    loadAnonymousGroupChats(false);
+  }, 220);
+}
+
+function clearAnonGroupsSearch() {
+  const inp = document.getElementById("anonGroupsSearchInput");
+  const clearBtn = document.getElementById("anonGroupsSearchClear");
+  if (inp) inp.value = "";
+  if (clearBtn) clearBtn.style.display = "none";
+  state.anonGroupsSearch = "";
+  loadAnonymousGroupChats(false);
+}
+
+function handleAnonGroupsOpenOnlyChange(checked) {
+  state.anonGroupsOpenOnly = Boolean(checked);
+  const pill = document.querySelector(".anon-groups-open-filter");
+  if (pill) pill.classList.toggle("active", state.anonGroupsOpenOnly);
+  loadAnonymousGroupChats(false);
+}
+
+function startAnonGroupsAutoRefresh() {
+  stopAnonGroupsAutoRefresh();
+  state.anonGroupsAutoRefreshTimer = setInterval(() => {
+    if (state.activeView === "anonymous" && state.anonSubtab === "groups" && !document.hidden) {
+      loadAnonymousGroupChats(false, true);
+    }
+  }, 30000);
+}
+
+function stopAnonGroupsAutoRefresh() {
+  if (state.anonGroupsAutoRefreshTimer) {
+    clearInterval(state.anonGroupsAutoRefreshTimer);
+    state.anonGroupsAutoRefreshTimer = null;
+  }
+}
+
+function _capitalizeWord(str) {
+  const s = String(str || "").trim();
+  return s ? s.charAt(0).toUpperCase() + s.slice(1).toLowerCase() : "";
+}
+
+function updateAnonGroupsCountBadge(count) {
+  const badge = document.getElementById("anonGroupsCountBadge");
+  if (!badge) return;
+  const num = Number(count || 0);
+  if (num > 0) {
+    badge.textContent = String(num);
+    badge.classList.remove("hidden");
+    badge.hidden = false;
+  } else {
+    badge.textContent = "0";
+    badge.classList.add("hidden");
+    badge.hidden = true;
+  }
+}
+
+async function loadAnonymousGroupChats(isManualRefresh = false, silentBadgeOnly = false) {
+  const grid = document.getElementById("anonGroupsGrid");
+  const params = new URLSearchParams();
+  if (!silentBadgeOnly && state.anonGroupsSearch) {
+    params.set("q", state.anonGroupsSearch);
+  }
+  if (!silentBadgeOnly && state.anonGroupsOpenOnly) {
+    params.set("open_only", "true");
+  }
+  const qs = params.toString() ? `?${params.toString()}` : "";
+
+  try {
+    const data = await apiFetch(`/api/anonymous/groups${qs}`);
+    const groups = Array.isArray(data.groups) ? data.groups : [];
+    const botUsername = data.bot_username || "aua_anonymous_bot";
+    state.anonGroupsBotUsername = botUsername;
+
+    const createBtn = document.getElementById("anonGroupsCreateBotBtn");
+    if (createBtn) {
+      createBtn.href = `https://t.me/${encodeURIComponent(botUsername)}?start=groups`;
+    }
+
+    if (!state.anonGroupsSearch && !state.anonGroupsOpenOnly) {
+      updateAnonGroupsCountBadge(groups.length);
+    }
+
+    if (silentBadgeOnly && state.anonSubtab !== "groups") {
+      return;
+    }
+
+    state.anonGroupsList = groups;
+    if (!grid) return;
+
+    if (groups.length === 0) {
+      const hasFilter = Boolean(state.anonGroupsSearch || state.anonGroupsOpenOnly);
+      grid.innerHTML = `
+        <div class="glass-card anon-groups-empty-card">
+          <h3 style="font-size:18px; font-weight:700; color:var(--text-white);">
+            ${hasFilter ? "No Matching Anonymous Group Chats" : "No Active Anonymous Group Chats Right Now"}
+          </h3>
+          <p style="color:var(--text-secondary); font-size:13.5px; margin-top:6px; max-width:520px; margin-left:auto; margin-right:auto;">
+            ${
+              hasFilter
+                ? "Try clearing your search filter or unchecking 'Hide full groups'."
+                : "Start a multi-party anonymous group chat with custom capacity, sticky nicknames, and AI moderation directly inside the Telegram bot."
+            }
+          </p>
+          <div style="margin-top:16px;">
+            <a href="https://t.me/${escapeHtml(botUsername)}?start=groups" target="_blank" rel="noopener noreferrer" class="btn-illuminated">
+              + Create Group in @${escapeHtml(botUsername)} &nearr;
+            </a>
+          </div>
+        </div>
+      `;
+      if (isManualRefresh) showToast("Group chats refreshed.");
+      return;
+    }
+
+    grid.innerHTML = groups
+      .map((g) => {
+        const cur = Number(g.current_participants || 0);
+        const max = Math.max(1, Number(g.max_participants || 10));
+        const isFull = Boolean(g.is_full || cur >= max);
+        const pct = Math.min(100, Math.round((cur / max) * 100));
+
+        const badges = [];
+        if (g.verified_only) {
+          badges.push(`<span class="anon-group-req-pill req-verified">Verified Only</span>`);
+        }
+        if (g.allowed_gender) {
+          badges.push(
+            `<span class="anon-group-req-pill req-filter">Gender: ${escapeHtml(_capitalizeWord(g.allowed_gender))}</span>`
+          );
+        }
+        if (g.allowed_orientation) {
+          badges.push(
+            `<span class="anon-group-req-pill req-filter">Orientation: ${escapeHtml(_capitalizeWord(g.allowed_orientation))}</span>`
+          );
+        }
+        if (badges.length === 0) {
+          badges.push(`<span class="anon-group-req-pill req-open">Open to All</span>`);
+        }
+
+        const descHtml =
+          g.description && String(g.description).trim()
+            ? `<p class="anon-group-card-desc">${escapeHtml(String(g.description).trim())}</p>`
+            : "";
+
+        const capacityPillClass = isFull ? "anon-group-cap-pill is-full" : "anon-group-cap-pill";
+        const capacityLabel = isFull ? `Full &bull; ${cur} / ${max}` : `${cur} / ${max}`;
+
+        const joinUrl = g.join_url || `https://t.me/${botUsername}?start=group_${g.id}`;
+        const ctaHtml = isFull
+          ? `<span class="btn-glass anon-group-join-btn is-full" aria-disabled="true">Group Full</span>`
+          : `<a href="${escapeHtml(joinUrl)}" target="_blank" rel="noopener noreferrer" class="btn-illuminated anon-group-join-btn">Join Group &nearr;</a>`;
+
+        return `
+          <div class="glass-card anon-group-card${isFull ? " is-full" : ""}" data-anon-group-id="${Number(g.id)}">
+            <div>
+              <div class="anon-group-card-head">
+                <h3 class="anon-group-card-title">${escapeHtml(g.name)}</h3>
+                <span class="${capacityPillClass}">${capacityLabel}</span>
+              </div>
+
+              <div class="anon-group-progress-track" aria-hidden="true">
+                <div class="anon-group-progress-fill${isFull ? " is-full" : ""}" style="width:${pct}%;"></div>
+              </div>
+
+              ${descHtml}
+
+              <div class="anon-group-req-row">
+                ${badges.join("")}
+              </div>
+            </div>
+
+            <div class="anon-group-card-footer">
+              ${ctaHtml}
+            </div>
+          </div>
+        `;
+      })
+      .join("");
+
+    if (isManualRefresh) showToast("Group chats refreshed.");
+  } catch (err) {
+    if (!silentBadgeOnly) {
+      showToast(err.message || "Failed to load group chats", true);
+    }
   }
 }
 
