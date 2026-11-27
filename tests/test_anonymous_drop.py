@@ -151,11 +151,13 @@ class TestAnonymousDropService(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("<script", html_clear.lower())
         self.assertIsNone(re.search(r"\bon(?:click|load|error|submit|change|input|focus|blur|keydown|keyup)\s*=", html_clear, re.I))
 
-        # Inline base64 CAPTCHA image only (no external http/https src or href)
+        # Inline base64 CAPTCHA image only (no external http/https image or stylesheet assets)
         self.assertIn('src="data:image/png;base64,', html_clear)
-        self.assertIsNone(re.search(r'(?:src|href)\s*=\s*["\']https?://', html_clear, re.I))
+        self.assertIsNone(re.search(r'src\s*=\s*["\']https?://', html_clear, re.I))
+        self.assertIsNone(re.search(r'<link[^>]+href\s*=\s*["\']https?://', html_clear, re.I))
 
-        # Clearnet page displays the selectable .onion address box when DROP_ONION_HOSTNAME is set
+        # Clearnet page displays the Tor Browser download link and selectable .onion address box
+        self.assertIn("https://www.torproject.org/download/", html_clear)
         self.assertIn(f"http://{TEST_ONION_HOST}/", html_clear)
 
         # Tor .onion request

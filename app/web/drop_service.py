@@ -726,10 +726,15 @@ def render_drop_page(
         transport_banner_html = f"""
         <div class="transport-badge transport-clearnet" role="status">
           <span class="dot dot-amber" aria-hidden="true"></span>
-          <div>
+          <div style="flex:1;">
             <strong>Clearnet Connection (Cloudflare Tunnel)</strong>
             <div class="transport-sub">
               Our proxy strips all IP headers and cookies before requests reach the server. However, because clearnet traffic passes through Cloudflare Tunnel, we recommend using <strong>Tor Browser</strong> (and our direct <code>.onion</code> mirror) if you want to hide your IP from both your ISP and Cloudflare.
+            </div>
+            <div class="tor-download-row">
+              <a href="https://www.torproject.org/download/" target="_blank" rel="noopener noreferrer" class="tor-download-link">
+                🧅 Download Tor Browser &nearr;
+              </a>
             </div>
             {onion_box_html}
           </div>
@@ -932,6 +937,24 @@ def render_drop_page(
       margin-top: 4px;
       color: var(--text-muted);
       font-size: 13px;
+    }}
+    .tor-download-row {{
+      margin-top: 9px;
+    }}
+    .tor-download-link {{
+      display: inline-block;
+      font-size: 12.5px;
+      font-weight: 700;
+      color: var(--accent-blue);
+      background: rgba(56, 189, 248, 0.1);
+      border: 1px solid rgba(56, 189, 248, 0.32);
+      border-radius: 7px;
+      padding: 5px 11px;
+      text-decoration: none;
+    }}
+    .tor-download-link:hover {{
+      background: rgba(56, 189, 248, 0.2);
+      color: #ffffff;
     }}
     .dot {{
       width: 10px;
