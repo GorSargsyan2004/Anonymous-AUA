@@ -2779,6 +2779,352 @@ window.reportAnonymousPost = async function (postIndex, btnEl) {
   }
 };
 
+/* --------------------------------------------------------------------------
+   3b. Telegram-Style Expandable Comments on Anonymous Posts
+   -------------------------------------------------------------------------- */
+
+state.openAnonCommentPostIds = new Set();
+state.anonCommentsByPost = {};
+state.anonCommentModeByPost = {};
+state.anonReplyTargetByPost = {};
+
+function isAnonCommentModeEnabled(postId) {
+  if (state.anonCommentModeByPost[postId] === undefined) {
+    state.anonCommentModeByPost[postId] = true;
+  }
+  return Boolean(state.anonCommentModeByPost[postId]);
+}
+
+function buildAnonCommentComposerHtml(postId) {
+  if (!state.user) {
+    return `
+      <div class="anon-comment-guest-bar">
+        <span>🔒 Sign in with your AUA account to comment anonymously or with your name.</span>
+        <button type="button" class="btn-illuminated btn-sm" onclick="openAuthModal('login')">Sign In</button>
+      </div>
+    `;
+  }
+  const isAnon = isAnonCommentModeEnabled(postId);
+  const firstName = (state.user.name || "Named").split(" ")[0];
+  return `
+    <form class="anon-comment-form" onsubmit="submitAnonPostComment(event, ${postId})">
+      <button
+        type="button"
+        id="anon-identity-btn-${postId}"
+        class="anon-identity-toggle-pill ${isAnon ? "mode-anon" : "mode-named"}"
+        onclick="toggleAnonCommentIdentityMode(${postId})"
+        title="${isAnon ? "Commenting Anonymously — click to switch to your Name" : "Commenting with your Name — click to switch to Anonymous"}"
+      >
+        <span class="anon-id-icon">${isAnon ? "🎭" : "👤"}</span>
+        <span class="anon-id-text">${isAnon ? "Anon" : escapeHtml(firstName)}</span>
+      </button>
+      <input
+        type="text"
+        id="anon-comment-input-${postId}"
+        class="input-glass anon-comment-input"
+        maxlength="600"
+        placeholder="${isAnon ? "Write an anonymous comment..." : `Comment as ${escapeHtml(state.user.name)}...`}"
+        autocomplete="off"
+      />
+      <button type="submit" id="anon-comment-send-${postId}" class="anon-comment-send-btn" title="Send comment">
+        ➤
+      </button>
+    </form>
+  `;
+}
+
+function toggleAnonCommentIdentityMode(postId) {
+  const nextVal = !isAnonCommentModeEnabled(postId);
+  state.anonCommentModeByPost[postId] = nextVal;
+  const btn = document.getElementById(`anon-identity-btn-${postId}`);
+  const inp = document.getElementById(`anon-comment-input-${postId}`);
+  const firstName = (state.user?.name || "Named").split(" ")[0];
+  if (btn) {
+    btn.className = `anon-identity-toggle-pill ${nextVal ? "mode-anon" : "mode-named"}`;
+    btn.title = nextVal
+      ? "Commenting Anonymously — click to switch to your Name"
+      : "Commenting with your Name — click to switch to Anonymous";
+    btn.innerHTML = `
+      <span class="anon-id-icon">${nextVal ? "🎭" : "👤"}</span>
+      <span class="anon-id-text">${nextVal ? "Anon" : escapeHtml(firstName)}</span>
+    `;
+  }
+  if (inp) {
+    inp.placeholder = nextVal
+      ? "Write an anonymous comment..."
+      : `Comment as ${state.user?.name || "yourself"}...`;
+    inp.focus();
+  }
+}
+
+function updateAnonPostCommentCountBadge(postId, count) {
+  const num = Math.max(0, Number(count || 0));
+  const label = document.getElementById(`anon-comment-count-label-${postId}`);
+  if (label) {
+    label.textContent = num > 0 ? `Comments (${num})` : "Comment";
+  }
+}
+
+function toggleAnonPostComments(postId, forceOpen = null) {
+  const pid = Number(postId);
+  const drawer = document.getElementById(`anon-comments-drawer-${pid}`);
+  const btn = document.getElementById(`anon-comment-toggle-${pid}`);
+  if (!drawer) return;
+
+  const isCurrentlyOpen = !drawer.classList.contains("hidden");
+  const shouldOpen = forceOpen !== null ? Boolean(forceOpen) : !isCurrentlyOpen;
+
+  drawer.classList.toggle("hidden", !shouldOpen);
+  if (shouldOpen) {
+    drawer.removeAttribute("hidden");
+    state.openAnonCommentPostIds.add(pid);
+  } else {
+    drawer.setAttribute("hidden", "");
+    state.openAnonCommentPostIds.delete(pid);
+  }
+
+  if (btn) {
+    btn.classList.toggle("active", shouldOpen);
+    btn.setAttribute("aria-expanded", String(shouldOpen));
+    const chev = btn.querySelector(".anon-toggle-chevron");
+    if (chev) chev.textContent = shouldOpen ? "▴" : "▾";
+  }
+
+  if (shouldOpen) {
+    const compWrap = document.getElementById(`anon-composer-wrap-${pid}`);
+    if (compWrap) {
+      compWrap.innerHTML = buildAnonCommentComposerHtml(pid);
+    }
+    loadAnonPostComments(pid);
+  }
+}
+
+async function loadAnonPostComments(postId) {
+  const pid = Number(postId);
+  const stream = document.getElementById(`anon-comments-stream-${pid}`);
+  if (!stream) return;
+
+  try {
+    const res = await apiFetch(`/api/anonymous/posts/${pid}/comments`);
+    if (res && res.ok) {
+      state.anonCommentsByPost[pid] = res.comments || [];
+      updateAnonPostCommentCountBadge(pid, res.comment_count ?? state.anonCommentsByPost[pid].length);
+      renderAnonPostCommentsStream(pid, true);
+    }
+  } catch (err) {
+    stream.innerHTML = `<div class="anon-comments-empty">${escapeHtml(err.message || "Could not load comments.")}</div>`;
+  }
+}
+
+function renderAnonPostCommentsStream(postId, scrollToBottom = false) {
+  const pid = Number(postId);
+  const stream = document.getElementById(`anon-comments-stream-${pid}`);
+  if (!stream) return;
+
+  const comments = state.anonCommentsByPost[pid] || [];
+  if (comments.length === 0) {
+    stream.innerHTML = `
+      <div class="anon-comments-empty">
+        No comments yet. Be the first to reply — anonymously 🎭 or with your name 👤!
+      </div>
+    `;
+    return;
+  }
+
+  stream.innerHTML = comments.map((c) => buildAnonCommentBubbleHtml(c)).join("");
+  if (scrollToBottom) {
+    stream.scrollTop = stream.scrollHeight;
+  }
+}
+
+function buildAnonCommentBubbleHtml(c) {
+  const isMine = Boolean(c.is_mine);
+  const isAnon = Boolean(c.is_anonymous);
+  const isOp = Boolean(c.is_op);
+  const canDel = Boolean(c.can_delete || (state.user && state.user.is_admin));
+
+  let avatarHtml = "";
+  let authorHeaderHtml = "";
+
+  if (isAnon) {
+    avatarHtml = `
+      <span class="user-avatar-circle user-avatar-sm anon-mask-avatar" title="${escapeHtml(c.author_name)}">
+        <span class="user-avatar-fallback">🎭</span>
+      </span>
+    `;
+    const opBadge = isOp
+      ? `<span class="anon-comment-op-pill">OP</span>`
+      : `<span class="anon-comment-anon-pill">Anon</span>`;
+    const youTag = isMine ? `<span class="anon-comment-you-tag">(You)</span>` : "";
+    authorHeaderHtml = `
+      <span class="anon-comment-author-anon">${escapeHtml(c.author_name)}</span>
+      ${opBadge}
+      ${youTag}
+    `;
+  } else {
+    const uObj = {
+      id: c.author_id,
+      name: c.author_name,
+      avatar_url: c.author_avatar,
+      is_deleted: c.is_deleted,
+      is_alumni: c.is_alumni,
+      is_bot_synced: c.is_bot_synced,
+    };
+    avatarHtml = renderAvatarCircleHtml(uObj, "user-avatar-sm", !c.is_deleted && Boolean(c.author_id));
+    const nameHtml = renderClickableUserNameHtml(uObj, "anon-comment-author-named");
+    const rolePill = c.is_alumni
+      ? `<span class="badge-alumni" style="font-size:9.5px; padding:1px 6px;">Alumni</span>`
+      : `<span class="badge-bot-synced" style="font-size:9.5px; padding:1px 6px;">Student</span>`;
+    const opTag = isOp ? `<span class="anon-comment-op-pill">OP</span>` : "";
+    authorHeaderHtml = `${nameHtml} ${rolePill} ${opTag}`;
+  }
+
+  let replyQuoteHtml = "";
+  if (c.reply_to && c.reply_to.id) {
+    replyQuoteHtml = `
+      <div class="anon-comment-reply-quote" onclick="scrollToAnonComment(${c.post_id}, ${c.reply_to.id})">
+        <span class="anon-reply-quote-author">↩ ${escapeHtml(c.reply_to.author_name)}</span>
+        <span class="anon-reply-quote-text">${escapeHtml(c.reply_to.snippet)}</span>
+      </div>
+    `;
+  }
+
+  const timeStr = formatDateTime(c.created_at);
+  const safeAuthorAttr = encodeJsAttr(c.author_name || "Comment");
+  const safeSnippetAttr = encodeJsAttr((c.content_text || "").slice(0, 75));
+
+  return `
+    <div class="anon-comment-row${isMine ? " own" : ""}" id="anon-comment-${c.id}" data-comment-id="${c.id}">
+      ${!isMine ? avatarHtml : ""}
+      <div class="anon-comment-bubble${isMine ? " own" : ""}${isOp ? " op-bubble" : ""}">
+        <div class="anon-comment-bubble-top">
+          <div class="anon-comment-author-wrap">${authorHeaderHtml}</div>
+          <div class="anon-comment-actions">
+            <span class="anon-comment-time">${escapeHtml(timeStr)}</span>
+            <button type="button" class="anon-comment-act-btn" title="Reply to this comment"
+              onclick="setAnonCommentReplyTarget(${c.post_id}, ${c.id}, decodeURIComponent('${safeAuthorAttr}'), decodeURIComponent('${safeSnippetAttr}'))">
+              ↩
+            </button>
+            ${canDel
+              ? `<button type="button" class="anon-comment-act-btn del" title="Delete comment"
+                   onclick="deleteAnonPostComment(${c.post_id}, ${c.id})">&times;</button>`
+              : ""}
+          </div>
+        </div>
+        ${replyQuoteHtml}
+        <div class="anon-comment-text">${escapeHtml(c.content_text)}</div>
+      </div>
+    </div>
+  `;
+}
+
+function scrollToAnonComment(postId, commentId) {
+  const el = document.getElementById(`anon-comment-${commentId}`);
+  if (!el) return;
+  el.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  el.classList.add("anon-comment-highlight");
+  setTimeout(() => el.classList.remove("anon-comment-highlight"), 1800);
+}
+
+function setAnonCommentReplyTarget(postId, commentId, authorName, snippet) {
+  const pid = Number(postId);
+  if (!state.user) {
+    openAuthModal("login");
+    return;
+  }
+  state.anonReplyTargetByPost[pid] = {
+    id: Number(commentId),
+    authorName: authorName || "Comment",
+    snippet: snippet || "",
+  };
+  const strip = document.getElementById(`anon-reply-strip-${pid}`);
+  if (strip) {
+    strip.classList.remove("hidden");
+    strip.removeAttribute("hidden");
+    strip.innerHTML = `
+      <div class="anon-reply-strip-info">
+        <span>↩ Replying to <b>${escapeHtml(authorName)}</b>:</span>
+        <span class="anon-reply-strip-snippet">"${escapeHtml(snippet)}"</span>
+      </div>
+      <button type="button" class="anon-reply-strip-close" onclick="clearAnonCommentReplyTarget(${pid})" title="Cancel reply">&times;</button>
+    `;
+  }
+  const inp = document.getElementById(`anon-comment-input-${pid}`);
+  if (inp) inp.focus();
+}
+
+function clearAnonCommentReplyTarget(postId) {
+  const pid = Number(postId);
+  delete state.anonReplyTargetByPost[pid];
+  const strip = document.getElementById(`anon-reply-strip-${pid}`);
+  if (strip) {
+    strip.classList.add("hidden");
+    strip.setAttribute("hidden", "");
+    strip.innerHTML = "";
+  }
+}
+
+async function submitAnonPostComment(e, postId) {
+  e.preventDefault();
+  const pid = Number(postId);
+  if (!state.user) {
+    openAuthModal("login");
+    return;
+  }
+  const inp = document.getElementById(`anon-comment-input-${pid}`);
+  const btn = document.getElementById(`anon-comment-send-${pid}`);
+  if (!inp) return;
+
+  const content = (inp.value || "").trim();
+  if (!content) return;
+
+  const is_anonymous = isAnonCommentModeEnabled(pid);
+  const replyTarget = state.anonReplyTargetByPost[pid];
+  const reply_to_id = replyTarget ? replyTarget.id : null;
+
+  if (btn) btn.disabled = true;
+  try {
+    const res = await apiFetch(`/api/anonymous/posts/${pid}/comments`, {
+      method: "POST",
+      body: JSON.stringify({
+        content,
+        is_anonymous,
+        reply_to_id,
+      }),
+    });
+    if (res && res.ok) {
+      inp.value = "";
+      clearAnonCommentReplyTarget(pid);
+      state.anonCommentsByPost[pid] = res.comments || [];
+      updateAnonPostCommentCountBadge(pid, res.comment_count ?? state.anonCommentsByPost[pid].length);
+      renderAnonPostCommentsStream(pid, true);
+    }
+  } catch (err) {
+    showToast(err.message || "Failed to post comment.", true);
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+async function deleteAnonPostComment(postId, commentId) {
+  const pid = Number(postId);
+  const cid = Number(commentId);
+  try {
+    const res = await apiFetch(`/api/anonymous/posts/${pid}/comments/${cid}`, {
+      method: "DELETE",
+    });
+    if (res && res.ok) {
+      const list = state.anonCommentsByPost[pid] || [];
+      state.anonCommentsByPost[pid] = list.filter((c) => Number(c.id) !== cid);
+      updateAnonPostCommentCountBadge(pid, res.comment_count ?? state.anonCommentsByPost[pid].length);
+      renderAnonPostCommentsStream(pid, false);
+      showToast("Comment deleted.");
+    }
+  } catch (err) {
+    showToast(err.message || "Could not delete comment.", true);
+  }
+}
+
 async function loadAnonymousInbox() {
   const container = document.getElementById("anonInboxContainer");
   if (!container) return;
