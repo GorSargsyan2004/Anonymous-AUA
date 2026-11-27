@@ -1253,26 +1253,104 @@ async def search_courses(
     return list((await session.execute(stmt)).scalars().all())
 
 
+async def find_web_user_by_telegram_id_or_verified_email(
+    session: AsyncSession,
+    telegram_user_id: int,
+) -> Optional[WebUser]:
+    """Find the active WebUser linked to `telegram_user_id`, or auto-link by verified AUA email if matching."""
+    if not telegram_user_id:
+        return None
+
+    stmt = (
+        select(WebUser)
+        .where(
+            WebUser.telegram_user_id == int(telegram_user_id),
+            WebUser.is_deleted.is_(False),
+        )
+        .limit(1)
+    )
+    web_user = (await session.execute(stmt)).scalar_one_or_none()
+    if web_user:
+        return web_user
+
+    tg_user = (
+        await session.execute(select(User).where(User.id == int(telegram_user_id)))
+    ).scalar_one_or_none()
+    if tg_user and getattr(tg_user, "is_verified", False) and tg_user.email:
+        clean_email = tg_user.email.strip().lower()
+        by_email = (
+            await session.execute(
+                select(WebUser).where(
+                    func.lower(WebUser.email) == clean_email,
+                    WebUser.is_deleted.is_(False),
+                )
+            )
+        ).scalar_one_or_none()
+        if by_email:
+            by_email.telegram_user_id = int(telegram_user_id)
+            await session.commit()
+            await session.refresh(by_email)
+            return by_email
+
+    return None
+
+
 async def get_web_user_persistent_invite_link(
     session: AsyncSession,
     web_user: Optional[WebUser],
     bot_username: str = "aua_anonymous_bot",
 ) -> Optional[str]:
-    """Return the user's active persistent (unexpirable) /invite deep link from @aua_anonymous_bot if one exists."""
-    if not web_user or not web_user.telegram_user_id:
+    """Return the user's latest active /invite deep link from @aua_anonymous_bot (preferring persistent, falling back to unused one_time)."""
+    if not web_user:
         return None
 
-    stmt = (
+    tg_id = web_user.telegram_user_id
+    if not tg_id and web_user.email:
+        clean_email = web_user.email.strip().lower()
+        tg_user = (
+            await session.execute(
+                select(User).where(
+                    func.lower(User.email) == clean_email,
+                    User.is_verified.is_(True),
+                ).limit(1)
+            )
+        ).scalar_one_or_none()
+        if tg_user:
+            web_user.telegram_user_id = int(tg_user.id)
+            tg_id = int(tg_user.id)
+            await session.commit()
+
+    if not tg_id:
+        return None
+
+    # 1. Look for the most recent active persistent invite
+    stmt_persistent = (
         select(ChatInvite)
         .where(
-            ChatInvite.creator_id == web_user.telegram_user_id,
+            ChatInvite.creator_id == tg_id,
             ChatInvite.is_active.is_(True),
             ChatInvite.invite_type == "persistent",
         )
         .order_by(ChatInvite.created_at.desc(), ChatInvite.id.desc())
         .limit(1)
     )
-    invite = (await session.execute(stmt)).scalar_one_or_none()
+    invite = (await session.execute(stmt_persistent)).scalar_one_or_none()
+
+    # 2. Fallback to most recent active unused one-time invite if user created a one-time link
+    if not invite:
+        stmt_onetime = (
+            select(ChatInvite)
+            .where(
+                ChatInvite.creator_id == tg_id,
+                ChatInvite.is_active.is_(True),
+                ChatInvite.invite_type == "one_time",
+                ChatInvite.is_used.is_(False),
+            )
+            .order_by(ChatInvite.created_at.desc(), ChatInvite.id.desc())
+            .limit(1)
+        )
+        invite = (await session.execute(stmt_onetime)).scalar_one_or_none()
+
     if not invite:
         return None
     return f"https://t.me/{bot_username}?start=chat_{invite.invite_code}"

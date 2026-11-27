@@ -2297,7 +2297,8 @@ async function loadHaveNeedPosts() {
     renderHaveNeedPosts();
     const anonCheck = document.getElementById("hnAnonymousCheckbox");
     if (anonCheck && anonCheck.checked) {
-      renderHaveNeedAnonInviteHelper(true);
+      applyLiveInviteLinkUpdate(state.hnPersistentInviteLink, "loaded", false);
+      startHaveNeedInviteWatcher();
     }
   } catch (err) {
     if (state.hnOnlyMine && !state.user) {
@@ -2317,28 +2318,108 @@ function isBotInviteOrInboxLink(val) {
   );
 }
 
-async function ensureHaveNeedPersistentInviteLoaded() {
+let _hnInviteWatcherTimer = null;
+
+async function ensureHaveNeedPersistentInviteLoaded(forceRefresh = false) {
   if (!state.user) {
     state.hnPersistentInviteLink = null;
     state.hnInviteInfoLoaded = false;
     return null;
   }
-  if (state.hnInviteInfoLoaded && state.hnPersistentInviteLink) {
+  if (!forceRefresh && state.hnInviteInfoLoaded && state.hnPersistentInviteLink) {
     return state.hnPersistentInviteLink;
   }
   try {
     const res = await apiFetch("/api/anonymous/invite-link");
     if (res && res.ok) {
+      const prevLink = state.hnPersistentInviteLink;
       state.hnPersistentInviteLink = res.persistent_invite_link || null;
       state.hnInviteInfoLoaded = true;
       if (state.user && typeof res.is_bot_synced === "boolean") {
         state.user.is_bot_synced = res.is_bot_synced;
+      }
+      if (state.hnPersistentInviteLink && state.hnPersistentInviteLink !== prevLink) {
+        applyLiveInviteLinkUpdate(state.hnPersistentInviteLink, "polled", Boolean(prevLink !== state.hnPersistentInviteLink));
       }
       return state.hnPersistentInviteLink;
     }
   } catch { }
   return state.hnPersistentInviteLink;
 }
+
+function applyLiveInviteLinkUpdate(inviteLink, action = "created", showLiveToast = true) {
+  state.hnPersistentInviteLink = inviteLink || null;
+  state.hnInviteInfoLoaded = true;
+  if (state.user && inviteLink) {
+    state.user.is_bot_synced = true;
+  }
+
+  const anonCheckbox = document.getElementById("hnAnonymousCheckbox");
+  const dmInput = document.getElementById("hnContactDm");
+  const isAnonChecked = Boolean(anonCheckbox && anonCheckbox.checked);
+
+  if (inviteLink && dmInput) {
+    const curVal = (dmInput.value || "").trim();
+    const shouldAutoPaste =
+      isAnonChecked &&
+      (!curVal || curVal === state.hnSavedNamedContactDm || isBotInviteOrInboxLink(curVal));
+
+    if (shouldAutoPaste && curVal !== inviteLink) {
+      if (curVal && !isBotInviteOrInboxLink(curVal)) {
+        state.hnSavedNamedContactDm = curVal;
+      }
+      dmInput.value = inviteLink;
+      if (showLiveToast) {
+        showToast("♾️ Detected your /invite link from @aua_anonymous_bot & pasted automatically!");
+      }
+    }
+  } else if (action === "destroyed" && dmInput && isAnonChecked) {
+    const curVal = (dmInput.value || "").trim();
+    if (isBotInviteOrInboxLink(curVal)) {
+      dmInput.value = inviteLink || "";
+    }
+  }
+
+  if (isAnonChecked) {
+    renderHaveNeedAnonInviteHelper(true);
+  }
+}
+
+function startHaveNeedInviteWatcher() {
+  stopHaveNeedInviteWatcher();
+  _hnInviteWatcherTimer = setInterval(() => {
+    const anonCheckbox = document.getElementById("hnAnonymousCheckbox");
+    if (!state.user || !anonCheckbox || !anonCheckbox.checked || state.activeView !== "have-need") {
+      return;
+    }
+    if (document.visibilityState === "visible") {
+      ensureHaveNeedPersistentInviteLoaded(true);
+    }
+  }, 3500);
+}
+
+function stopHaveNeedInviteWatcher() {
+  if (_hnInviteWatcherTimer) {
+    clearInterval(_hnInviteWatcherTimer);
+    _hnInviteWatcherTimer = null;
+  }
+}
+
+window.addEventListener("focus", () => {
+  const anonCheckbox = document.getElementById("hnAnonymousCheckbox");
+  if (state.user && anonCheckbox && anonCheckbox.checked) {
+    ensureHaveNeedPersistentInviteLoaded(true);
+  }
+});
+
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible") {
+    const anonCheckbox = document.getElementById("hnAnonymousCheckbox");
+    if (state.user && anonCheckbox && anonCheckbox.checked) {
+      ensureHaveNeedPersistentInviteLoaded(true);
+    }
+  }
+});
 
 function fillHaveNeedContactWithInvite(inviteLink) {
   const inp = document.getElementById("hnContactDm");
@@ -2499,11 +2580,15 @@ async function handleHaveNeedAnonymousToggle(checked) {
     if (curVal && !isBotInviteOrInboxLink(curVal)) {
       state.hnSavedNamedContactDm = curVal;
     }
+    if (state.hnPersistentInviteLink && dmInput && (!curVal || curVal === state.hnSavedNamedContactDm)) {
+      dmInput.value = state.hnPersistentInviteLink;
+    }
     renderHaveNeedAnonInviteHelper(true);
-    const inviteLink = await ensureHaveNeedPersistentInviteLoaded();
+    startHaveNeedInviteWatcher();
+    const inviteLink = await ensureHaveNeedPersistentInviteLoaded(true);
     if (inviteLink && dmInput) {
       const nowVal = (dmInput.value || "").trim();
-      if (!nowVal || nowVal === state.hnSavedNamedContactDm) {
+      if (!nowVal || nowVal === state.hnSavedNamedContactDm || isBotInviteOrInboxLink(nowVal)) {
         dmInput.value = inviteLink;
       }
     } else if (dmInput && curVal && curVal === state.hnSavedNamedContactDm && curVal.startsWith("@")) {
@@ -2512,6 +2597,7 @@ async function handleHaveNeedAnonymousToggle(checked) {
     }
     renderHaveNeedAnonInviteHelper(true);
   } else {
+    stopHaveNeedInviteWatcher();
     if (dmInput) {
       if (isBotInviteOrInboxLink(curVal) || !curVal) {
         dmInput.value = state.hnSavedNamedContactDm || "";
@@ -7545,6 +7631,10 @@ function initSpamChatWebSocket() {
             if (!state.aiIsGenerating) {
               applyServerAiSessionState(data);
             }
+          }
+        } else if (data.type === "user_invite_link_updated") {
+          if (state.user && Number(data.recipient_id) === Number(state.user.id)) {
+            applyLiveInviteLinkUpdate(data.invite_link || null, data.action || "created", true);
           }
         } else if (data.type === "anon_post_comment_new" && data.post_id && data.comment) {
           const pid = Number(data.post_id);

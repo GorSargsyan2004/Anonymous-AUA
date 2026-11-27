@@ -86,6 +86,26 @@ async def handle_invite_create(callback: CallbackQuery, bot: Bot) -> None:
     bot_username = bot_info.username or "aua_anonymous_bot"
     link_url = f"https://t.me/{bot_username}?start=chat_{invite.invite_code}"
 
+    # Push live WebSocket update to AUA Hub if the user has the website open
+    try:
+        from app.database.web_crud import find_web_user_by_telegram_id_or_verified_email
+        from app.web.server import broadcast_ws_event
+
+        async with get_db_session() as ws_session:
+            web_user = await find_web_user_by_telegram_id_or_verified_email(ws_session, user_id)
+            if web_user:
+                await broadcast_ws_event(
+                    {
+                        "type": "user_invite_link_updated",
+                        "recipient_id": web_user.id,
+                        "invite_link": link_url,
+                        "invite_type": invite_type,
+                        "action": "created",
+                    }
+                )
+    except Exception as exc:
+        logger.debug("Could not broadcast invite creation to web WS: %s", exc)
+
     type_label = (
         "⚡ <b>One-Time (Single Use)</b>"
         if invite_type == "one_time"
@@ -158,6 +178,29 @@ async def handle_invite_destroy(callback: CallbackQuery) -> None:
         success = await deactivate_chat_invite(session, creator_id=user_id, invite_code=invite_code)
 
     if success:
+        try:
+            from app.database.web_crud import (
+                find_web_user_by_telegram_id_or_verified_email,
+                get_web_user_persistent_invite_link,
+            )
+            from app.web.server import broadcast_ws_event
+
+            async with get_db_session() as ws_session:
+                web_user = await find_web_user_by_telegram_id_or_verified_email(ws_session, user_id)
+                if web_user:
+                    remaining_link = await get_web_user_persistent_invite_link(ws_session, web_user)
+                    await broadcast_ws_event(
+                        {
+                            "type": "user_invite_link_updated",
+                            "recipient_id": web_user.id,
+                            "invite_link": remaining_link,
+                            "destroyed_code": invite_code,
+                            "action": "destroyed",
+                        }
+                    )
+        except Exception as exc:
+            logger.debug("Could not broadcast invite destruction to web WS: %s", exc)
+
         await callback.message.edit_text(
             "🗑️ <b>Invitation link destroyed / revoked!</b>\n\n"
             "This link has been deactivated. Anyone clicking it will no longer be able to connect with you.\n\n"

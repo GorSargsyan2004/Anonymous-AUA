@@ -5428,7 +5428,10 @@ async def bot_activity_snapshot_worker() -> None:
 
 @routes.get("/")
 async def serve_spa_index(request: web.Request) -> web.FileResponse:
-    return web.FileResponse(STATIC_DIR / "index.html")
+    return web.FileResponse(
+        STATIC_DIR / "index.html",
+        headers={"Cache-Control": "no-cache, must-revalidate"},
+    )
 
 
 @routes.get("/manifest.json")
